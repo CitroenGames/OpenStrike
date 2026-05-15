@@ -2,7 +2,7 @@
   <img src="docs/assets/openstrike-logo.png" alt="OpenStrike logo" width="620">
 </p>
 
-# OpenStrike
+#
 
 OpenStrike is a small, buildable first-person shooter runtime focused on Counter-Strike style architecture, fixed tick simulation, a client/server split, editor tooling, and a content pipeline.
 
