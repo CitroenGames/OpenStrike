@@ -162,7 +162,7 @@ bool RmlConsoleController::initialize(Rml::Context& rml_context, EngineContext& 
     shutdown();
     engine_context_ = &engine_context;
 
-    document_ = rml_context.LoadDocumentFromMemory(kConsoleDocument, "openstrike:console");
+    document_ = rml_context.LoadDocumentFromMemory(kConsoleDocument, "openstrike://console");
     if (document_ == nullptr)
     {
         log_error("failed to create RmlUi console document");
