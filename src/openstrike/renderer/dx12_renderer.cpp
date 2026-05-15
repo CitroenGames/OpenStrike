@@ -1,8 +1,10 @@
 #include "openstrike/renderer/dx12_renderer.hpp"
 
 #include "openstrike/core/log.hpp"
+#include "openstrike/engine/engine_context.hpp"
 #include "openstrike/renderer/rml_dx12_render_interface.hpp"
 #include "openstrike/ui/main_menu_controller.hpp"
+#include "openstrike/ui/rml_console_controller.hpp"
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -106,6 +108,11 @@ Dx12Renderer::~Dx12Renderer()
     shutdown();
 }
 
+void Dx12Renderer::set_engine_context(EngineContext* context)
+{
+    engine_context_ = context;
+}
+
 bool Dx12Renderer::initialize(const RuntimeConfig& config)
 {
     if (initialized_)
@@ -149,6 +156,11 @@ void Dx12Renderer::render(const FrameContext& context)
             return;
         }
         resize_pending_ = false;
+    }
+
+    if (rml_console_controller_ != nullptr)
+    {
+        rml_console_controller_->update();
     }
 
     if (rml_context_ != nullptr)
@@ -479,6 +491,12 @@ bool Dx12Renderer::initialize_rml(const RuntimeConfig& config)
     Rml::Debugger::Initialise(rml_context_);
     Rml::Debugger::SetVisible(false);
     main_menu_controller_ = std::make_unique<MainMenuController>();
+    main_menu_controller_->set_open_console_callback([this] {
+        if (rml_console_controller_ != nullptr)
+        {
+            rml_console_controller_->show();
+        }
+    });
 
     const std::vector<std::filesystem::path> font_roots{
         config.content_root / "csgo/resource/ui/fonts",
@@ -522,7 +540,21 @@ bool Dx12Renderer::initialize_rml(const RuntimeConfig& config)
     }
 
     log_info("loaded {} RmlUi font face(s) from '{}'", loaded_fonts, rml_path_string(config.content_root));
-    return load_rml_document(config);
+    if (!load_rml_document(config))
+    {
+        return false;
+    }
+
+    if (engine_context_ != nullptr)
+    {
+        rml_console_controller_ = std::make_unique<RmlConsoleController>();
+        if (!rml_console_controller_->initialize(*rml_context_, *engine_context_))
+        {
+            return false;
+        }
+    }
+
+    return true;
 }
 
 bool Dx12Renderer::load_rml_document(const RuntimeConfig& config)
@@ -599,6 +631,7 @@ bool Dx12Renderer::load_rml_document(const RuntimeConfig& config)
 
 void Dx12Renderer::shutdown_rml()
 {
+    rml_console_controller_.reset();
     main_menu_controller_.reset();
 
     if (rml_initialized_)
@@ -642,6 +675,22 @@ void Dx12Renderer::pump_messages()
         if (event.type == SDL_EVENT_KEY_DOWN && event.key.key == SDLK_F8)
         {
             Rml::Debugger::SetVisible(!Rml::Debugger::IsVisible());
+            continue;
+        }
+
+        if (event.type == SDL_EVENT_KEY_DOWN && rml_console_controller_ != nullptr)
+        {
+            if (event.key.key == SDLK_GRAVE || event.key.key == SDLK_TILDE)
+            {
+                rml_console_controller_->toggle();
+                continue;
+            }
+
+            if (event.key.key == SDLK_ESCAPE && rml_console_controller_->visible())
+            {
+                rml_console_controller_->hide();
+                continue;
+            }
         }
 
         if (rml_context_ != nullptr)

@@ -30,7 +30,9 @@ using HANDLE = void*;
 
 namespace openstrike
 {
+class EngineContext;
 class MainMenuController;
+class RmlConsoleController;
 class RmlDx12RenderInterface;
 
 class Dx12Renderer final : public IRenderer
@@ -39,6 +41,7 @@ public:
     Dx12Renderer();
     ~Dx12Renderer() override;
 
+    void set_engine_context(EngineContext* context) override;
     bool initialize(const RuntimeConfig& config) override;
     void render(const FrameContext& context) override;
     bool should_close() const override;
@@ -86,6 +89,8 @@ private:
     std::unique_ptr<SystemInterface_SDL> rml_system_interface_;
     std::unique_ptr<RmlDx12RenderInterface> rml_render_interface_;
     std::unique_ptr<MainMenuController> main_menu_controller_;
+    std::unique_ptr<RmlConsoleController> rml_console_controller_;
+    EngineContext* engine_context_ = nullptr;
     Rml::Context* rml_context_ = nullptr;
 };
 }

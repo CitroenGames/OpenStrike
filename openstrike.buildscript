@@ -34,6 +34,7 @@ sources = {
     src/openstrike/renderer/rml_dx12_render_interface.cpp [windows]
     src/openstrike/server/server_module.cpp
     src/openstrike/ui/main_menu_controller.cpp
+    src/openstrike/ui/rml_console_controller.cpp
 }
 headers = src/openstrike/**/*.hpp
 includes = src
