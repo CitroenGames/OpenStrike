@@ -31,6 +31,7 @@ struct SourceTexture
 };
 
 [[nodiscard]] std::optional<SourceTexture> load_vtf_texture(std::span<const unsigned char> bytes);
+[[nodiscard]] std::optional<SourceTexture> source_texture_to_rgba8(const SourceTexture& texture);
 [[nodiscard]] std::uint32_t source_texture_row_bytes(SourceTextureFormat format, std::uint32_t width);
 [[nodiscard]] std::uint32_t source_texture_row_count(SourceTextureFormat format, std::uint32_t height);
 }

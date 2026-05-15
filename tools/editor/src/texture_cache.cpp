@@ -232,6 +232,9 @@ CachedTexture TextureCache::LoadVTF(const std::string& materialName)
     }
 
     std::optional<openstrike::SourceTexture> texture = openstrike::load_vtf_texture(*bytes);
+    if (texture)
+        texture = openstrike::source_texture_to_rgba8(*texture);
+
     if (!texture || texture->format != openstrike::SourceTextureFormat::Rgba8 || texture->mips.empty())
     {
         Log("Unsupported or invalid VTF: %s", path.c_str());

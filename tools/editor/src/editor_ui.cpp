@@ -276,6 +276,8 @@ void EditorUI::LoadFGDFile(const char* path)
     else
     {
         m_console->AddLog("Failed to load FGD: %s", absPath.c_str());
+        for (const std::string& error : m_fgd->GetGameData()->errors())
+            m_console->AddLog("  %s", error.c_str());
     }
 }
 
@@ -298,6 +300,8 @@ void EditorUI::OpenFGD()
     else
     {
         m_console->AddLog("Failed to load FGD file.");
+        for (const std::string& error : m_fgd->GetGameData()->errors())
+            m_console->AddLog("  %s", error.c_str());
     }
 }
 

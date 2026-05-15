@@ -1,6 +1,7 @@
 #include "openstrike/source/source_texture.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cstring>
 #include <stdexcept>
 
@@ -25,6 +26,14 @@ enum SourceImageFormat : std::int32_t
     ImageFormatBgrx8888 = 16,
     ImageFormatDxt1OneBitAlpha = 20,
     ImageFormatRgbx8888 = 31,
+};
+
+struct Rgba8
+{
+    unsigned char r = 0;
+    unsigned char g = 0;
+    unsigned char b = 0;
+    unsigned char a = 255;
 };
 
 std::uint32_t read_u32_le(std::span<const unsigned char> bytes, std::size_t offset)
@@ -266,6 +275,201 @@ std::vector<unsigned char> convert_to_rgba(std::int32_t image_format, std::span<
     }
     return rgba;
 }
+
+std::uint16_t read_block_u16_le(const unsigned char* bytes)
+{
+    return static_cast<std::uint16_t>(bytes[0]) | static_cast<std::uint16_t>(bytes[1] << 8U);
+}
+
+std::uint32_t read_block_u32_le(const unsigned char* bytes)
+{
+    return static_cast<std::uint32_t>(bytes[0]) | (static_cast<std::uint32_t>(bytes[1]) << 8U) |
+           (static_cast<std::uint32_t>(bytes[2]) << 16U) | (static_cast<std::uint32_t>(bytes[3]) << 24U);
+}
+
+unsigned char expand_565_channel(std::uint16_t value, int shift, int bits)
+{
+    const std::uint16_t mask = static_cast<std::uint16_t>((1U << bits) - 1U);
+    const std::uint16_t channel = static_cast<std::uint16_t>((value >> shift) & mask);
+    return static_cast<unsigned char>((channel * 255U + (mask / 2U)) / mask);
+}
+
+Rgba8 rgb565_to_rgba(std::uint16_t color)
+{
+    return Rgba8{
+        .r = expand_565_channel(color, 11, 5),
+        .g = expand_565_channel(color, 5, 6),
+        .b = expand_565_channel(color, 0, 5),
+        .a = 255,
+    };
+}
+
+Rgba8 interpolate_color(Rgba8 lhs, Rgba8 rhs, unsigned lhs_weight, unsigned rhs_weight, unsigned divisor)
+{
+    return Rgba8{
+        .r = static_cast<unsigned char>(((lhs.r * lhs_weight) + (rhs.r * rhs_weight) + (divisor / 2U)) / divisor),
+        .g = static_cast<unsigned char>(((lhs.g * lhs_weight) + (rhs.g * rhs_weight) + (divisor / 2U)) / divisor),
+        .b = static_cast<unsigned char>(((lhs.b * lhs_weight) + (rhs.b * rhs_weight) + (divisor / 2U)) / divisor),
+        .a = static_cast<unsigned char>(((lhs.a * lhs_weight) + (rhs.a * rhs_weight) + (divisor / 2U)) / divisor),
+    };
+}
+
+std::array<Rgba8, 4> decode_bc_color_table(const unsigned char* block, bool force_four_color)
+{
+    const std::uint16_t color0 = read_block_u16_le(block);
+    const std::uint16_t color1 = read_block_u16_le(block + 2);
+
+    std::array<Rgba8, 4> colors{};
+    colors[0] = rgb565_to_rgba(color0);
+    colors[1] = rgb565_to_rgba(color1);
+    if (force_four_color || color0 > color1)
+    {
+        colors[2] = interpolate_color(colors[0], colors[1], 2, 1, 3);
+        colors[3] = interpolate_color(colors[0], colors[1], 1, 2, 3);
+    }
+    else
+    {
+        colors[2] = interpolate_color(colors[0], colors[1], 1, 1, 2);
+        colors[3] = Rgba8{.r = 0, .g = 0, .b = 0, .a = 0};
+    }
+
+    return colors;
+}
+
+void write_decoded_pixel(std::vector<unsigned char>& output, std::uint32_t width, std::uint32_t height, std::uint32_t x, std::uint32_t y, Rgba8 color)
+{
+    if (x >= width || y >= height)
+    {
+        return;
+    }
+
+    const std::size_t offset = (static_cast<std::size_t>(y) * width + x) * 4U;
+    output[offset + 0] = color.r;
+    output[offset + 1] = color.g;
+    output[offset + 2] = color.b;
+    output[offset + 3] = color.a;
+}
+
+void decode_bc_color_block(
+    const unsigned char* block,
+    std::vector<unsigned char>& output,
+    std::uint32_t width,
+    std::uint32_t height,
+    std::uint32_t block_x,
+    std::uint32_t block_y,
+    bool force_four_color,
+    const std::array<unsigned char, 16>* alpha_values = nullptr)
+{
+    const std::array<Rgba8, 4> colors = decode_bc_color_table(block, force_four_color);
+    const std::uint32_t selectors = read_block_u32_le(block + 4);
+    for (std::uint32_t y = 0; y < 4; ++y)
+    {
+        for (std::uint32_t x = 0; x < 4; ++x)
+        {
+            const std::uint32_t pixel = (y * 4U) + x;
+            Rgba8 color = colors[(selectors >> (pixel * 2U)) & 0x3U];
+            if (alpha_values != nullptr)
+            {
+                color.a = (*alpha_values)[pixel];
+            }
+            write_decoded_pixel(output, width, height, (block_x * 4U) + x, (block_y * 4U) + y, color);
+        }
+    }
+}
+
+std::vector<unsigned char> decode_bc1(std::span<const unsigned char> source, std::uint32_t width, std::uint32_t height)
+{
+    std::vector<unsigned char> rgba(static_cast<std::size_t>(width) * height * 4U);
+    const std::uint32_t block_cols = std::max<std::uint32_t>((width + 3U) / 4U, 1U);
+    const std::uint32_t block_rows = std::max<std::uint32_t>((height + 3U) / 4U, 1U);
+    for (std::uint32_t by = 0; by < block_rows; ++by)
+    {
+        for (std::uint32_t bx = 0; bx < block_cols; ++bx)
+        {
+            const std::size_t block_offset = (static_cast<std::size_t>(by) * block_cols + bx) * 8U;
+            decode_bc_color_block(source.data() + block_offset, rgba, width, height, bx, by, false);
+        }
+    }
+    return rgba;
+}
+
+std::vector<unsigned char> decode_bc2(std::span<const unsigned char> source, std::uint32_t width, std::uint32_t height)
+{
+    std::vector<unsigned char> rgba(static_cast<std::size_t>(width) * height * 4U);
+    const std::uint32_t block_cols = std::max<std::uint32_t>((width + 3U) / 4U, 1U);
+    const std::uint32_t block_rows = std::max<std::uint32_t>((height + 3U) / 4U, 1U);
+    for (std::uint32_t by = 0; by < block_rows; ++by)
+    {
+        for (std::uint32_t bx = 0; bx < block_cols; ++bx)
+        {
+            const std::size_t block_offset = (static_cast<std::size_t>(by) * block_cols + bx) * 16U;
+            std::array<unsigned char, 16> alpha_values{};
+            const std::uint64_t alpha_bits =
+                static_cast<std::uint64_t>(read_block_u32_le(source.data() + block_offset)) |
+                (static_cast<std::uint64_t>(read_block_u32_le(source.data() + block_offset + 4)) << 32U);
+            for (std::uint32_t pixel = 0; pixel < 16; ++pixel)
+            {
+                const unsigned char alpha = static_cast<unsigned char>((alpha_bits >> (pixel * 4U)) & 0xFU);
+                alpha_values[pixel] = static_cast<unsigned char>((alpha << 4U) | alpha);
+            }
+            decode_bc_color_block(source.data() + block_offset + 8, rgba, width, height, bx, by, true, &alpha_values);
+        }
+    }
+    return rgba;
+}
+
+std::array<unsigned char, 8> decode_bc3_alpha_table(const unsigned char* block)
+{
+    std::array<unsigned char, 8> alpha{};
+    alpha[0] = block[0];
+    alpha[1] = block[1];
+    if (alpha[0] > alpha[1])
+    {
+        alpha[2] = static_cast<unsigned char>((6U * alpha[0] + 1U * alpha[1] + 3U) / 7U);
+        alpha[3] = static_cast<unsigned char>((5U * alpha[0] + 2U * alpha[1] + 3U) / 7U);
+        alpha[4] = static_cast<unsigned char>((4U * alpha[0] + 3U * alpha[1] + 3U) / 7U);
+        alpha[5] = static_cast<unsigned char>((3U * alpha[0] + 4U * alpha[1] + 3U) / 7U);
+        alpha[6] = static_cast<unsigned char>((2U * alpha[0] + 5U * alpha[1] + 3U) / 7U);
+        alpha[7] = static_cast<unsigned char>((1U * alpha[0] + 6U * alpha[1] + 3U) / 7U);
+    }
+    else
+    {
+        alpha[2] = static_cast<unsigned char>((4U * alpha[0] + 1U * alpha[1] + 2U) / 5U);
+        alpha[3] = static_cast<unsigned char>((3U * alpha[0] + 2U * alpha[1] + 2U) / 5U);
+        alpha[4] = static_cast<unsigned char>((2U * alpha[0] + 3U * alpha[1] + 2U) / 5U);
+        alpha[5] = static_cast<unsigned char>((1U * alpha[0] + 4U * alpha[1] + 2U) / 5U);
+        alpha[6] = 0;
+        alpha[7] = 255;
+    }
+    return alpha;
+}
+
+std::vector<unsigned char> decode_bc3(std::span<const unsigned char> source, std::uint32_t width, std::uint32_t height)
+{
+    std::vector<unsigned char> rgba(static_cast<std::size_t>(width) * height * 4U);
+    const std::uint32_t block_cols = std::max<std::uint32_t>((width + 3U) / 4U, 1U);
+    const std::uint32_t block_rows = std::max<std::uint32_t>((height + 3U) / 4U, 1U);
+    for (std::uint32_t by = 0; by < block_rows; ++by)
+    {
+        for (std::uint32_t bx = 0; bx < block_cols; ++bx)
+        {
+            const std::size_t block_offset = (static_cast<std::size_t>(by) * block_cols + bx) * 16U;
+            const std::array<unsigned char, 8> alpha_table = decode_bc3_alpha_table(source.data() + block_offset);
+            std::array<unsigned char, 16> alpha_values{};
+            std::uint64_t alpha_selectors = 0;
+            for (std::uint32_t byte = 0; byte < 6; ++byte)
+            {
+                alpha_selectors |= static_cast<std::uint64_t>(source[block_offset + 2 + byte]) << (byte * 8U);
+            }
+            for (std::uint32_t pixel = 0; pixel < 16; ++pixel)
+            {
+                alpha_values[pixel] = alpha_table[(alpha_selectors >> (pixel * 3U)) & 0x7U];
+            }
+            decode_bc_color_block(source.data() + block_offset + 8, rgba, width, height, bx, by, true, &alpha_values);
+        }
+    }
+    return rgba;
+}
 }
 
 std::optional<SourceTexture> load_vtf_texture(std::span<const unsigned char> bytes)
@@ -379,5 +583,58 @@ std::uint32_t source_texture_row_count(SourceTextureFormat format, std::uint32_t
     }
 
     return height;
+}
+
+std::optional<SourceTexture> source_texture_to_rgba8(const SourceTexture& texture)
+{
+    if (texture.mips.empty())
+    {
+        return std::nullopt;
+    }
+
+    if (texture.format == SourceTextureFormat::Rgba8)
+    {
+        return texture;
+    }
+
+    SourceTexture converted;
+    converted.width = texture.width;
+    converted.height = texture.height;
+    converted.format = SourceTextureFormat::Rgba8;
+    converted.mips.reserve(texture.mips.size());
+
+    for (const SourceTextureMip& source_mip : texture.mips)
+    {
+        const std::uint32_t source_row_bytes = source_texture_row_bytes(texture.format, source_mip.width);
+        const std::uint32_t source_row_count = source_texture_row_count(texture.format, source_mip.height);
+        const std::uint64_t required_bytes = static_cast<std::uint64_t>(source_row_bytes) * source_row_count;
+        if (source_mip.bytes.size() < required_bytes)
+        {
+            return std::nullopt;
+        }
+
+        SourceTextureMip decoded_mip;
+        decoded_mip.width = source_mip.width;
+        decoded_mip.height = source_mip.height;
+        const auto source = std::span<const unsigned char>(source_mip.bytes.data(), static_cast<std::size_t>(required_bytes));
+        switch (texture.format)
+        {
+        case SourceTextureFormat::Bc1:
+            decoded_mip.bytes = decode_bc1(source, source_mip.width, source_mip.height);
+            break;
+        case SourceTextureFormat::Bc2:
+            decoded_mip.bytes = decode_bc2(source, source_mip.width, source_mip.height);
+            break;
+        case SourceTextureFormat::Bc3:
+            decoded_mip.bytes = decode_bc3(source, source_mip.width, source_mip.height);
+            break;
+        case SourceTextureFormat::Rgba8:
+            decoded_mip.bytes = source_mip.bytes;
+            break;
+        }
+        converted.mips.push_back(std::move(decoded_mip));
+    }
+
+    return converted;
 }
 }

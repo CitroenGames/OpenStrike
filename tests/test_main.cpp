@@ -83,6 +83,11 @@ void write_s16_le(std::vector<unsigned char>& bytes, std::size_t offset, std::in
     write_u16_le(bytes, offset, static_cast<std::uint16_t>(value));
 }
 
+void write_s32_le(std::vector<unsigned char>& bytes, std::size_t offset, std::int32_t value)
+{
+    write_u32_le(bytes, offset, static_cast<std::uint32_t>(value));
+}
+
 void write_f32_le(std::vector<unsigned char>& bytes, std::size_t offset, float value)
 {
     std::uint32_t raw = 0;
@@ -112,6 +117,27 @@ void append_stored_zip_file(std::vector<unsigned char>& bytes, const std::string
     append_u16_le(bytes, 0);
     bytes.insert(bytes.end(), name.begin(), name.end());
     bytes.insert(bytes.end(), contents.begin(), contents.end());
+}
+
+std::vector<unsigned char> make_minimal_vtf(std::uint16_t width, std::uint16_t height, std::int32_t image_format, std::vector<unsigned char> image_bytes)
+{
+    constexpr std::size_t header_size = 80;
+    std::vector<unsigned char> bytes(header_size, 0);
+    bytes[0] = 'V';
+    bytes[1] = 'T';
+    bytes[2] = 'F';
+    bytes[3] = '\0';
+    write_u32_le(bytes, 4, 7);
+    write_u32_le(bytes, 8, 2);
+    write_u32_le(bytes, 12, static_cast<std::uint32_t>(header_size));
+    write_u16_le(bytes, 16, width);
+    write_u16_le(bytes, 18, height);
+    write_u16_le(bytes, 24, 1);
+    write_s32_le(bytes, 52, image_format);
+    bytes[56] = 1;
+    write_s32_le(bytes, 57, -1);
+    bytes.insert(bytes.end(), image_bytes.begin(), image_bytes.end());
+    return bytes;
 }
 
 void write_minimal_bsp(const std::filesystem::path& path, const std::string& entities)
@@ -598,6 +624,49 @@ void test_material_system_resolves_source_vmt_without_shader_combos()
     std::filesystem::remove_all(root);
 }
 
+void test_source_texture_decodes_compressed_vtf_to_rgba()
+{
+    constexpr std::int32_t image_format_dxt1 = 13;
+    constexpr std::int32_t image_format_dxt5 = 15;
+
+    std::vector<unsigned char> dxt1_block(8, 0);
+    write_u16_le(dxt1_block, 0, 0xF800U);
+    write_u16_le(dxt1_block, 2, 0x07E0U);
+    write_u32_le(dxt1_block, 4, 0);
+
+    const std::optional<openstrike::SourceTexture> bc1_texture = openstrike::load_vtf_texture(make_minimal_vtf(4, 4, image_format_dxt1, dxt1_block));
+    REQUIRE(bc1_texture.has_value());
+    REQUIRE(bc1_texture->format == openstrike::SourceTextureFormat::Bc1);
+
+    const std::optional<openstrike::SourceTexture> bc1_rgba = openstrike::source_texture_to_rgba8(*bc1_texture);
+    REQUIRE(bc1_rgba.has_value());
+    REQUIRE(bc1_rgba->format == openstrike::SourceTextureFormat::Rgba8);
+    REQUIRE(bc1_rgba->mips.size() == 1);
+    REQUIRE(bc1_rgba->mips[0].bytes.size() == 4 * 4 * 4);
+    REQUIRE(bc1_rgba->mips[0].bytes[0] == 255);
+    REQUIRE(bc1_rgba->mips[0].bytes[1] == 0);
+    REQUIRE(bc1_rgba->mips[0].bytes[2] == 0);
+    REQUIRE(bc1_rgba->mips[0].bytes[3] == 255);
+
+    std::vector<unsigned char> dxt5_block(16, 0);
+    dxt5_block[0] = 128;
+    dxt5_block[1] = 0;
+    write_u16_le(dxt5_block, 8, 0xF800U);
+    write_u16_le(dxt5_block, 10, 0x07E0U);
+    write_u32_le(dxt5_block, 12, 0);
+
+    const std::optional<openstrike::SourceTexture> bc3_texture = openstrike::load_vtf_texture(make_minimal_vtf(4, 4, image_format_dxt5, dxt5_block));
+    REQUIRE(bc3_texture.has_value());
+    REQUIRE(bc3_texture->format == openstrike::SourceTextureFormat::Bc3);
+
+    const std::optional<openstrike::SourceTexture> bc3_rgba = openstrike::source_texture_to_rgba8(*bc3_texture);
+    REQUIRE(bc3_rgba.has_value());
+    REQUIRE(bc3_rgba->mips[0].bytes[0] == 255);
+    REQUIRE(bc3_rgba->mips[0].bytes[1] == 0);
+    REQUIRE(bc3_rgba->mips[0].bytes[2] == 0);
+    REQUIRE(bc3_rgba->mips[0].bytes[3] == 128);
+}
+
 void test_renderer_shader_files_are_dedicated()
 {
     const openstrike::Dx12ShaderFile world_vertex = openstrike::world_material_vertex_shader_file();
@@ -1080,6 +1149,54 @@ void test_source_fgd_loads_classes_and_metadata()
     std::filesystem::remove_all(root);
 }
 
+void test_source_fgd_accepts_concatenated_source_strings()
+{
+    openstrike::SourceFgdGameData game_data;
+    const char* text =
+        "@BaseClass = Targetname\n"
+        "[\n"
+        "    targetname(target_source) : \"Name\" : : \"First \" + \"second\"\n"
+        "]\n"
+        "@PointClass base(Targetname) studio(\"models/editor/playerstart.mdl\") = info_player_start : \"Player \" + \"start\"\n"
+        "[\n"
+        "    team(choices) : \"Team\" : 2 : \"Team \" + \"selector\" =\n"
+        "    [\n"
+        "        2 : \"Terrorist \" + \"spawn\"\n"
+        "        3 : \"Counter-Terrorist\"\n"
+        "    ]\n"
+        "]\n";
+
+    const bool loaded = game_data.load_text(text, "concat.fgd");
+    if (!loaded)
+    {
+        for (const std::string& error : game_data.errors())
+            std::cerr << error << '\n';
+    }
+    REQUIRE(loaded);
+    REQUIRE(game_data.errors().empty());
+
+    const openstrike::SourceFgdEntityClass* player_start = game_data.find_class("info_player_start");
+    REQUIRE(player_start != nullptr);
+    REQUIRE(player_start->description == "Player start");
+
+    const auto find_var = [&](std::string_view name) -> const openstrike::SourceFgdVariable* {
+        const auto it = std::find_if(player_start->variables.begin(), player_start->variables.end(), [&](const openstrike::SourceFgdVariable& variable) {
+            return variable.name == name;
+        });
+        return it == player_start->variables.end() ? nullptr : &*it;
+    };
+
+    const openstrike::SourceFgdVariable* targetname = find_var("targetname");
+    REQUIRE(targetname != nullptr);
+    REQUIRE(targetname->description == "First second");
+
+    const openstrike::SourceFgdVariable* team = find_var("team");
+    REQUIRE(team != nullptr);
+    REQUIRE(team->description == "Team selector");
+    REQUIRE(team->choices.size() == 2);
+    REQUIRE(team->choices[0].caption == "Terrorist spawn");
+}
+
 void test_map_command_loads_current_world()
 {
     const std::filesystem::path root = std::filesystem::current_path() / "build/test_map_command_content";
@@ -1442,6 +1559,7 @@ int main()
         test_fixed_step_clamps_runaway_frames();
         test_content_filesystem_path_ids();
         test_material_system_resolves_source_vmt_without_shader_combos();
+        test_source_texture_decodes_compressed_vtf_to_rgba();
         test_renderer_shader_files_are_dedicated();
         test_network_stream_and_protocol_roundtrip();
         test_network_udp_loopback_connects_and_exchanges_text();
@@ -1453,6 +1571,7 @@ int main()
         test_world_manager_tracks_source_sky_surfaces();
         test_world_manager_loads_static_props_and_renders_bounds();
         test_source_fgd_loads_classes_and_metadata();
+        test_source_fgd_accepts_concatenated_source_strings();
         test_map_command_loads_current_world();
         test_map_and_changelevel_match_source_server_rules();
         test_disconnect_command_unloads_world_and_network();

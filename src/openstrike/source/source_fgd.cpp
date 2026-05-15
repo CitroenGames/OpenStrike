@@ -584,6 +584,11 @@ private:
         return token.kind == FgdTokenKind::Identifier || token.kind == FgdTokenKind::String || token.kind == FgdTokenKind::Number;
     }
 
+    static bool is_concatenation_token(const FgdToken& token)
+    {
+        return token.text == "+";
+    }
+
     static bool is_class_section(std::string_view section)
     {
         return equals_icase(section, "baseclass") || equals_icase(section, "pointclass") || equals_icase(section, "solidclass") ||
@@ -665,6 +670,17 @@ private:
         }
 
         out = token.text;
+        while (is_concatenation_token(tokenizer_.peek()))
+        {
+            tokenizer_.next();
+            const FgdToken next_value = tokenizer_.next();
+            if (!is_value_token(next_value))
+            {
+                add_error(next_value, "expected value after '+'");
+                return false;
+            }
+            out += next_value.text;
+        }
         return true;
     }
 
