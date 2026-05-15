@@ -1089,8 +1089,10 @@ void test_map_command_loads_current_world()
 
     openstrike::EngineContext context;
     openstrike::configure_engine_context(context, config);
+    REQUIRE(context.network.start_server(0));
+    REQUIRE(context.network.connect_client(openstrike::NetworkAddress::localhost(27099), 0));
 
-    context.command_buffer.add_text("map command_world");
+    context.command_buffer.add_text("map command_world.bsp");
     openstrike::ConsoleCommandContext console_context = context.console_context();
     context.command_buffer.execute(context.commands, console_context);
 
@@ -1099,6 +1101,139 @@ void test_map_command_loads_current_world()
     REQUIRE(loaded->name == "command_world");
     REQUIRE(context.variables.get_string("mapname") == "command_world");
     REQUIRE(context.variables.get_string("host_map") == "command_world");
+    REQUIRE(context.network.client().state() == openstrike::NetworkConnectionState::Disconnected);
+    REQUIRE(context.network.server().is_running());
+
+    context.network.stop_server();
+    std::filesystem::remove_all(root);
+}
+
+void test_map_and_changelevel_match_source_server_rules()
+{
+    const std::filesystem::path root = std::filesystem::current_path() / "build/test_source_map_command_rules";
+    std::filesystem::remove_all(root);
+    std::filesystem::create_directories(root / "game/maps");
+
+    const std::string first_entities =
+        "{\n"
+        "\"classname\" \"worldspawn\"\n"
+        "\"mapversion\" \"1\"\n"
+        "}\n";
+    const std::string second_entities =
+        "{\n"
+        "\"classname\" \"worldspawn\"\n"
+        "\"mapversion\" \"2\"\n"
+        "}\n";
+    write_minimal_bsp(root / "game/maps/source_first.bsp", first_entities);
+    write_minimal_bsp(root / "game/maps/source_second.bsp", second_entities);
+
+    openstrike::RuntimeConfig config;
+    config.content_root = root / "game";
+
+    openstrike::EngineContext inactive_context;
+    openstrike::configure_engine_context(inactive_context, config);
+    inactive_context.command_buffer.add_text("changelevel source_second");
+    openstrike::ConsoleCommandContext inactive_console_context = inactive_context.console_context();
+    inactive_context.command_buffer.execute(inactive_context.commands, inactive_console_context);
+    REQUIRE(inactive_context.world.current_world() == nullptr);
+
+    openstrike::EngineContext context;
+    openstrike::configure_engine_context(context, config);
+    REQUIRE(context.world.load_map("source_first", context.filesystem));
+    context.variables.set("host_map", "source_first");
+    context.variables.set("mapname", "source_first");
+    REQUIRE(context.network.start_server(0));
+    REQUIRE(context.network.connect_client(openstrike::NetworkAddress::localhost(27099), 0));
+
+    context.command_buffer.add_text("map second");
+    openstrike::ConsoleCommandContext console_context = context.console_context();
+    context.command_buffer.execute(context.commands, console_context);
+
+    const openstrike::LoadedWorld* loaded = context.world.current_world();
+    REQUIRE(loaded != nullptr);
+    REQUIRE(loaded->name == "source_second");
+    REQUIRE(context.variables.get_string("mapname") == "source_second");
+    REQUIRE(context.network.server().is_running());
+    REQUIRE(context.network.client().state() == openstrike::NetworkConnectionState::Connecting);
+
+    context.network.stop_server();
+    context.network.disconnect_client(0);
+    std::filesystem::remove_all(root);
+}
+
+void test_disconnect_command_unloads_world_and_network()
+{
+    const std::filesystem::path root = std::filesystem::current_path() / "build/test_disconnect_command_content";
+    std::filesystem::remove_all(root);
+    std::filesystem::create_directories(root / "game/maps");
+
+    const std::string entities =
+        "{\n"
+        "\"classname\" \"worldspawn\"\n"
+        "}\n";
+    write_minimal_bsp(root / "game/maps/disconnect_world.bsp", entities);
+
+    openstrike::RuntimeConfig config;
+    config.content_root = root / "game";
+
+    openstrike::EngineContext context;
+    openstrike::configure_engine_context(context, config);
+    REQUIRE(context.world.load_map("disconnect_world", context.filesystem));
+    context.variables.set("host_map", "disconnect_world");
+    context.variables.set("mapname", "disconnect_world");
+    REQUIRE(context.network.start_server(0));
+    REQUIRE(context.network.server().is_running());
+
+    context.command_buffer.add_text("disconnect");
+    openstrike::ConsoleCommandContext console_context = context.console_context();
+    context.command_buffer.execute(context.commands, console_context);
+
+    REQUIRE(context.world.current_world() == nullptr);
+    REQUIRE(context.variables.get_string("mapname") == "");
+    REQUIRE(context.variables.get_string("host_map") == "");
+    REQUIRE(!context.network.server().is_running());
+    REQUIRE(context.network.client().state() == openstrike::NetworkConnectionState::Disconnected);
+
+    std::filesystem::remove_all(root);
+}
+
+void test_quit_and_exit_commands_disconnect_before_shutdown()
+{
+    const std::filesystem::path root = std::filesystem::current_path() / "build/test_quit_command_content";
+    std::filesystem::remove_all(root);
+    std::filesystem::create_directories(root / "game/maps");
+
+    const std::string entities =
+        "{\n"
+        "\"classname\" \"worldspawn\"\n"
+        "}\n";
+    write_minimal_bsp(root / "game/maps/quit_world.bsp", entities);
+
+    openstrike::RuntimeConfig config;
+    config.content_root = root / "game";
+
+    openstrike::EngineContext context;
+    openstrike::configure_engine_context(context, config);
+    REQUIRE(context.world.load_map("quit_world", context.filesystem));
+    context.variables.set("host_map", "quit_world");
+    context.variables.set("mapname", "quit_world");
+    REQUIRE(context.network.start_server(0));
+
+    context.command_buffer.add_text("quit");
+    openstrike::ConsoleCommandContext console_context = context.console_context();
+    context.command_buffer.execute(context.commands, console_context);
+
+    REQUIRE(context.quit_requested);
+    REQUIRE(context.world.current_world() == nullptr);
+    REQUIRE(context.variables.get_string("mapname") == "");
+    REQUIRE(!context.network.server().is_running());
+
+    openstrike::EngineContext exit_context;
+    openstrike::configure_engine_context(exit_context, config);
+    exit_context.command_buffer.add_text("exit");
+    openstrike::ConsoleCommandContext exit_console_context = exit_context.console_context();
+    exit_context.command_buffer.execute(exit_context.commands, exit_console_context);
+    REQUIRE(exit_context.quit_requested);
 
     std::filesystem::remove_all(root);
 }
@@ -1307,6 +1442,9 @@ int main()
         test_world_manager_loads_static_props_and_renders_bounds();
         test_source_fgd_loads_classes_and_metadata();
         test_map_command_loads_current_world();
+        test_map_and_changelevel_match_source_server_rules();
+        test_disconnect_command_unloads_world_and_network();
+        test_quit_and_exit_commands_disconnect_before_shutdown();
         test_game_simulation_updates_hud_for_loaded_world();
         test_engine_startup_quit_command();
         test_ground_movement_accelerates_and_friction_slows();

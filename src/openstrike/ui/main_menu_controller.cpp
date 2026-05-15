@@ -1,22 +1,86 @@
 #include "openstrike/ui/main_menu_controller.hpp"
 
 #include "openstrike/core/log.hpp"
+#include "openstrike/engine/runtime_config.hpp"
 
+#include <RmlUi/Core/Context.h>
 #include <RmlUi/Core/Element.h>
 #include <RmlUi/Core/ElementDocument.h>
 #include <RmlUi/Core/Event.h>
 #include <RmlUi/Core/Types.h>
 
+#include <filesystem>
 #include <string>
+#include <system_error>
 #include <utility>
+#include <vector>
 
 namespace openstrike
 {
+namespace
+{
+std::string rml_path_string(const std::filesystem::path& path)
+{
+    return path.lexically_normal().generic_string();
+}
+}
+
 MainMenuController::MainMenuController() = default;
 
 MainMenuController::~MainMenuController()
 {
+    shutdown();
+}
+
+bool MainMenuController::initialize(Rml::Context& rml_context, const RuntimeConfig& config)
+{
+    shutdown();
+
+    const auto resolve_document = [&](const std::filesystem::path& document) {
+        if (document.is_absolute())
+        {
+            return document;
+        }
+        return config.content_root / document;
+    };
+
+    const std::vector<std::filesystem::path> candidates{
+        resolve_document(config.rml_document),
+        config.content_root / "csgo/resource/ui/mainmenu.rml",
+        config.content_root / "resource/ui/mainmenu.rml",
+        config.content_root / "assets/ui/mainmenu.rml",
+    };
+
+    for (const std::filesystem::path& candidate : candidates)
+    {
+        std::error_code error;
+        if (!std::filesystem::is_regular_file(candidate, error))
+        {
+            continue;
+        }
+
+        if (Rml::ElementDocument* document = rml_context.LoadDocument(rml_path_string(candidate)))
+        {
+            attach(*document);
+            log_info("loaded RmlUi main menu document '{}'", rml_path_string(candidate));
+            return true;
+        }
+
+        log_warning("failed to load RmlUi main menu document '{}'", rml_path_string(candidate));
+    }
+
+    log_warning("RmlUi main menu document was not found under '{}'", rml_path_string(config.content_root));
+    return true;
+}
+
+void MainMenuController::shutdown()
+{
+    Rml::ElementDocument* document = document_;
     detach();
+    if (document != nullptr)
+    {
+        document->Close();
+    }
 }
 
 void MainMenuController::attach(Rml::ElementDocument& document)

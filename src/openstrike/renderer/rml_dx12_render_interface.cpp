@@ -14,7 +14,10 @@
 #include <d3d12.h>
 #include <d3dcompiler.h>
 #include <dxgi1_6.h>
+#include <wincodec.h>
 #include <wrl/client.h>
+
+#pragma comment(lib, "windowscodecs.lib")
 
 #include <RmlUi/Core/Core.h>
 #include <RmlUi/Core/FileInterface.h>
@@ -22,12 +25,17 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cstddef>
+#include <cstdint>
 #include <cstring>
+#include <filesystem>
 #include <format>
 #include <limits>
 #include <memory>
 #include <string>
+#include <string_view>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -152,6 +160,117 @@ D3D12_RESOURCE_DESC texture_desc(std::uint32_t width, std::uint32_t height)
     return desc;
 }
 
+std::string lower_copy(std::string_view text)
+{
+    std::string result(text);
+    std::transform(result.begin(), result.end(), result.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+    return result;
+}
+
+std::string normalize_texture_source(std::string source)
+{
+    std::replace(source.begin(), source.end(), '\\', '/');
+    if (source.rfind("file:///", 0) == 0)
+    {
+        source.erase(0, 8);
+    }
+    else if (source.rfind("file://", 0) == 0)
+    {
+        source.erase(0, 7);
+    }
+
+    if (source.size() >= 3 && source[0] == '/' && source[2] == ':')
+    {
+        source.erase(0, 1);
+    }
+
+    return source;
+}
+
+bool is_video_texture_source(std::string_view normalized_source)
+{
+    const std::string lower = lower_copy(normalized_source);
+    return lower.find("/__video/") != std::string::npos || lower.ends_with(".webm");
+}
+
+std::wstring utf8_to_wide(std::string_view text)
+{
+    if (text.empty())
+    {
+        return {};
+    }
+
+    int size = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text.data(), static_cast<int>(text.size()), nullptr, 0);
+    if (size == 0)
+    {
+        size = MultiByteToWideChar(CP_ACP, 0, text.data(), static_cast<int>(text.size()), nullptr, 0);
+    }
+    if (size == 0)
+    {
+        return {};
+    }
+
+    std::wstring result(static_cast<std::size_t>(size), L'\0');
+    const UINT code_page = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text.data(), static_cast<int>(text.size()), result.data(), size) != 0
+        ? CP_UTF8
+        : CP_ACP;
+    if (code_page == CP_ACP)
+    {
+        MultiByteToWideChar(CP_ACP, 0, text.data(), static_cast<int>(text.size()), result.data(), size);
+    }
+    return result;
+}
+
+void premultiply_alpha(std::vector<Rml::byte>& pixels)
+{
+    for (std::size_t index = 0; index + 3 < pixels.size(); index += 4)
+    {
+        const std::uint32_t alpha = pixels[index + 3];
+        pixels[index + 0] = static_cast<Rml::byte>((static_cast<std::uint32_t>(pixels[index + 0]) * alpha) / 255U);
+        pixels[index + 1] = static_cast<Rml::byte>((static_cast<std::uint32_t>(pixels[index + 1]) * alpha) / 255U);
+        pixels[index + 2] = static_cast<Rml::byte>((static_cast<std::uint32_t>(pixels[index + 2]) * alpha) / 255U);
+    }
+}
+
+std::vector<Rml::byte> make_go_button_placeholder(std::uint32_t texture_width, std::uint32_t texture_height)
+{
+    std::vector<Rml::byte> pixels(static_cast<std::size_t>(texture_width) * texture_height * 4U);
+    for (std::uint32_t y = 0; y < texture_height; ++y)
+    {
+        for (std::uint32_t x = 0; x < texture_width; ++x)
+        {
+            const float u = static_cast<float>(x) / static_cast<float>(std::max(1U, texture_width - 1U));
+            const auto index = static_cast<std::size_t>((y * texture_width) + x) * 4U;
+            pixels[index + 0] = static_cast<Rml::byte>(70.0F + (80.0F * u));
+            pixels[index + 1] = static_cast<Rml::byte>(150.0F + (70.0F * u));
+            pixels[index + 2] = static_cast<Rml::byte>(72.0F + (30.0F * u));
+            pixels[index + 3] = 255;
+        }
+    }
+    return pixels;
+}
+
+bool checked_texture_byte_size(std::uint32_t width, std::uint32_t height, std::size_t& out_byte_size)
+{
+    if (width == 0 || height == 0)
+    {
+        return false;
+    }
+
+    const auto pixel_count = static_cast<std::uint64_t>(width) * static_cast<std::uint64_t>(height);
+    const auto byte_count = pixel_count * 4ULL;
+    if (byte_count > static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max()) ||
+        byte_count > static_cast<std::uint64_t>(std::numeric_limits<UINT>::max()))
+    {
+        return false;
+    }
+
+    out_byte_size = static_cast<std::size_t>(byte_count);
+    return true;
+}
+
 ComPtr<ID3DBlob> compile_shader(const char* source, const char* entry, const char* target)
 {
     UINT flags = D3DCOMPILE_ENABLE_STRICTNESS;
@@ -205,7 +324,7 @@ struct RmlDx12RenderInterface::Impl
             return false;
         }
 
-        if (!create_descriptor_heap() || !create_upload_objects() || !create_pipeline() || !create_white_texture())
+        if (!create_wic_factory() || !create_descriptor_heap() || !create_upload_objects() || !create_pipeline() || !create_white_texture())
         {
             shutdown();
             return false;
@@ -232,6 +351,7 @@ struct RmlDx12RenderInterface::Impl
         upload_command_list.Reset();
         upload_allocator.Reset();
         upload_fence.Reset();
+        wic_factory.Reset();
 
         if (upload_fence_event != nullptr)
         {
@@ -244,6 +364,12 @@ struct RmlDx12RenderInterface::Impl
         device = nullptr;
         initialized = false;
         next_texture_descriptor = 0;
+
+        if (com_initialized)
+        {
+            CoUninitialize();
+            com_initialized = false;
+        }
     }
 
     void begin_frame(ID3D12GraphicsCommandList* in_command_list, std::uint32_t in_frame_index, std::uint32_t in_width, std::uint32_t in_height)
@@ -258,6 +384,34 @@ struct RmlDx12RenderInterface::Impl
     void end_frame()
     {
         command_list = nullptr;
+    }
+
+    [[nodiscard]] bool create_wic_factory()
+    {
+        const HRESULT co_result = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+        if (SUCCEEDED(co_result))
+        {
+            com_initialized = true;
+        }
+        else if (co_result != RPC_E_CHANGED_MODE)
+        {
+            log_error("{}", hresult_message("CoInitializeEx for RmlUi WIC textures", co_result));
+            return false;
+        }
+
+        const HRESULT factory_result = CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wic_factory));
+        if (FAILED(factory_result))
+        {
+            log_error("{}", hresult_message("CoCreateInstance CLSID_WICImagingFactory", factory_result));
+            if (com_initialized)
+            {
+                CoUninitialize();
+                com_initialized = false;
+            }
+            return false;
+        }
+
+        return true;
     }
 
     [[nodiscard]] bool create_descriptor_heap()
@@ -421,6 +575,113 @@ struct RmlDx12RenderInterface::Impl
         const std::array<Rml::byte, 4> pixel{255, 255, 255, 255};
         white_texture = create_texture(pixel.data(), 1, 1, "white");
         return white_texture != nullptr;
+    }
+
+    Texture* create_video_placeholder(const std::string& source, Rml::Vector2i& texture_dimensions)
+    {
+        constexpr std::uint32_t placeholder_width = 180;
+        constexpr std::uint32_t placeholder_height = 52;
+        std::vector<Rml::byte> pixels = make_go_button_placeholder(placeholder_width, placeholder_height);
+        Texture* texture = create_texture(pixels.data(), placeholder_width, placeholder_height, "RmlUi Source video placeholder");
+        if (texture == nullptr)
+        {
+            return nullptr;
+        }
+
+        texture_dimensions = texture->dimensions;
+        log_info("using static RmlUi texture for Source video token '{}'", source);
+        return texture;
+    }
+
+    Texture* load_texture_file(const std::string& source, Rml::Vector2i& texture_dimensions)
+    {
+        if (!wic_factory)
+        {
+            log_warning("RmlUi WIC texture factory is not initialized");
+            return nullptr;
+        }
+
+        const std::wstring wide_path = utf8_to_wide(source);
+        if (wide_path.empty())
+        {
+            log_warning("Could not convert RmlUi texture path '{}'", source);
+            return nullptr;
+        }
+
+        std::error_code exists_error;
+        if (!std::filesystem::is_regular_file(std::filesystem::path(wide_path), exists_error))
+        {
+            log_warning("RmlUi texture file does not exist: '{}'", source);
+            return nullptr;
+        }
+
+        ComPtr<IWICBitmapDecoder> decoder;
+        HRESULT result = wic_factory->CreateDecoderFromFilename(wide_path.c_str(), nullptr, GENERIC_READ, WICDecodeMetadataCacheOnLoad,
+            &decoder);
+        if (FAILED(result))
+        {
+            log_warning("{} for '{}'", hresult_message("IWICImagingFactory::CreateDecoderFromFilename", result), source);
+            return nullptr;
+        }
+
+        ComPtr<IWICBitmapFrameDecode> frame;
+        result = decoder->GetFrame(0, &frame);
+        if (FAILED(result))
+        {
+            log_warning("{} for '{}'", hresult_message("IWICBitmapDecoder::GetFrame", result), source);
+            return nullptr;
+        }
+
+        UINT texture_width = 0;
+        UINT texture_height = 0;
+        result = frame->GetSize(&texture_width, &texture_height);
+        if (FAILED(result))
+        {
+            log_warning("{} for '{}'", hresult_message("IWICBitmapFrameDecode::GetSize", result), source);
+            return nullptr;
+        }
+
+        std::size_t byte_size = 0;
+        if (!checked_texture_byte_size(texture_width, texture_height, byte_size))
+        {
+            log_warning("RmlUi texture '{}' has invalid dimensions {}x{}", source, texture_width, texture_height);
+            return nullptr;
+        }
+
+        ComPtr<IWICFormatConverter> converter;
+        result = wic_factory->CreateFormatConverter(&converter);
+        if (FAILED(result))
+        {
+            log_warning("{} for '{}'", hresult_message("IWICImagingFactory::CreateFormatConverter", result), source);
+            return nullptr;
+        }
+
+        result = converter->Initialize(frame.Get(), GUID_WICPixelFormat32bppRGBA, WICBitmapDitherTypeNone, nullptr, 0.0,
+            WICBitmapPaletteTypeCustom);
+        if (FAILED(result))
+        {
+            log_warning("{} for '{}'", hresult_message("IWICFormatConverter::Initialize", result), source);
+            return nullptr;
+        }
+
+        std::vector<Rml::byte> pixels(byte_size);
+        const UINT stride = texture_width * 4U;
+        result = converter->CopyPixels(nullptr, stride, static_cast<UINT>(pixels.size()), pixels.data());
+        if (FAILED(result))
+        {
+            log_warning("{} for '{}'", hresult_message("IWICBitmapSource::CopyPixels", result), source);
+            return nullptr;
+        }
+
+        premultiply_alpha(pixels);
+        Texture* texture = create_texture(pixels.data(), texture_width, texture_height, source.c_str());
+        if (texture == nullptr)
+        {
+            return nullptr;
+        }
+
+        texture_dimensions = texture->dimensions;
+        return texture;
     }
 
     Texture* create_texture(const Rml::byte* pixels, std::uint32_t texture_width, std::uint32_t texture_height, const char* debug_name)
@@ -666,12 +927,14 @@ struct RmlDx12RenderInterface::Impl
     ComPtr<ID3D12DescriptorHeap> srv_heap;
     ComPtr<ID3D12RootSignature> root_signature;
     ComPtr<ID3D12PipelineState> pipeline_state;
+    ComPtr<IWICImagingFactory> wic_factory;
     ComPtr<ID3D12CommandAllocator> upload_allocator;
     ComPtr<ID3D12GraphicsCommandList> upload_command_list;
     ComPtr<ID3D12Fence> upload_fence;
     HANDLE upload_fence_event = nullptr;
     std::uint64_t upload_fence_value = 1;
     std::uint64_t last_upload_signal = 0;
+    bool com_initialized = false;
 };
 
 RmlDx12RenderInterface::RmlDx12RenderInterface()
@@ -730,8 +993,11 @@ void RmlDx12RenderInterface::ReleaseGeometry(Rml::CompiledGeometryHandle geometr
 Rml::TextureHandle RmlDx12RenderInterface::LoadTexture(Rml::Vector2i& texture_dimensions, const Rml::String& source)
 {
     texture_dimensions = {};
-    log_warning("RmlUi texture loading is not implemented yet for '{}'", source);
-    return {};
+    const std::string normalized_source = normalize_texture_source(source);
+    Texture* texture = is_video_texture_source(normalized_source)
+        ? impl_->create_video_placeholder(normalized_source, texture_dimensions)
+        : impl_->load_texture_file(normalized_source, texture_dimensions);
+    return reinterpret_cast<Rml::TextureHandle>(texture);
 }
 
 Rml::TextureHandle RmlDx12RenderInterface::GenerateTexture(Rml::Span<const Rml::byte> source, Rml::Vector2i source_dimensions)

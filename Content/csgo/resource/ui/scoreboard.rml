@@ -1,0 +1,277 @@
+<rml>
+<head>
+<style>
+body {
+    font-family: Stratum2;
+    display: block;
+    width: 100%;
+    height: 100%;
+}
+
+/* ── Fullscreen overlay ── */
+#scoreboard-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+/* ── Main card ── */
+#scoreboard-card {
+    width: 880dp;
+    max-height: 90%;
+    background-color: rgba(16, 18, 24, 235);
+    border-radius: 4dp;
+    border-width: 1dp;
+    border-color: rgba(255, 255, 255, 15);
+    display: flex;
+    flex-direction: column;
+    overflow: auto;
+}
+
+/* ── Header (map name + round score) ── */
+#scoreboard-header {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    justify-content: center;
+    padding: 14dp 24dp;
+    border-bottom-width: 1dp;
+    border-bottom-color: rgba(255, 255, 255, 10);
+}
+
+#header-ct-score {
+    font-size: 28dp;
+    font-weight: bold;
+    color: rgba(93, 121, 174, 255);
+    margin-right: 16dp;
+    min-width: 40dp;
+    text-align: center;
+}
+
+#header-separator {
+    font-size: 16dp;
+    color: rgba(100, 100, 110, 255);
+}
+
+#header-t-score {
+    font-size: 28dp;
+    font-weight: bold;
+    color: rgba(219, 190, 103, 255);
+    margin-left: 16dp;
+    min-width: 40dp;
+    text-align: center;
+}
+
+#header-map {
+    position: absolute;
+    right: 24dp;
+    font-size: 12dp;
+    color: rgba(100, 105, 120, 255);
+    letter-spacing: 1dp;
+}
+
+/* ── Team sections ── */
+.team-section {
+    padding: 0 12dp;
+    margin-bottom: 4dp;
+}
+
+.team-header {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    padding: 8dp 12dp;
+    margin-top: 8dp;
+    border-radius: 3dp;
+}
+
+#ct-header {
+    background-color: rgba(50, 80, 140, 80);
+}
+
+#t-header {
+    background-color: rgba(160, 120, 40, 80);
+}
+
+.team-name {
+    font-size: 13dp;
+    font-weight: bold;
+    letter-spacing: 2dp;
+    flex: 1;
+}
+
+#ct-header .team-name {
+    color: rgba(120, 155, 210, 255);
+}
+
+#t-header .team-name {
+    color: rgba(230, 200, 120, 255);
+}
+
+.team-wins {
+    font-size: 12dp;
+    color: rgba(140, 140, 150, 255);
+}
+
+/* ── Column headers ── */
+.col-headers {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    padding: 4dp 12dp;
+    border-bottom-width: 1dp;
+    border-bottom-color: rgba(255, 255, 255, 8);
+}
+
+.col-headers span {
+    font-size: 10dp;
+    color: rgba(100, 105, 120, 255);
+    letter-spacing: 1dp;
+    text-align: center;
+}
+
+.col-name {
+    flex: 1;
+    text-align: left;
+}
+
+.col-k, .col-a, .col-d, .col-mvp, .col-score, .col-money, .col-ping {
+    width: 48dp;
+    text-align: center;
+}
+
+.col-money {
+    width: 60dp;
+}
+
+/* ── Player rows ── */
+.player-row {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    padding: 5dp 12dp;
+    border-bottom-width: 1dp;
+    border-bottom-color: rgba(255, 255, 255, 4);
+}
+
+.player-row:hover {
+    background-color: rgba(255, 255, 255, 8);
+}
+
+.player-row.local-player {
+    background-color: rgba(255, 255, 255, 12);
+}
+
+.player-row.dead-player {
+    opacity: 0.45;
+}
+
+.player-row span {
+    font-size: 12dp;
+    color: rgba(200, 200, 210, 255);
+    text-align: center;
+}
+
+.player-row .col-name {
+    flex: 1;
+    text-align: left;
+    font-size: 13dp;
+    color: rgba(220, 220, 230, 255);
+}
+
+.player-row .col-clan {
+    font-size: 11dp;
+    color: rgba(140, 140, 150, 255);
+    margin-right: 6dp;
+}
+
+.player-row .col-money {
+    color: rgba(90, 180, 90, 255);
+}
+
+.player-row .col-ping {
+    color: rgba(140, 140, 150, 255);
+}
+
+/* ── Spectator section ── */
+#spec-section {
+    padding: 6dp 24dp 10dp 24dp;
+    border-top-width: 1dp;
+    border-top-color: rgba(255, 255, 255, 8);
+}
+
+#spec-label {
+    font-size: 10dp;
+    color: rgba(100, 105, 120, 255);
+    letter-spacing: 1dp;
+    margin-bottom: 4dp;
+}
+
+#spec-names {
+    font-size: 12dp;
+    color: rgba(140, 140, 150, 255);
+}
+</style>
+</head>
+<body>
+    <div id="scoreboard-overlay">
+        <div id="scoreboard-card">
+
+            <div id="scoreboard-header">
+                <span id="header-ct-score">0</span>
+                <span id="header-separator">:</span>
+                <span id="header-t-score">0</span>
+                <span id="header-map"></span>
+            </div>
+
+            <!-- CT Section -->
+            <div class="team-section">
+                <div id="ct-header" class="team-header">
+                    <span class="team-name">COUNTER-TERRORISTS</span>
+                </div>
+                <div class="col-headers">
+                    <span class="col-name">NAME</span>
+                    <span class="col-k">K</span>
+                    <span class="col-a">A</span>
+                    <span class="col-d">D</span>
+                    <span class="col-mvp">MVP</span>
+                    <span class="col-score">SCORE</span>
+                    <span class="col-money">$</span>
+                    <span class="col-ping">PING</span>
+                </div>
+                <div id="ct-players"></div>
+            </div>
+
+            <!-- T Section -->
+            <div class="team-section">
+                <div id="t-header" class="team-header">
+                    <span class="team-name">TERRORISTS</span>
+                </div>
+                <div class="col-headers">
+                    <span class="col-name">NAME</span>
+                    <span class="col-k">K</span>
+                    <span class="col-a">A</span>
+                    <span class="col-d">D</span>
+                    <span class="col-mvp">MVP</span>
+                    <span class="col-score">SCORE</span>
+                    <span class="col-money">$</span>
+                    <span class="col-ping">PING</span>
+                </div>
+                <div id="t-players"></div>
+            </div>
+
+            <!-- Spectators -->
+            <div id="spec-section">
+                <div id="spec-label">SPECTATORS</div>
+                <div id="spec-names"></div>
+            </div>
+
+        </div>
+    </div>
+</body>
+</rml>

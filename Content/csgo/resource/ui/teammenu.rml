@@ -1,0 +1,160 @@
+<rml>
+<head>
+<style>
+body {
+    font-family: Stratum2;
+    display: block;
+    width: 100%;
+    height: 100%;
+}
+
+/* ── Fullscreen dark overlay ── */
+#team-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background-color: rgba(0, 0, 0, 180);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+/* ── Centered card ── */
+#team-card {
+    width: 460dp;
+    background-color: rgba(20, 22, 28, 245);
+    border-radius: 6dp;
+    border-width: 1dp;
+    border-color: rgba(255, 255, 255, 25);
+    padding: 32dp 40dp;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 16dp;
+}
+
+/* ── Title ── */
+#team-title {
+    font-size: 22dp;
+    font-weight: bold;
+    color: rgba(200, 200, 210, 255);
+    letter-spacing: 3dp;
+    margin-bottom: 4dp;
+}
+
+/* ── Countdown timer ── */
+#team-timer {
+    font-size: 14dp;
+    color: rgba(160, 160, 170, 255);
+    letter-spacing: 1dp;
+    margin-bottom: 8dp;
+}
+
+/* ── Team buttons (shared) ── */
+.team-btn {
+    width: 100%;
+    height: 56dp;
+    border-radius: 4dp;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 16dp;
+    font-weight: bold;
+    letter-spacing: 1dp;
+    color: #ffffff;
+    border-width: 1dp;
+    border-color: rgba(255, 255, 255, 0);
+}
+
+.team-btn:hover {
+    border-color: rgba(255, 255, 255, 60);
+}
+
+/* ── Terrorist button ── */
+#btn-join-t {
+    background-color: rgba(180, 130, 50, 200);
+}
+
+#btn-join-t:hover {
+    background-color: rgba(200, 150, 60, 230);
+}
+
+/* ── Counter-Terrorist button ── */
+#btn-join-ct {
+    background-color: rgba(50, 100, 180, 200);
+}
+
+#btn-join-ct:hover {
+    background-color: rgba(60, 120, 210, 230);
+}
+
+/* ── Auto-assign button ── */
+#btn-auto {
+    background-color: rgba(60, 65, 75, 200);
+}
+
+#btn-auto:hover {
+    background-color: rgba(80, 85, 95, 230);
+}
+
+/* ── Divider ── */
+#team-divider {
+    width: 100%;
+    height: 1dp;
+    background-color: rgba(255, 255, 255, 20);
+    margin: 4dp 0;
+}
+
+/* ── Spectate button ── */
+#btn-spectate {
+    width: 100%;
+    height: 40dp;
+    border-radius: 4dp;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 13dp;
+    font-weight: bold;
+    letter-spacing: 1dp;
+    color: rgba(160, 160, 170, 255);
+    background-color: rgba(40, 42, 50, 180);
+    border-width: 1dp;
+    border-color: rgba(255, 255, 255, 0);
+}
+
+#btn-spectate:hover {
+    color: #ffffff;
+    background-color: rgba(55, 58, 68, 220);
+    border-color: rgba(255, 255, 255, 40);
+}
+</style>
+</head>
+<body>
+    <div id="team-overlay">
+        <div id="team-card">
+            <div id="team-title">CHOOSE A TEAM</div>
+            <div id="team-timer">Auto-assign in 15s</div>
+
+            <div id="btn-join-t" class="team-btn" data-command="JoinT">
+                <span>TERRORISTS</span>
+            </div>
+
+            <div id="btn-join-ct" class="team-btn" data-command="JoinCT">
+                <span>COUNTER-TERRORISTS</span>
+            </div>
+
+            <div id="btn-auto" class="team-btn" data-command="AutoAssign">
+                <span>AUTO-ASSIGN</span>
+            </div>
+
+            <div id="team-divider"></div>
+
+            <div id="btn-spectate" class="team-btn" data-command="Spectate">
+                <span>SPECTATE</span>
+            </div>
+        </div>
+    </div>
+</body>
+</rml>

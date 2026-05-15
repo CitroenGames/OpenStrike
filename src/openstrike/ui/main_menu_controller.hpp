@@ -8,12 +8,15 @@
 
 namespace Rml
 {
+class Context;
 class Element;
 class ElementDocument;
 }
 
 namespace openstrike
 {
+struct RuntimeConfig;
+
 class MainMenuController final : public Rml::EventListener
 {
 public:
@@ -23,6 +26,8 @@ public:
     MainMenuController(const MainMenuController&) = delete;
     MainMenuController& operator=(const MainMenuController&) = delete;
 
+    [[nodiscard]] bool initialize(Rml::Context& rml_context, const RuntimeConfig& config);
+    void shutdown();
     void attach(Rml::ElementDocument& document);
     void detach();
     void set_open_console_callback(std::function<void()> callback);

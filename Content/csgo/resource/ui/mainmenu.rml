@@ -1,0 +1,1174 @@
+<rml>
+<head>
+<style>
+body {
+    font-family: Stratum2;
+    display: block;
+    width: 100%;
+    height: 100%;
+}
+
+/* ── Left icon sidebar ── */
+#nav-sidebar {
+    position: absolute;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: 70dp;
+    background-color: rgba(16, 16, 20, 240);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding-top: 12dp;
+    z-index: 10;
+}
+
+#nav-logo {
+    width: 46dp;
+    height: 36dp;
+    margin-bottom: 20dp;
+    font-size: 14dp;
+    font-weight: bold;
+    color: #a0a0a0;
+    text-align: center;
+    line-height: 36dp;
+    letter-spacing: 1dp;
+}
+
+#nav-logo:hover {
+    color: #ffffff;
+}
+
+.nav-btn {
+    width: 48dp;
+    height: 48dp;
+    margin: 4dp 0;
+    border-radius: 8dp;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.nav-btn img {
+    width: 28dp;
+    height: 28dp;
+    opacity: 0.4;
+}
+
+.nav-btn:hover img {
+    opacity: 1.0;
+}
+
+.nav-btn.active img {
+    opacity: 1.0;
+}
+
+.nav-btn:hover {
+    background-color: rgba(255, 255, 255, 20);
+}
+
+/* Spacer to push quit to bottom */
+#nav-spacer {
+    flex: 1;
+}
+
+#nav-quit {
+    margin-bottom: 18dp;
+}
+
+/* ── Main content panel ── */
+#content-panel {
+    position: absolute;
+    top: 0;
+    left: 70dp;
+    bottom: 0;
+    width: 580dp;
+    background-color: rgba(18, 20, 26, 220);
+    display: flex;
+    flex-direction: column;
+}
+
+/* Gradient fade on the right edge of content panel */
+#content-fade {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 650dp;
+    width: 160dp;
+    decorator: horizontal-gradient(rgba(18, 20, 26, 220) rgba(18, 20, 26, 0));
+}
+
+/* ── News section ── */
+#news-header {
+    padding: 20dp 24dp 12dp 24dp;
+    font-size: 14dp;
+    color: #8890a0;
+    font-weight: bold;
+    letter-spacing: 2dp;
+}
+
+#news-icon {
+    width: 18dp;
+    height: 18dp;
+    margin-right: 8dp;
+    vertical-align: middle;
+    opacity: 0.5;
+}
+
+#news-scroll {
+    flex: 1;
+    overflow: auto;
+    padding-bottom: 8dp;
+}
+
+.news-item {
+    display: flex;
+    flex-direction: row;
+    padding: 12dp 24dp;
+}
+
+.news-item:hover {
+    background-color: rgba(255, 255, 255, 8);
+}
+
+.news-thumb {
+    width: 180dp;
+    height: 105dp;
+    min-width: 180dp;
+    background-color: rgba(45, 50, 62, 255);
+    border-radius: 3dp;
+}
+
+.news-info {
+    margin-left: 18dp;
+    flex: 1;
+}
+
+.news-date {
+    font-size: 11dp;
+    color: #707880;
+    margin-bottom: 4dp;
+}
+
+.news-title {
+    font-size: 15dp;
+    font-weight: bold;
+    color: #ffffff;
+    margin-bottom: 5dp;
+}
+
+.news-desc {
+    font-size: 12dp;
+    color: #9098a0;
+    line-height: 17dp;
+}
+
+/* ── Bottom tabs + store ── */
+#bottom-section {
+    border-top-width: 1dp;
+    border-top-color: rgba(255, 255, 255, 12);
+}
+
+#tabs-bar {
+    display: flex;
+    flex-direction: row;
+    padding: 12dp 24dp 0 24dp;
+}
+
+.tab {
+    font-size: 14dp;
+    color: #606878;
+    margin-right: 28dp;
+    padding-bottom: 8dp;
+}
+
+.tab:hover {
+    color: #c0c8d0;
+}
+
+.tab-active {
+    color: #ffffff;
+    border-bottom-width: 2dp;
+    border-bottom-color: #ffffff;
+}
+
+#store-row {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    padding: 14dp 24dp 20dp 24dp;
+}
+
+.store-arrow {
+    width: 28dp;
+    height: 28dp;
+    font-size: 20dp;
+    color: #505868;
+    text-align: center;
+    line-height: 28dp;
+}
+
+.store-arrow:hover {
+    color: #ffffff;
+}
+
+.store-card {
+    width: 130dp;
+    margin-right: 16dp;
+    text-align: center;
+}
+
+.store-card-img {
+    width: 100dp;
+    height: 100dp;
+    background-color: rgba(50, 56, 68, 255);
+    border-radius: 50dp;
+    margin-bottom: 8dp;
+    margin-left: auto;
+    margin-right: auto;
+}
+
+.store-card-name {
+    font-size: 11dp;
+    color: #a0a8b0;
+    margin-bottom: 3dp;
+}
+
+.store-card-price {
+    font-size: 12dp;
+    color: #5eb95e;
+}
+
+/* ── Version stamp ── */
+#version {
+    position: absolute;
+    bottom: 14dp;
+    left: 80dp;
+    font-size: 11dp;
+    color: #404040;
+}
+
+/* ================================================================
+   PLAY PAGE
+   ================================================================ */
+
+#play-page {
+    position: absolute;
+    top: 0;
+    left: 70dp;
+    right: 0;
+    bottom: 0;
+    background-color: rgba(18, 20, 28, 220);
+    display: none;
+    flex-direction: column;
+}
+
+/* ── Play header ── */
+#play-header {
+    padding: 24dp 32dp 0dp 32dp;
+}
+
+#play-title {
+    font-size: 26dp;
+    font-weight: bold;
+    color: #ffffff;
+    letter-spacing: 3dp;
+    margin-bottom: 12dp;
+}
+
+#play-mode-label {
+    font-size: 13dp;
+    color: #6a6f7e;
+    letter-spacing: 1dp;
+    padding: 8dp 14dp;
+    background-color: rgba(40, 44, 55, 200);
+    border-radius: 4dp;
+    margin-bottom: 16dp;
+    width: 240dp;
+}
+
+/* ── Game mode tabs ── */
+#play-tabs {
+    display: flex;
+    flex-direction: row;
+    padding: 0 32dp;
+    margin-bottom: 20dp;
+    border-bottom-width: 1dp;
+    border-bottom-color: rgba(255, 255, 255, 15);
+}
+
+.play-tab {
+    font-size: 13dp;
+    color: #585e6e;
+    letter-spacing: 1dp;
+    padding: 8dp 16dp 10dp 16dp;
+    margin-right: 4dp;
+}
+
+.play-tab:hover {
+    color: #b0b8c8;
+    background-color: rgba(255, 255, 255, 8);
+}
+
+.play-tab-active {
+    color: #ffffff;
+    border-bottom-width: 2dp;
+    border-bottom-color: #4b9cd3;
+}
+
+/* ── Map grid ── */
+#play-map-scroll {
+    flex: 1;
+    overflow: auto;
+    padding: 0 32dp;
+}
+
+#play-map-grid {
+    display: flex;
+    flex-direction: row;
+    flex-wrap: wrap;
+}
+
+/* ── Map card ── */
+.map-card {
+    width: 200dp;
+    height: 140dp;
+    background-color: rgba(30, 34, 45, 255);
+    border-radius: 4dp;
+    border-width: 2dp;
+    border-color: rgba(60, 65, 80, 180);
+    position: relative;
+    overflow: hidden;
+    margin-right: 12dp;
+    margin-bottom: 12dp;
+}
+
+.map-card:hover {
+    border-color: rgba(100, 120, 160, 200);
+}
+
+.map-card.map-selected {
+    border-color: rgba(75, 156, 211, 255);
+    background-color: rgba(35, 45, 65, 255);
+}
+
+.map-card-img {
+    width: 100%;
+    height: 100%;
+    background-color: rgba(40, 44, 55, 255);
+}
+
+.map-card-overlay {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    padding: 8dp 10dp;
+    background-color: rgba(0, 0, 0, 160);
+}
+
+.map-card-name {
+    font-size: 13dp;
+    font-weight: bold;
+    color: #e0e4ec;
+    margin-bottom: 2dp;
+}
+
+.map-card-wait {
+    font-size: 10dp;
+    color: #6a6f7e;
+}
+
+.map-card-check {
+    position: absolute;
+    top: 6dp;
+    right: 6dp;
+    width: 18dp;
+    height: 18dp;
+    border-radius: 3dp;
+    border-width: 2dp;
+    border-color: rgba(100, 110, 130, 150);
+    background-color: rgba(0, 0, 0, 80);
+}
+
+.map-card.map-selected .map-card-check {
+    background-color: rgba(75, 156, 211, 220);
+    border-color: rgba(75, 156, 211, 255);
+}
+
+/* ── Bottom bar ── */
+#play-bottom-bar {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    padding: 14dp 32dp;
+    border-top-width: 1dp;
+    border-top-color: rgba(255, 255, 255, 15);
+    background-color: rgba(14, 16, 22, 200);
+}
+
+#play-bottom-left {
+    flex: 1;
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+}
+
+#play-friends-label {
+    font-size: 11dp;
+    color: #6a6f7e;
+    letter-spacing: 1dp;
+    margin-right: 32dp;
+}
+
+#play-prime-row {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+}
+
+.play-checkbox {
+    width: 16dp;
+    height: 16dp;
+    border-width: 2dp;
+    border-color: rgba(100, 110, 130, 150);
+    border-radius: 2dp;
+    background-color: rgba(0, 0, 0, 80);
+    margin-right: 8dp;
+}
+
+.play-checkbox.checked {
+    background-color: rgba(75, 156, 211, 220);
+    border-color: rgba(75, 156, 211, 255);
+}
+
+#play-prime-label {
+    font-size: 11dp;
+    color: #888e9e;
+    letter-spacing: 1dp;
+}
+
+/* ── GO button ── */
+#play-go-btn {
+    width: 180dp;
+    height: 52dp;
+    background-color: transparent;
+    border-radius: 4dp;
+    font-size: 24dp;
+    font-weight: bold;
+    color: #ffffff;
+    text-align: center;
+    line-height: 52dp;
+    letter-spacing: 6dp;
+    position: relative;
+    overflow: hidden;
+}
+
+#go-video-bg {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 180dp;
+    height: 52dp;
+}
+
+#go-text {
+    position: relative;
+}
+
+#play-go-btn:hover {
+    background-color: rgba(255, 255, 255, 30);
+}
+
+#play-go-btn.go-disabled {
+    background-color: rgba(60, 65, 75, 200);
+    color: rgba(255, 255, 255, 80);
+}
+
+#play-go-btn.go-disabled #go-video-bg {
+    display: none;
+}
+
+/* ================================================================
+   SETTINGS PAGE
+   ================================================================ */
+
+#settings-page {
+    position: absolute;
+    top: 0;
+    left: 70dp;
+    right: 0;
+    bottom: 0;
+    background-color: rgba(18, 20, 28, 255);
+    display: none;
+    flex-direction: column;
+    z-index: 20;
+}
+
+/* ── Header ── */
+#settings-header {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    padding: 22dp 32dp 14dp 32dp;
+}
+
+#settings-title {
+    font-size: 26dp;
+    font-weight: bold;
+    color: #ffffff;
+    letter-spacing: 4dp;
+    flex: 1;
+}
+
+/* ── Top tab bar: Video | Audio | Game | Keyboard/Mouse | Controller ── */
+#settings-tabs {
+    display: flex;
+    flex-direction: row;
+    padding: 0 32dp;
+    border-bottom-width: 1dp;
+    border-bottom-color: rgba(255, 255, 255, 15);
+}
+
+.settings-tab {
+    font-size: 15dp;
+    color: #585e6e;
+    letter-spacing: 1dp;
+    padding: 8dp 18dp 10dp 18dp;
+    margin-right: 2dp;
+}
+
+.settings-tab:hover {
+    color: #b0b8c8;
+    background-color: rgba(255, 255, 255, 8);
+}
+
+.settings-tab-active {
+    color: #ffffff;
+    border-bottom-width: 2dp;
+    border-bottom-color: rgba(255, 255, 255, 200);
+}
+
+/* ── Sub-tab bar (per main tab) ── */
+#settings-subtabs {
+    display: flex;
+    flex-direction: row;
+    padding: 8dp 32dp 0 32dp;
+}
+
+.settings-subtab {
+    font-size: 14dp;
+    color: #585e6e;
+    padding: 6dp 16dp;
+    margin-right: 6dp;
+}
+
+.settings-subtab:hover {
+    color: #b0b8c8;
+}
+
+.settings-subtab-active {
+    color: #ffffff;
+}
+
+/* ── Scrollable content area ── */
+#settings-scroll {
+    flex: 1;
+    overflow: auto;
+    padding: 0dp 32dp 16dp 32dp;
+}
+
+#settings-content {
+    padding-bottom: 20dp;
+}
+
+/* ── Section header ── */
+.setting-section {
+    font-size: 16dp;
+    font-weight: bold;
+    color: #8890a0;
+    letter-spacing: 1dp;
+    padding: 18dp 0 8dp 0;
+}
+
+/* ── Setting row (shared layout for all widget types) ── */
+.setting-row {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    padding: 9dp 0;
+    border-bottom-width: 1dp;
+    border-bottom-color: rgba(255, 255, 255, 5);
+    min-height: 22dp;
+}
+
+.setting-label {
+    flex: 1;
+    font-size: 15dp;
+    color: #b0b4bc;
+}
+
+/* ── Dropdown widget (native <select>) ── */
+.setting-select {
+    min-width: 160dp;
+    font-size: 14dp;
+    font-weight: bold;
+    color: #d0d4dc;
+    letter-spacing: 1dp;
+    background-color: transparent;
+    border-width: 0;
+    padding: 5dp 10dp;
+}
+
+.setting-select selectvalue {
+    color: #d0d4dc;
+    padding: 2dp 5dp;
+}
+
+.setting-select selectvalue:hover {
+    color: #ffffff;
+}
+
+.setting-select selectarrow {
+    width: 14dp;
+    color: #707880;
+}
+
+.setting-select selectbox {
+    background-color: rgba(30, 33, 42, 245);
+    border-width: 1dp;
+    border-color: rgba(80, 85, 100, 200);
+    padding: 4dp 0;
+    max-height: 300dp;
+    overflow: auto;
+}
+
+.setting-select selectbox option {
+    padding: 6dp 14dp;
+    font-size: 14dp;
+    font-weight: bold;
+    color: #b0b4bc;
+    letter-spacing: 1dp;
+}
+
+.setting-select selectbox option:hover {
+    background-color: rgba(60, 65, 78, 200);
+    color: #ffffff;
+}
+
+.setting-select selectbox option:checked {
+    color: #ffffff;
+    background-color: rgba(80, 85, 100, 200);
+}
+
+/* ── Slider widget ── */
+.setting-slider-row {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    min-width: 260dp;
+}
+
+.setting-slider-track {
+    width: 180dp;
+    height: 4dp;
+    background-color: rgba(60, 65, 78, 255);
+    border-radius: 2dp;
+    position: relative;
+    margin-right: 2dp;
+}
+
+.setting-slider-fill {
+    height: 4dp;
+    background-color: rgba(180, 185, 195, 200);
+    border-radius: 2dp;
+    position: absolute;
+    top: 0;
+    left: 0;
+}
+
+.setting-slider-thumb {
+    position: absolute;
+    top: -5dp;
+    width: 14dp;
+    height: 14dp;
+    border-radius: 7dp;
+    background-color: #ffffff;
+}
+
+.setting-slider-value {
+    min-width: 50dp;
+    font-size: 14dp;
+    color: #d0d4dc;
+    text-align: center;
+    padding: 4dp 8dp;
+    background-color: rgba(50, 55, 65, 220);
+    border-radius: 3dp;
+    border-width: 1dp;
+    border-color: rgba(255, 255, 255, 10);
+}
+
+/* ── Key binding widget ── */
+.setting-keybind {
+    min-width: 100dp;
+    padding: 5dp 14dp;
+    background-color: rgba(50, 55, 65, 220);
+    border-radius: 3dp;
+    border-width: 1dp;
+    border-color: rgba(255, 255, 255, 10);
+    font-size: 14dp;
+    color: #d0d4dc;
+    text-align: center;
+}
+
+.setting-keybind:hover {
+    background-color: rgba(60, 65, 78, 240);
+    border-color: rgba(255, 255, 255, 25);
+}
+
+.setting-keybind.capturing {
+    background-color: rgba(75, 156, 211, 60);
+    border-color: rgba(75, 156, 211, 180);
+    color: #ffffff;
+}
+
+/* ── Footer with RESET button ── */
+#settings-footer {
+    display: flex;
+    flex-direction: row;
+    justify-content: flex-end;
+    align-items: center;
+    padding: 12dp 32dp;
+    border-top-width: 1dp;
+    border-top-color: rgba(255, 255, 255, 10);
+}
+
+#settings-reset-btn {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    font-size: 14dp;
+    font-weight: bold;
+    color: #c0c8d0;
+    letter-spacing: 2dp;
+    padding: 8dp 18dp;
+}
+
+#settings-reset-btn:hover {
+    color: #ffffff;
+}
+
+#settings-reset-icon {
+    font-size: 14dp;
+    color: #c0c8d0;
+    margin-right: 8dp;
+}
+
+/* ── Pause menu overlay (centered) ── */
+#pause-menu {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background-color: rgba(0, 0, 0, 160);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    z-index: 15;
+}
+
+#pause-card {
+    width: 340dp;
+    background-color: rgba(20, 22, 28, 245);
+    border-radius: 6dp;
+    border-width: 1dp;
+    border-color: rgba(255, 255, 255, 25);
+    padding: 28dp 36dp;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8dp;
+}
+
+#pause-title {
+    font-size: 22dp;
+    font-weight: bold;
+    color: rgba(200, 200, 210, 255);
+    letter-spacing: 4dp;
+    margin-bottom: 12dp;
+}
+
+.pause-menu-btn {
+    width: 100%;
+    height: 50dp;
+    border-radius: 4dp;
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    justify-content: center;
+    font-size: 15dp;
+    font-weight: bold;
+    letter-spacing: 2dp;
+    color: rgba(200, 200, 210, 255);
+    background-color: rgba(40, 44, 55, 180);
+    border-width: 1dp;
+    border-color: rgba(255, 255, 255, 0);
+}
+
+.pause-menu-btn:hover {
+    color: #ffffff;
+    background-color: rgba(60, 65, 78, 230);
+    border-color: rgba(255, 255, 255, 40);
+}
+
+.pause-menu-icon {
+    width: 22dp;
+    height: 22dp;
+    margin-right: 12dp;
+    opacity: 0.6;
+}
+
+.pause-menu-btn:hover .pause-menu-icon {
+    opacity: 1.0;
+}
+
+#pause-divider {
+    width: 100%;
+    height: 1dp;
+    background-color: rgba(255, 255, 255, 20);
+    margin: 6dp 0;
+}
+
+/* ── Pause mode ── */
+body.pause #nav-sidebar {
+    display: none;
+}
+
+body.pause #content-panel {
+    display: none;
+}
+
+body.pause #content-fade {
+    display: none;
+}
+
+body.pause #version {
+    display: none;
+}
+
+body.pause #pause-menu {
+    display: flex;
+}
+
+body.pause #settings-page {
+    left: 0dp;
+}
+</style>
+</head>
+<body>
+
+<!-- ── Left icon navigation sidebar ── -->
+<div id="nav-sidebar">
+    <div id="nav-logo" class="menu-btn" data-command="ShowHomePage">OS</div>
+
+    <div id="nav-play" class="nav-btn main-btn active menu-btn" data-command="ShowPlayPage"><img src="icons/play.png" /></div>
+    <div class="nav-btn main-btn menu-btn" data-command="OpenServerBrowser"><img src="icons/server.png" /></div>
+    <div class="nav-btn main-btn menu-btn" data-command="OpenInventory"><img src="icons/briefcase.png" /></div>
+    <div id="nav-settings" class="nav-btn menu-btn" data-command="OpenOptionsDialog"><img src="icons/gear.png" /></div>
+    <div class="nav-btn menu-btn" data-command="OpenConsole"><img src="icons/console.png" /></div>
+
+    <div id="nav-spacer"></div>
+
+    <div id="nav-quit" class="nav-btn menu-btn" data-command="QuitNoConfirm"><img src="icons/power.png" /></div>
+</div>
+
+<!-- ── Right-edge gradient fade ── -->
+<div id="content-fade"></div>
+
+<!-- ── Main content panel ── -->
+<div id="content-panel">
+
+    <div id="news-header"><img id="news-icon" src="icons/server.png" />News</div>
+
+    <div id="news-scroll">
+
+        <div class="news-item">
+            <div class="news-thumb"></div>
+            <div class="news-info">
+                <div class="news-date">2025-05-10 12:00:00</div>
+                <div class="news-title">Welcome to OpenStrike</div>
+                <div class="news-desc">OpenStrike is a community-driven project rebuilding the classic Counter-Strike experience from the ground up. Stay tuned for updates...</div>
+            </div>
+        </div>
+
+        <div class="news-item">
+            <div class="news-thumb"></div>
+            <div class="news-info">
+                <div class="news-date">2025-04-28 18:30:00</div>
+                <div class="news-title">New Main Menu</div>
+                <div class="news-desc">We've overhauled the main menu with a fresh new look inspired by the classic CS:GO interface. Enjoy the new layout and navigation...</div>
+            </div>
+        </div>
+
+        <div class="news-item">
+            <div class="news-thumb"></div>
+            <div class="news-info">
+                <div class="news-date">2025-04-15 09:45:00</div>
+                <div class="news-title">Editor Improvements</div>
+                <div class="news-desc">The built-in map editor now supports DX11 rendering via NVRHI, bringing faster viewport performance and modern GPU features...</div>
+            </div>
+        </div>
+
+        <div class="news-item">
+            <div class="news-thumb"></div>
+            <div class="news-info">
+                <div class="news-date">2025-03-20 14:00:00</div>
+                <div class="news-title">GPU Accelerated Lighting</div>
+                <div class="news-desc">VRAD now supports Vulkan ray tracing for shadow computation. Use the -gpu flag to enable hardware-accelerated light baking...</div>
+            </div>
+        </div>
+
+        <div class="news-item">
+            <div class="news-thumb"></div>
+            <div class="news-info">
+                <div class="news-date">2025-03-01 20:15:00</div>
+                <div class="news-title">Community Servers</div>
+                <div class="news-desc">Browse and join community servers directly from the main menu. The server browser now shows ping, player count, and map info...</div>
+            </div>
+        </div>
+
+    </div>
+
+    <!-- Bottom store/market section -->
+    <div id="bottom-section">
+        <div id="tabs-bar">
+            <div class="tab tab-active">Store</div>
+            <div class="tab">Market</div>
+            <div class="tab">Workshop</div>
+        </div>
+
+        <div id="store-row">
+            <div class="store-arrow menu-btn" data-command="StorePrev">&lt;</div>
+            <div class="store-card">
+                <div class="store-card-img"></div>
+                <div class="store-card-name">Weapon Case</div>
+                <div class="store-card-price">$ 2.49</div>
+            </div>
+            <div class="store-card">
+                <div class="store-card-img"></div>
+                <div class="store-card-name">Sticker Capsule</div>
+                <div class="store-card-price">$ 1.39</div>
+            </div>
+            <div class="store-card">
+                <div class="store-card-img"></div>
+                <div class="store-card-name">Graffiti Box</div>
+                <div class="store-card-price">$ 1.99</div>
+            </div>
+            <div class="store-card">
+                <div class="store-card-img"></div>
+                <div class="store-card-name">Music Kit</div>
+                <div class="store-card-price">$ 5.99</div>
+            </div>
+            <div class="store-arrow menu-btn" data-command="StoreNext">&gt;</div>
+        </div>
+    </div>
+
+</div>
+
+<!-- ── Play page (hidden by default, shown when Play nav is clicked) ── -->
+<div id="play-page">
+
+    <div id="play-header">
+        <div id="play-title">PLAY</div>
+        <div id="play-mode-label">OFFICIAL MATCHMAKING</div>
+    </div>
+
+    <div id="play-tabs">
+        <div class="play-tab play-tab-active menu-btn" data-command="PlayTab" data-tab="competitive">Competitive</div>
+        <div class="play-tab menu-btn" data-command="PlayTab" data-tab="casual">Casual</div>
+        <div class="play-tab menu-btn" data-command="PlayTab" data-tab="deathmatch">Deathmatch</div>
+        <div class="play-tab menu-btn" data-command="PlayTab" data-tab="wargames">War Games</div>
+        <div class="play-tab menu-btn" data-command="PlayTab" data-tab="wingman">Wingman</div>
+    </div>
+
+    <div id="play-map-scroll">
+        <div id="play-map-grid">
+
+            <div class="map-card menu-btn" data-command="ToggleMap" data-map="de_mirage" id="map-de_mirage">
+                <div class="map-card-img"></div>
+                <div class="map-card-overlay">
+                    <div class="map-card-name">Mirage</div>
+                    <div class="map-card-wait">Wait Time 02:30</div>
+                </div>
+                <div class="map-card-check"></div>
+            </div>
+
+            <div class="map-card menu-btn" data-command="ToggleMap" data-map="de_inferno" id="map-de_inferno">
+                <div class="map-card-img"></div>
+                <div class="map-card-overlay">
+                    <div class="map-card-name">Inferno</div>
+                    <div class="map-card-wait">Wait Time 02:37</div>
+                </div>
+                <div class="map-card-check"></div>
+            </div>
+
+            <div class="map-card menu-btn" data-command="ToggleMap" data-map="de_overpass" id="map-de_overpass">
+                <div class="map-card-img"></div>
+                <div class="map-card-overlay">
+                    <div class="map-card-name">Overpass</div>
+                    <div class="map-card-wait">Wait Time 03:15</div>
+                </div>
+                <div class="map-card-check"></div>
+            </div>
+
+            <div class="map-card menu-btn" data-command="ToggleMap" data-map="de_train" id="map-de_train">
+                <div class="map-card-img"></div>
+                <div class="map-card-overlay">
+                    <div class="map-card-name">Train</div>
+                    <div class="map-card-wait">Wait Time 03:34</div>
+                </div>
+                <div class="map-card-check"></div>
+            </div>
+
+            <div class="map-card menu-btn" data-command="ToggleMap" data-map="de_nuke" id="map-de_nuke">
+                <div class="map-card-img"></div>
+                <div class="map-card-overlay">
+                    <div class="map-card-name">Nuke</div>
+                    <div class="map-card-wait">Wait Time 03:43</div>
+                </div>
+                <div class="map-card-check"></div>
+            </div>
+
+            <div class="map-card menu-btn" data-command="ToggleMap" data-map="de_cache" id="map-de_cache">
+                <div class="map-card-img"></div>
+                <div class="map-card-overlay">
+                    <div class="map-card-name">Cache</div>
+                    <div class="map-card-wait">Wait Time 02:27</div>
+                </div>
+                <div class="map-card-check"></div>
+            </div>
+
+            <div class="map-card menu-btn" data-command="ToggleMap" data-map="de_dust2" id="map-de_dust2">
+                <div class="map-card-img"></div>
+                <div class="map-card-overlay">
+                    <div class="map-card-name">Dust II</div>
+                    <div class="map-card-wait">Wait Time 02:40</div>
+                </div>
+                <div class="map-card-check"></div>
+            </div>
+
+            <div class="map-card menu-btn" data-command="ToggleMap" data-map="de_cbble" id="map-de_cbble">
+                <div class="map-card-img"></div>
+                <div class="map-card-overlay">
+                    <div class="map-card-name">Cobblestone</div>
+                    <div class="map-card-wait">Wait Time 03:24</div>
+                </div>
+                <div class="map-card-check"></div>
+            </div>
+
+            <div class="map-card menu-btn" data-command="ToggleMap" data-map="de_canals" id="map-de_canals">
+                <div class="map-card-img"></div>
+                <div class="map-card-overlay">
+                    <div class="map-card-name">Canals</div>
+                    <div class="map-card-wait">Wait Time 04:38</div>
+                </div>
+                <div class="map-card-check"></div>
+            </div>
+
+            <div class="map-card menu-btn" data-command="ToggleMap" data-map="cs_office" id="map-cs_office">
+                <div class="map-card-img"></div>
+                <div class="map-card-overlay">
+                    <div class="map-card-name">Office</div>
+                    <div class="map-card-wait">Wait Time 02:48</div>
+                </div>
+                <div class="map-card-check"></div>
+            </div>
+
+            <div class="map-card menu-btn" data-command="ToggleMap" data-map="de_vertigo" id="map-de_vertigo">
+                <div class="map-card-img"></div>
+                <div class="map-card-overlay">
+                    <div class="map-card-name">Vertigo</div>
+                    <div class="map-card-wait">Wait Time 03:10</div>
+                </div>
+                <div class="map-card-check"></div>
+            </div>
+
+        </div>
+    </div>
+
+    <div id="play-bottom-bar">
+        <div id="play-bottom-left">
+            <div id="play-friends-label">FRIENDS NEED INVITES</div>
+            <div id="play-prime-row">
+                <div class="play-checkbox menu-btn" data-command="TogglePrime" id="play-prime-check"></div>
+                <div id="play-prime-label">PRIME MATCHES ONLY</div>
+            </div>
+        </div>
+        <div id="play-go-btn" class="menu-btn go-disabled" data-command="PlayGo"><img id="go-video-bg" src="__video/gobutton" /><span id="go-text">G O</span></div>
+    </div>
+
+</div>
+
+<!-- ── Settings page (hidden by default, shown when gear nav is clicked) ── -->
+<div id="settings-page">
+
+    <div id="settings-header">
+        <div id="settings-title">GAME SETTINGS</div>
+    </div>
+
+    <div id="settings-tabs">
+        <div class="settings-tab settings-tab-active settings-btn menu-btn" data-command="SettingsTab" data-tab="video">Video</div>
+        <div class="settings-tab settings-btn menu-btn" data-command="SettingsTab" data-tab="audio">Audio</div>
+        <div class="settings-tab settings-btn menu-btn" data-command="SettingsTab" data-tab="game">Game</div>
+        <div class="settings-tab settings-btn menu-btn" data-command="SettingsTab" data-tab="keyboard">Keyboard / Mouse</div>
+        <div class="settings-tab settings-btn menu-btn" data-command="SettingsTab" data-tab="controller">Controller</div>
+    </div>
+
+    <div id="settings-subtabs">
+        <!-- Populated dynamically by C++ per active tab -->
+    </div>
+
+    <div id="settings-scroll">
+        <div id="settings-content">
+            <!-- Populated dynamically by C++ with setting rows -->
+        </div>
+    </div>
+
+    <div id="settings-footer">
+        <div id="settings-reset-btn" class="settings-btn menu-btn" data-command="SettingsReset">
+            <span id="settings-reset-icon">&#8634;</span>
+            RESET
+        </div>
+    </div>
+
+</div>
+
+<!-- ── Pause menu overlay (shown in pause mode only) ── -->
+<div id="pause-menu">
+    <div id="pause-card">
+        <div id="pause-title">PAUSED</div>
+        <div class="pause-menu-btn menu-btn" data-command="ResumeGame">
+            <img class="pause-menu-icon" src="icons/play.png" />
+            <span>RESUME GAME</span>
+        </div>
+        <div class="pause-menu-btn menu-btn" data-command="OpenOptionsDialog">
+            <img class="pause-menu-icon" src="icons/gear.png" />
+            <span>SETTINGS</span>
+        </div>
+        <div id="pause-divider"></div>
+        <div class="pause-menu-btn menu-btn" data-command="DisconnectNoConfirm">
+            <img class="pause-menu-icon" src="icons/server.png" />
+            <span>DISCONNECT</span>
+        </div>
+        <div class="pause-menu-btn menu-btn" data-command="QuitNoConfirm">
+            <img class="pause-menu-icon" src="icons/power.png" />
+            <span>QUIT GAME</span>
+        </div>
+    </div>
+</div>
+
+<div id="version">v0.1 - Early Development</div>
+
+</body>
+</rml>

@@ -1,0 +1,565 @@
+<rml>
+<head>
+<style>
+body {
+    font-family: Stratum2;
+    display: block;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+}
+
+/* ================================================================
+   Utility
+   ================================================================ */
+.hidden {
+    display: none;
+}
+
+/* ================================================================
+   TOP-CENTER: Team Counters + Round Timer
+   ================================================================ */
+#hud-top-bar {
+    position: absolute;
+    top: 0;
+    left: 50%;
+    margin-left: -99dp;
+    display: flex;
+    flex-direction: row;
+}
+
+#hud-ct-score-box {
+    width: 62dp;
+    height: 47dp;
+    background-color: rgba(50, 80, 140, 220);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+}
+
+#hud-t-score-box {
+    width: 62dp;
+    height: 47dp;
+    background-color: rgba(180, 130, 50, 220);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+}
+
+.score-value {
+    font-size: 26dp;
+    font-weight: bold;
+    color: #ffffff;
+}
+
+.team-label {
+    font-size: 10dp;
+    color: rgba(255, 255, 255, 180);
+    letter-spacing: 1dp;
+}
+
+#hud-timer-box {
+    width: 73dp;
+    height: 47dp;
+    background-color: rgba(16, 16, 16, 200);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+#hud-timer {
+    font-size: 23dp;
+    font-weight: bold;
+    color: #ffffff;
+}
+
+#hud-timer.timer-warning {
+    color: #e41a1c;
+}
+
+#hud-timer.timer-flash {
+    color: #e41a1c;
+}
+
+/* ================================================================
+   BOTTOM-LEFT: Money + Health/Armor
+   ================================================================ */
+#hud-bottom-left {
+    position: absolute;
+    bottom: 10dp;
+    left: 10dp;
+    display: flex;
+    flex-direction: column;
+    gap: 5dp;
+}
+
+#hud-money {
+    font-size: 21dp;
+    font-weight: bold;
+    color: rgba(90, 180, 90, 255);
+    padding: 5dp 10dp;
+    background-color: rgba(16, 16, 16, 180);
+    border-radius: 3dp;
+}
+
+#hud-health-armor {
+    display: flex;
+    flex-direction: row;
+    gap: 3dp;
+    background-color: rgba(16, 16, 16, 180);
+    border-radius: 3dp;
+    padding: 5dp 10dp;
+    width: 312dp;
+}
+
+.hud-stat-section {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+}
+
+.hud-stat-header {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 5dp;
+}
+
+.health-icon {
+    font-size: 16dp;
+    color: #4daf4a;
+}
+
+.health-icon.health-low {
+    color: #e41a1c;
+}
+
+.armor-icon {
+    font-size: 16dp;
+    color: #377eb8;
+}
+
+.hud-stat-value {
+    font-size: 29dp;
+    font-weight: bold;
+    color: #ffffff;
+}
+
+.hud-bar-bg {
+    width: 100%;
+    height: 5dp;
+    background-color: rgba(40, 40, 40, 200);
+    margin-top: 3dp;
+    border-radius: 1dp;
+}
+
+.hud-bar-fill {
+    height: 100%;
+    border-radius: 1dp;
+}
+
+.health-fill {
+    background-color: #4daf4a;
+    width: 100%;
+}
+
+.health-fill.health-low {
+    background-color: #e41a1c;
+}
+
+.armor-fill {
+    background-color: #377eb8;
+    width: 0%;
+}
+
+/* ================================================================
+   BOTTOM-RIGHT: Ammo
+   ================================================================ */
+#hud-ammo {
+    position: absolute;
+    bottom: 10dp;
+    right: 10dp;
+    display: flex;
+    flex-direction: row;
+    align-items: baseline;
+    gap: 5dp;
+    background-color: rgba(16, 16, 16, 180);
+    border-radius: 3dp;
+    padding: 5dp 16dp;
+}
+
+#hud-ammo-clip {
+    font-size: 34dp;
+    font-weight: bold;
+    color: #ffffff;
+}
+
+#hud-ammo-clip.ammo-low {
+    color: #e41a1c;
+}
+
+#hud-ammo-separator {
+    font-size: 18dp;
+    color: rgba(180, 180, 180, 200);
+}
+
+#hud-ammo-reserve {
+    font-size: 18dp;
+    color: rgba(180, 180, 180, 200);
+}
+
+/* ================================================================
+   TOP-RIGHT: Kill Feed
+   ================================================================ */
+#hud-killfeed {
+    position: absolute;
+    top: 5dp;
+    right: 10dp;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 3dp;
+}
+
+.killfeed-entry {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 8dp;
+    padding: 4dp 10dp;
+    background-color: rgba(32, 32, 32, 180);
+    border-radius: 3dp;
+}
+
+.killfeed-entry.local-involved {
+    background-color: rgba(200, 180, 140, 180);
+}
+
+.killfeed-killer {
+    font-size: 16dp;
+    color: #ffffff;
+}
+
+.killfeed-killer.team-ct {
+    color: #5d79ae;
+}
+
+.killfeed-killer.team-t {
+    color: #dbbe67;
+}
+
+.killfeed-weapon {
+    font-size: 13dp;
+    color: rgba(255, 80, 0, 255);
+}
+
+.killfeed-headshot {
+    font-size: 13dp;
+    color: rgba(255, 50, 50, 255);
+}
+
+.killfeed-victim {
+    font-size: 16dp;
+    color: #ffffff;
+}
+
+.killfeed-victim.team-ct {
+    color: #5d79ae;
+}
+
+.killfeed-victim.team-t {
+    color: #dbbe67;
+}
+
+/* ================================================================
+   CENTER: Target ID
+   ================================================================ */
+#hud-target-id {
+    position: absolute;
+    top: 55%;
+    left: 0;
+    right: 0;
+    text-align: center;
+    font-size: 21dp;
+    font-weight: bold;
+    color: rgba(255, 160, 0, 255);
+    display: none;
+}
+
+#hud-target-id.visible {
+    display: block;
+}
+
+#hud-target-id.team-ct {
+    color: #5d79ae;
+}
+
+#hud-target-id.team-t {
+    color: #dbbe67;
+}
+
+#hud-target-id.team-hostage {
+    color: rgba(255, 160, 0, 255);
+}
+
+/* ================================================================
+   CENTER: Defuse / Rescue Progress Panel
+   ================================================================ */
+#hud-defuse-panel {
+    position: absolute;
+    top: 53%;
+    left: 50%;
+    margin-left: -130dp;
+    width: 260dp;
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    gap: 5dp;
+    background-color: rgba(16, 16, 16, 200);
+    border-radius: 4dp;
+    padding: 10dp 16dp;
+}
+
+.defuse-header {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 6dp;
+}
+
+.defuse-icon {
+    width: 24dp;
+    height: 12dp;
+}
+
+.defuse-title {
+    font-size: 14dp;
+    font-weight: bold;
+    color: rgba(200, 200, 200, 220);
+    letter-spacing: 2dp;
+}
+
+.defuse-timer {
+    font-size: 26dp;
+    font-weight: bold;
+    color: #ffffff;
+}
+
+.defuse-bar-bg {
+    width: 100%;
+    height: 6dp;
+    background-color: rgba(40, 40, 40, 200);
+    border-radius: 2dp;
+}
+
+.defuse-bar-fill {
+    height: 100%;
+    border-radius: 2dp;
+    background-color: #5d79ae;
+    width: 0%;
+}
+
+.defuse-bar-fill.hostage {
+    background-color: rgba(255, 160, 0, 255);
+}
+
+.defuse-kit {
+    font-size: 12dp;
+    font-weight: bold;
+    color: #4daf4a;
+}
+
+/* ================================================================
+   CENTER: Use / Interaction Hint
+   ================================================================ */
+#hud-use-hint {
+    position: absolute;
+    top: 58%;
+    left: 0;
+    right: 0;
+    text-align: center;
+    font-size: 15dp;
+    color: rgba(220, 220, 220, 200);
+    display: none;
+}
+
+/* ================================================================
+   GUN GAME: Leaderboard
+   ================================================================ */
+#hud-gungame {
+    position: absolute;
+    top: 52dp;
+    left: 50%;
+    margin-left: -156dp;
+    width: 312dp;
+    display: none;
+    flex-direction: column;
+    gap: 2dp;
+}
+
+.gg-row {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 5dp;
+    padding: 3dp 8dp;
+    background-color: rgba(16, 16, 16, 180);
+    border-radius: 2dp;
+}
+
+.gg-row.gg-local {
+    background-color: rgba(80, 120, 80, 180);
+}
+
+.gg-row.gg-leader {
+    background-color: rgba(180, 150, 50, 180);
+}
+
+.gg-weapon-icon {
+    width: 40dp;
+    height: 20dp;
+}
+
+.gg-name {
+    flex: 1;
+    font-size: 13dp;
+    font-weight: bold;
+    color: #ffffff;
+}
+
+.gg-name.team-ct {
+    color: #5d79ae;
+}
+
+.gg-name.team-t {
+    color: #dbbe67;
+}
+
+.gg-level {
+    font-size: 13dp;
+    color: rgba(200, 200, 200, 220);
+}
+
+/* ================================================================
+   DEATHMATCH: Score + Position
+   ================================================================ */
+#hud-dm-score {
+    position: absolute;
+    top: 52dp;
+    left: 50%;
+    margin-left: -78dp;
+    width: 156dp;
+    display: none;
+    flex-direction: row;
+    align-items: center;
+    justify-content: center;
+    gap: 13dp;
+    background-color: rgba(16, 16, 16, 180);
+    border-radius: 3dp;
+    padding: 5dp 13dp;
+}
+
+#hud-dm-kills {
+    font-size: 21dp;
+    font-weight: bold;
+    color: #ffffff;
+}
+
+#hud-dm-position {
+    font-size: 14dp;
+    color: rgba(200, 200, 200, 200);
+}
+
+/* ================================================================
+   Kill Feed: Weapon Icons
+   ================================================================ */
+.killfeed-weapon-icon {
+    width: 30dp;
+    height: 15dp;
+}
+</style>
+</head>
+<body>
+    <!-- Top-center: Team scores + Timer -->
+    <div id="hud-top-bar">
+        <div id="hud-ct-score-box">
+            <span id="hud-ct-score" class="score-value">0</span>
+            <span class="team-label">CT</span>
+        </div>
+        <div id="hud-timer-box">
+            <span id="hud-timer">0:00</span>
+        </div>
+        <div id="hud-t-score-box">
+            <span id="hud-t-score" class="score-value">0</span>
+            <span class="team-label">T</span>
+        </div>
+    </div>
+
+    <!-- Bottom-left: Money + Health/Armor -->
+    <div id="hud-bottom-left">
+        <div id="hud-money">$800</div>
+        <div id="hud-health-armor">
+            <div class="hud-stat-section" id="hud-health-section">
+                <div class="hud-stat-header">
+                    <span class="health-icon" id="hud-health-icon">+</span>
+                    <span class="hud-stat-value" id="hud-health-value">100</span>
+                </div>
+                <div class="hud-bar-bg">
+                    <div class="hud-bar-fill health-fill" id="hud-health-bar"></div>
+                </div>
+            </div>
+            <div class="hud-stat-section" id="hud-armor-section">
+                <div class="hud-stat-header">
+                    <span class="armor-icon" id="hud-armor-icon">A</span>
+                    <span class="hud-stat-value" id="hud-armor-value">0</span>
+                </div>
+                <div class="hud-bar-bg">
+                    <div class="hud-bar-fill armor-fill" id="hud-armor-bar"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Bottom-right: Ammo -->
+    <div id="hud-ammo" class="hidden">
+        <span id="hud-ammo-clip">30</span>
+        <span id="hud-ammo-separator">/</span>
+        <span id="hud-ammo-reserve">90</span>
+    </div>
+
+    <!-- Bottom-right: Ammo is above -->
+
+    <!-- Gun Game Leaderboard (hidden by default, shown via SetProperty) -->
+    <div id="hud-gungame"></div>
+
+    <!-- Deathmatch Score (hidden by default, shown via SetProperty) -->
+    <div id="hud-dm-score">
+        <span id="hud-dm-kills">0</span>
+        <span id="hud-dm-position">#1</span>
+    </div>
+
+    <!-- Top-right: Kill Feed -->
+    <div id="hud-killfeed"></div>
+
+    <!-- Center: Target ID -->
+    <div id="hud-target-id"></div>
+
+    <!-- Center: Defuse/Rescue progress -->
+    <div id="hud-defuse-panel">
+        <div class="defuse-header">
+            <img class="defuse-icon" id="hud-defuse-icon" src="/resource/ui/icons/weapons/c4.png" />
+            <div class="defuse-title" id="hud-defuse-title">DEFUSING</div>
+        </div>
+        <div class="defuse-timer" id="hud-defuse-timer">10</div>
+        <div class="defuse-bar-bg">
+            <div class="defuse-bar-fill" id="hud-defuse-bar"></div>
+        </div>
+        <div class="defuse-kit" id="hud-defuse-kit"></div>
+    </div>
+
+    <!-- Center: Use/Interaction hint -->
+    <div id="hud-use-hint"></div>
+</body>
+</rml>

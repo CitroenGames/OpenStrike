@@ -70,7 +70,7 @@ if(Windows)
 {
     defines = NOMINMAX, WIN32_LEAN_AND_MEAN, SDL_MAIN_HANDLED, JPH_OBJECT_STREAM, JPH_USE_AVX2
     simd = AdvancedVectorExtensions2
-    public_libs = d3d12.lib, dxgi.lib, d3dcompiler.lib, ws2_32.lib
+    public_libs = d3d12.lib, dxgi.lib, d3dcompiler.lib, ws2_32.lib, windowscodecs.lib
 }
 if(posix)
 {

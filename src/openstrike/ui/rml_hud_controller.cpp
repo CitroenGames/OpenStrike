@@ -78,6 +78,7 @@ bool RmlHudController::initialize(Rml::Context& rml_context, EngineContext& engi
 
     const std::filesystem::path candidates[] = {
         config.content_root / "csgo/resource/ui/hud.rml",
+        config.content_root / "resource/ui/hud.rml",
         config.content_root / "assets/ui/hud.rml",
     };
 

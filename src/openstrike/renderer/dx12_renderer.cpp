@@ -1503,7 +1503,7 @@ bool Dx12Renderer::initialize_rml(const RuntimeConfig& config)
     }
 
     log_info("loaded {} RmlUi font face(s) from '{}'", loaded_fonts, rml_path_string(config.content_root));
-    if (!load_rml_document(config))
+    if (!main_menu_controller_->initialize(*rml_context_, config))
     {
         return false;
     }
@@ -1524,78 +1524,6 @@ bool Dx12Renderer::initialize_rml(const RuntimeConfig& config)
     }
 
     return true;
-}
-
-bool Dx12Renderer::load_rml_document(const RuntimeConfig& config)
-{
-    const auto resolve_document = [&](const std::filesystem::path& document) {
-        if (document.is_absolute())
-        {
-            return document;
-        }
-        return config.content_root / document;
-    };
-
-    std::vector<std::filesystem::path> candidates{
-        resolve_document(config.rml_document),
-        config.content_root / "assets/ui/mainmenu.rml",
-        config.content_root / "csgo/resource/ui/mainmenu.rml",
-        config.content_root / "csgo/resource/ui/rml/test.rml",
-    };
-
-    for (const std::filesystem::path& candidate : candidates)
-    {
-        std::error_code error;
-        if (!std::filesystem::is_regular_file(candidate, error))
-        {
-            continue;
-        }
-
-        if (Rml::ElementDocument* document = rml_context_->LoadDocument(rml_path_string(candidate)))
-        {
-            document->Show();
-            if (main_menu_controller_ != nullptr)
-            {
-                main_menu_controller_->attach(*document);
-            }
-            log_info("loaded RmlUi document '{}'", rml_path_string(candidate));
-            return true;
-        }
-    }
-
-    constexpr const char* fallback_document = R"(
-<rml>
-<head>
-    <style>
-        body { width: 100%; height: 100%; margin: 0; font-family: sans-serif; color: #f4f6f8; background-color: rgba(10, 12, 16, 235); }
-        #panel { position: absolute; left: 48dp; top: 42dp; width: 420dp; padding: 22dp; background-color: rgba(30, 37, 48, 230); border-left-width: 4dp; border-left-color: #de9f37; }
-        h1 { font-size: 28dp; margin-bottom: 8dp; color: #ffffff; }
-        p { font-size: 14dp; color: #b8c1cf; }
-    </style>
-</head>
-<body>
-    <div id="panel">
-        <h1>OpenStrike RmlUi</h1>
-        <p>No external RML document was found. The DX12 renderer is running the fallback UI.</p>
-    </div>
-</body>
-</rml>
-)";
-
-    if (Rml::ElementDocument* document = rml_context_->LoadDocumentFromMemory(fallback_document, "openstrike://fallback"))
-    {
-        document->Show();
-        if (main_menu_controller_ != nullptr)
-        {
-            main_menu_controller_->attach(*document);
-        }
-        log_warning("using fallback RmlUi document; content root '{}' did not contain '{}'", rml_path_string(config.content_root),
-            rml_path_string(config.rml_document));
-        return true;
-    }
-
-    log_error("failed to load any RmlUi document");
-    return false;
 }
 
 void Dx12Renderer::sync_main_menu_visibility()

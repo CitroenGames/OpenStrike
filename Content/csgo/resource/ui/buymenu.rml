@@ -1,0 +1,398 @@
+<rml>
+<head>
+<style>
+body {
+    font-family: Stratum2;
+    display: block;
+    width: 100%;
+    height: 100%;
+}
+
+/* ── Fullscreen overlay ── */
+#buymenu-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    display: flex;
+    flex-direction: row;
+}
+
+/* ── Left panel (covers ~60% of screen) ── */
+#buymenu-panel {
+    width: 60%;
+    height: 100%;
+    background-color: rgba(12, 14, 18, 200);
+    display: flex;
+    flex-direction: column;
+}
+
+/* ── Header bar ── */
+#buymenu-header {
+    height: 36dp;
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    justify-content: center;
+    border-bottom: 1dp solid rgba(255, 255, 255, 15);
+}
+
+#buymenu-header-text {
+    font-size: 13dp;
+    font-weight: bold;
+    color: rgba(200, 200, 210, 200);
+    letter-spacing: 2dp;
+}
+
+#buymenu-buytime {
+    font-size: 14dp;
+    font-weight: bold;
+    color: rgba(255, 255, 255, 240);
+    margin-left: 8dp;
+}
+
+/* ── Columns area (4 main columns) ── */
+#buymenu-columns {
+    flex: 1;
+    display: flex;
+    flex-direction: row;
+}
+
+/* ── Single column ── */
+.buy-column {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    border-right: 1dp solid rgba(255, 255, 255, 8);
+}
+
+.buy-column:last-child {
+    border-right: none;
+}
+
+/* ── Column header ── */
+.buy-column-header {
+    height: 32dp;
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    padding: 0 10dp;
+    background-color: rgba(255, 255, 255, 6);
+    border-bottom: 1dp solid rgba(255, 255, 255, 10);
+}
+
+.col-key {
+    font-size: 12dp;
+    font-weight: bold;
+    color: rgba(255, 255, 255, 35);
+    width: 16dp;
+}
+
+.col-name {
+    font-size: 12dp;
+    font-weight: bold;
+    color: rgba(200, 200, 210, 220);
+    letter-spacing: 1dp;
+}
+
+/* ── Column items (scrollable) ── */
+.buy-column-items {
+    flex: 1;
+    overflow: auto;
+}
+
+.buy-column-items-inner {
+    display: flex;
+    flex-direction: column;
+    padding: 4dp;
+    gap: 4dp;
+}
+
+/* ── Weapon cards ── */
+.weapon-card {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    background-color: rgba(30, 34, 42, 180);
+    border-radius: 3dp;
+    border-width: 1dp;
+    border-color: rgba(255, 255, 255, 8);
+    padding: 4dp 6dp 6dp 6dp;
+    cursor: pointer;
+}
+
+.weapon-card:hover {
+    background-color: rgba(50, 55, 65, 220);
+    border-color: rgba(255, 255, 255, 30);
+}
+
+.weapon-card:active {
+    background-color: rgba(60, 65, 75, 240);
+}
+
+.weapon-card.unavailable {
+    opacity: 0.3;
+    cursor: default;
+}
+
+.weapon-card.cant-afford {
+    opacity: 0.55;
+}
+
+/* ── Card top row (key + name) ── */
+.weapon-card-top {
+    width: 100%;
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 2dp;
+}
+
+.weapon-key {
+    font-size: 11dp;
+    font-weight: bold;
+    color: rgba(255, 255, 255, 30);
+}
+
+.weapon-name {
+    font-size: 10dp;
+    color: rgba(200, 200, 210, 200);
+    white-space: nowrap;
+}
+
+/* ── Card icon ── */
+.weapon-icon {
+    width: 90dp;
+    height: 36dp;
+}
+
+/* ── Card price (yellow/gold like CS:GO) ── */
+.weapon-price {
+    font-size: 12dp;
+    font-weight: bold;
+    color: rgba(220, 190, 50, 240);
+    margin-top: 2dp;
+}
+
+.weapon-card.cant-afford .weapon-price {
+    color: rgba(220, 60, 60, 255);
+}
+
+.weapon-card.unavailable .weapon-price {
+    color: rgba(150, 150, 160, 120);
+}
+
+/* ── Pass clicks through to .weapon-card parent ── */
+.weapon-card-top,
+.weapon-key,
+.weapon-icon,
+.weapon-name,
+.weapon-price {
+    pointer-events: none;
+}
+
+/* ── Grenades bottom section ── */
+#buymenu-grenades {
+    display: flex;
+    flex-direction: column;
+    border-top: 1dp solid rgba(255, 255, 255, 15);
+}
+
+#buymenu-grenades-header {
+    height: 28dp;
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    padding: 0 10dp;
+    background-color: rgba(255, 255, 255, 6);
+    border-bottom: 1dp solid rgba(255, 255, 255, 10);
+}
+
+#buymenu-grenades-items {
+    display: flex;
+    flex-direction: row;
+    padding: 4dp;
+    gap: 4dp;
+}
+
+/* ── Grenade cards (compact horizontal) ── */
+.grenade-card {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    background-color: rgba(30, 34, 42, 180);
+    border-radius: 3dp;
+    border-width: 1dp;
+    border-color: rgba(255, 255, 255, 8);
+    padding: 4dp 6dp 6dp 6dp;
+    cursor: pointer;
+}
+
+.grenade-card:hover {
+    background-color: rgba(50, 55, 65, 220);
+    border-color: rgba(255, 255, 255, 30);
+}
+
+.grenade-card:active {
+    background-color: rgba(60, 65, 75, 240);
+}
+
+.grenade-card.unavailable {
+    opacity: 0.3;
+    cursor: default;
+}
+
+.grenade-card.cant-afford {
+    opacity: 0.55;
+}
+
+.grenade-card-top {
+    width: 100%;
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    margin-bottom: 2dp;
+}
+
+.grenade-key {
+    font-size: 11dp;
+    font-weight: bold;
+    color: rgba(255, 255, 255, 30);
+    margin-right: 4dp;
+}
+
+.grenade-name {
+    font-size: 9dp;
+    color: rgba(200, 200, 210, 200);
+    white-space: nowrap;
+}
+
+.grenade-icon {
+    width: 52dp;
+    height: 28dp;
+}
+
+.grenade-price {
+    font-size: 11dp;
+    font-weight: bold;
+    color: rgba(220, 190, 50, 240);
+    margin-top: 2dp;
+}
+
+.grenade-card.cant-afford .grenade-price {
+    color: rgba(220, 60, 60, 255);
+}
+
+.grenade-card.unavailable .grenade-price {
+    color: rgba(150, 150, 160, 120);
+}
+
+/* ── Pass clicks through to .grenade-card parent ── */
+.grenade-card-top,
+.grenade-key,
+.grenade-icon,
+.grenade-name,
+.grenade-price {
+    pointer-events: none;
+}
+
+/* ── Footer bar ── */
+#buymenu-footer {
+    height: 40dp;
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    padding: 0 16dp;
+    border-top: 1dp solid rgba(255, 255, 255, 15);
+}
+
+#buymenu-money {
+    font-size: 24dp;
+    font-weight: bold;
+    color: rgba(90, 180, 90, 255);
+    letter-spacing: 1dp;
+}
+
+#buymenu-hints {
+    font-size: 10dp;
+    color: rgba(160, 160, 170, 150);
+    margin-left: auto;
+    letter-spacing: 1dp;
+}
+</style>
+</head>
+<body>
+<div id="buymenu-overlay">
+    <div id="buymenu-panel">
+        <div id="buymenu-header">
+            <span id="buymenu-header-text">Buy Time Remaining</span>
+            <span id="buymenu-buytime">0:00</span>
+        </div>
+
+        <div id="buymenu-columns">
+            <!-- Column 0: Pistols -->
+            <div class="buy-column">
+                <div class="buy-column-header">
+                    <span class="col-key">1</span>
+                    <span class="col-name">Pistols</span>
+                </div>
+                <div class="buy-column-items">
+                    <div class="buy-column-items-inner" id="buy-col-0-items"></div>
+                </div>
+            </div>
+
+            <!-- Column 1: Mid-Tier -->
+            <div class="buy-column">
+                <div class="buy-column-header">
+                    <span class="col-key">2</span>
+                    <span class="col-name">Mid-Tier</span>
+                </div>
+                <div class="buy-column-items">
+                    <div class="buy-column-items-inner" id="buy-col-1-items"></div>
+                </div>
+            </div>
+
+            <!-- Column 2: Rifles -->
+            <div class="buy-column">
+                <div class="buy-column-header">
+                    <span class="col-key">3</span>
+                    <span class="col-name">Rifles</span>
+                </div>
+                <div class="buy-column-items">
+                    <div class="buy-column-items-inner" id="buy-col-2-items"></div>
+                </div>
+            </div>
+
+            <!-- Column 3: Equipment -->
+            <div class="buy-column">
+                <div class="buy-column-header">
+                    <span class="col-key">4</span>
+                    <span class="col-name">Equipment</span>
+                </div>
+                <div class="buy-column-items">
+                    <div class="buy-column-items-inner" id="buy-col-3-items"></div>
+                </div>
+            </div>
+        </div>
+
+        <div id="buymenu-grenades">
+            <div id="buymenu-grenades-header">
+                <span class="col-key">5</span>
+                <span class="col-name">Grenades</span>
+            </div>
+            <div id="buymenu-grenades-items" class="buy-column-items-inner">
+                <div id="buy-col-4-items" style="display: flex; flex-direction: row; gap: 4dp; width: 100%;"></div>
+            </div>
+        </div>
+
+        <div id="buymenu-footer">
+            <span id="buymenu-money">$0</span>
+            <span id="buymenu-hints">[F4] RE-BUY PREVIOUS    [F3] AUTO BUY    [ESCAPE] BACK</span>
+        </div>
+    </div>
+</div>
+</body>
+</rml>

@@ -29,7 +29,7 @@ struct RuntimeConfig
     AppMode mode = AppMode::Client;
     RendererBackend renderer_backend = RendererBackend::Auto;
     std::filesystem::path content_root;
-    std::filesystem::path rml_document = "assets/ui/mainmenu.rml";
+    std::filesystem::path rml_document = "csgo/resource/ui/mainmenu.rml";
     std::uint64_t max_frames = 0;
     int max_ticks_per_frame = 8;
     std::uint32_t window_width = 1280;

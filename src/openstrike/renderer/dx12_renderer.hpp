@@ -62,7 +62,6 @@ private:
     bool create_skybox_pipeline();
     bool resize_swap_chain(std::uint32_t width, std::uint32_t height);
     bool initialize_rml(const RuntimeConfig& config);
-    bool load_rml_document(const RuntimeConfig& config);
     void sync_main_menu_visibility();
     void render_skybox(const LoadedWorld& world);
     void render_world();
