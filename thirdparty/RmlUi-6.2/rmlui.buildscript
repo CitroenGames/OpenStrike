@@ -1,0 +1,59 @@
+[project:RmlUi]
+type = lib
+std = 17
+sources = {
+    Source/Core/*.cpp
+    Source/Core/Elements/*.cpp
+    Source/Core/Layout/*.cpp
+    Source/Core/FontEngineDefault/*.cpp
+    Source/Debugger/Debugger.cpp
+    Source/Debugger/DebuggerPlugin.cpp
+    Source/Debugger/DebuggerSystemInterface.cpp
+    Source/Debugger/ElementContextHook.cpp
+    Source/Debugger/ElementDataModels.cpp
+    Source/Debugger/ElementDebugDocument.cpp
+    Source/Debugger/ElementInfo.cpp
+    Source/Debugger/ElementLog.cpp
+    Source/Debugger/DebuggerGeometry.cpp
+    Backends/RmlUi_Platform_SDL.cpp
+}
+headers = {
+    Include/RmlUi/**/*.h
+    Include/RmlUi/**/*.hpp
+    Include/RmlUi/**/*.inl
+    Source/Core/**/*.h
+    Source/Debugger/**/*.h
+    Backends/RmlUi_Platform_SDL.h
+}
+includes = Include, Source, Backends
+public_includes = Include, Backends
+defines = RMLUI_STATIC_LIB, RMLUI_SDL_VERSION_MAJOR=3, RMLUI_FONT_ENGINE_FREETYPE
+public_defines = RMLUI_STATIC_LIB, RMLUI_SDL_VERSION_MAJOR=3
+multiprocessor = true
+target_link_libraries(PRIVATE freetype SDL3)
+
+[config:Debug|x64]
+runtime_library = MultiThreadedDebug
+optimization = Disabled
+debug_info = ProgramDatabase
+generate_debug_info = true
+outdir = ../../build/bin/x64/Debug
+intdir = ../../build/obj/x64/Debug/RmlUi
+if(posix)
+{
+    outdir = ../../build/bin/posix/Debug
+    intdir = ../../build/obj/posix/Debug/RmlUi
+}
+
+[config:Release|x64]
+runtime_library = MultiThreaded
+optimization = MaxSpeed
+debug_info = ProgramDatabase
+generate_debug_info = true
+outdir = ../../build/bin/x64/Release
+intdir = ../../build/obj/x64/Release/RmlUi
+if(posix)
+{
+    outdir = ../../build/bin/posix/Release
+    intdir = ../../build/obj/posix/Release/RmlUi
+}

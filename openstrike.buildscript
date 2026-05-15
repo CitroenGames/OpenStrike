@@ -1,0 +1,171 @@
+[solution]
+name = OpenStrike
+configurations = Debug, Release
+platforms = x64
+
+folder(thirdparty)
+{
+    include = thirdparty/SDL3-3.4.4/sdl3.buildscript
+    include = thirdparty/freetype/freetype.buildscript
+    include = thirdparty/RmlUi-6.2/rmlui.buildscript
+    include = thirdparty/JoltPhysics-5.5.0/jolt.buildscript
+}
+
+[project:OpenStrikeCore]
+type = lib
+std = 20
+sources = {
+    src/openstrike/app/application.cpp
+    src/openstrike/client/client_module.cpp
+    src/openstrike/core/command_line.cpp
+    src/openstrike/core/console.cpp
+    src/openstrike/core/content_filesystem.cpp
+    src/openstrike/core/log.cpp
+    src/openstrike/editor/editor_module.cpp
+    src/openstrike/engine/engine_context.cpp
+    src/openstrike/engine/engine.cpp
+    src/openstrike/engine/fixed_timestep.cpp
+    src/openstrike/engine/runtime_config.cpp
+    src/openstrike/game/game_simulation.cpp
+    src/openstrike/game/movement.cpp
+    src/openstrike/renderer/dx12_renderer.cpp [windows]
+    src/openstrike/renderer/null_renderer.cpp
+    src/openstrike/renderer/renderer_factory.cpp
+    src/openstrike/renderer/rml_dx12_render_interface.cpp [windows]
+    src/openstrike/server/server_module.cpp
+    src/openstrike/ui/main_menu_controller.cpp
+}
+headers = src/openstrike/**/*.hpp
+includes = src
+public_includes = src
+warning_level = Level4
+multiprocessor = true
+exceptions = true
+rtti = true
+subsystem = Console
+target_link_libraries(PUBLIC RmlUi SDL3)
+if(Windows)
+{
+    defines = NOMINMAX, WIN32_LEAN_AND_MEAN, SDL_MAIN_HANDLED
+    public_libs = d3d12.lib, dxgi.lib, d3dcompiler.lib
+}
+if(posix)
+{
+    defines = OPENSTRIKE_POSIX
+}
+if(Linux)
+{
+    public_libs = pthread
+}
+
+[config:Debug|x64]
+runtime_library = MultiThreadedDebug
+optimization = Disabled
+debug_info = ProgramDatabase
+generate_debug_info = true
+outdir = build/bin/x64/Debug
+intdir = build/obj/x64/Debug/OpenStrikeCore
+if(posix)
+{
+    outdir = build/bin/posix/Debug
+    intdir = build/obj/posix/Debug/OpenStrikeCore
+}
+
+[config:Release|x64]
+runtime_library = MultiThreaded
+optimization = MaxSpeed
+debug_info = ProgramDatabase
+generate_debug_info = true
+function_level_linking = true
+intrinsic_functions = true
+outdir = build/bin/x64/Release
+intdir = build/obj/x64/Release/OpenStrikeCore
+if(posix)
+{
+    outdir = build/bin/posix/Release
+    intdir = build/obj/posix/Release/OpenStrikeCore
+}
+
+[project:OpenStrike]
+type = exe
+std = 20
+sources = src/main.cpp
+includes = src
+warning_level = Level4
+multiprocessor = true
+exceptions = true
+rtti = true
+defines = NOMINMAX, WIN32_LEAN_AND_MEAN
+subsystem = Console
+target_link_libraries(PRIVATE OpenStrikeCore RmlUi freetype SDL3)
+
+[config:Debug|x64]
+runtime_library = MultiThreadedDebug
+optimization = Disabled
+debug_info = ProgramDatabase
+generate_debug_info = true
+outdir = I:\content
+intdir = build/obj/x64/Debug/OpenStrike
+postbuild = copy /Y ..\thirdparty\SDL3-3.4.4\lib\x64\SDL3.dll I:\content\SDL3.dll
+if(posix)
+{
+    outdir = build/bin/posix/Debug
+    intdir = build/obj/posix/Debug/OpenStrike
+}
+
+[config:Release|x64]
+runtime_library = MultiThreaded
+optimization = MaxSpeed
+debug_info = ProgramDatabase
+generate_debug_info = true
+function_level_linking = true
+intrinsic_functions = true
+outdir = I:\content
+intdir = build/obj/x64/Release/OpenStrike
+postbuild = copy /Y ..\thirdparty\SDL3-3.4.4\lib\x64\SDL3.dll I:\content\SDL3.dll
+if(posix)
+{
+    outdir = build/bin/posix/Release
+    intdir = build/obj/posix/Release/OpenStrike
+}
+
+[project:OpenStrikeTests]
+type = exe
+std = 20
+sources = tests/test_main.cpp
+includes = src
+warning_level = Level4
+multiprocessor = true
+exceptions = true
+rtti = true
+defines = NOMINMAX, WIN32_LEAN_AND_MEAN
+subsystem = Console
+target_link_libraries(PRIVATE OpenStrikeCore)
+
+[config:Debug|x64]
+runtime_library = MultiThreadedDebug
+optimization = Disabled
+debug_info = ProgramDatabase
+generate_debug_info = true
+outdir = build/bin/x64/Debug
+intdir = build/obj/x64/Debug/OpenStrikeTests
+if(posix)
+{
+    outdir = build/bin/posix/Debug
+    intdir = build/obj/posix/Debug/OpenStrikeTests
+}
+
+[config:Release|x64]
+runtime_library = MultiThreaded
+optimization = MaxSpeed
+debug_info = ProgramDatabase
+generate_debug_info = true
+function_level_linking = true
+intrinsic_functions = true
+outdir = build/bin/x64/Release
+intdir = build/obj/x64/Release/OpenStrikeTests
+if(posix)
+{
+    outdir = build/bin/posix/Release
+    intdir = build/obj/posix/Release/OpenStrikeTests
+}

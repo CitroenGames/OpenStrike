@@ -1,0 +1,17 @@
+build/
+.sighmake_cache
+.vs/
+out/
+*.user
+*.suo
+*.vcxproj
+*.vcxproj.filters
+*.sln
+*.slnx
+*.obj
+*.pdb
+*.ilk
+*.exe
+*.dll
+*.lib
+*.log
