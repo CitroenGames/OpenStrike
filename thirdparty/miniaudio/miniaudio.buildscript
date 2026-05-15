@@ -1,0 +1,21 @@
+[project:miniaudio]
+type = lib
+sources = miniaudio.c
+headers = miniaudio.h
+public_includes = .
+
+[config:Debug|x64]
+runtime_library = MultiThreadedDebug
+optimization = Disabled
+debug_info = ProgramDatabase
+generate_debug_info = true
+outdir = ../../build/lib/x64/Debug
+intdir = ../../build/obj/miniaudio/x64/Debug
+
+[config:Release|x64]
+runtime_library = MultiThreaded
+optimization = MaxSpeed
+debug_info = ProgramDatabase
+generate_debug_info = true
+outdir = ../../build/lib/x64/Release
+intdir = ../../build/obj/miniaudio/x64/Release

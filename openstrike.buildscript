@@ -9,6 +9,8 @@ folder(thirdparty)
     include = thirdparty/freetype/freetype.buildscript
     include = thirdparty/RmlUi-6.2/rmlui.buildscript
     include = thirdparty/JoltPhysics-5.5.0/jolt.buildscript
+    include = thirdparty/steamaudio/steamaudio.buildscript
+    include = thirdparty/miniaudio/miniaudio.buildscript
 }
 
 [project:OpenStrikeCore]
@@ -16,6 +18,9 @@ type = lib
 std = 20
 sources = {
     src/openstrike/app/application.cpp
+    src/openstrike/audio/audio_module.cpp
+    src/openstrike/audio/audio_system.cpp
+    src/openstrike/audio/source_sound_library.cpp
     src/openstrike/client/client_module.cpp
     src/openstrike/core/command_line.cpp
     src/openstrike/core/console.cpp
@@ -26,15 +31,30 @@ sources = {
     src/openstrike/engine/engine.cpp
     src/openstrike/engine/fixed_timestep.cpp
     src/openstrike/engine/runtime_config.cpp
+    src/openstrike/game/fps_controller.cpp
     src/openstrike/game/game_simulation.cpp
     src/openstrike/game/movement.cpp
+    src/openstrike/material/material_system.cpp
+    src/openstrike/network/network_address.cpp
+    src/openstrike/network/network_protocol.cpp
+    src/openstrike/network/network_session.cpp
+    src/openstrike/network/network_socket.cpp
+    src/openstrike/network/network_stream.cpp
+    src/openstrike/network/network_system.cpp
+    src/openstrike/physics/physics_world.cpp
     src/openstrike/renderer/dx12_renderer.cpp [windows]
     src/openstrike/renderer/null_renderer.cpp
     src/openstrike/renderer/renderer_factory.cpp
     src/openstrike/renderer/rml_dx12_render_interface.cpp [windows]
+    src/openstrike/renderer/world_material_shader.cpp
     src/openstrike/server/server_module.cpp
+    src/openstrike/source/source_asset_store.cpp
+    src/openstrike/source/source_fgd.cpp
+    src/openstrike/source/source_model.cpp
+    src/openstrike/source/source_texture.cpp
     src/openstrike/ui/main_menu_controller.cpp
     src/openstrike/ui/rml_console_controller.cpp
+    src/openstrike/ui/rml_hud_controller.cpp
     src/openstrike/world/world.cpp
 }
 headers = src/openstrike/**/*.hpp
@@ -45,15 +65,16 @@ multiprocessor = true
 exceptions = true
 rtti = true
 subsystem = Console
-target_link_libraries(PUBLIC RmlUi SDL3)
+target_link_libraries(PUBLIC RmlUi SDL3 JoltPhysics SteamAudio miniaudio)
 if(Windows)
 {
-    defines = NOMINMAX, WIN32_LEAN_AND_MEAN, SDL_MAIN_HANDLED
-    public_libs = d3d12.lib, dxgi.lib, d3dcompiler.lib
+    defines = NOMINMAX, WIN32_LEAN_AND_MEAN, SDL_MAIN_HANDLED, JPH_OBJECT_STREAM, JPH_USE_AVX2
+    simd = AdvancedVectorExtensions2
+    public_libs = d3d12.lib, dxgi.lib, d3dcompiler.lib, ws2_32.lib
 }
 if(posix)
 {
-    defines = OPENSTRIKE_POSIX
+    defines = OPENSTRIKE_POSIX, JPH_OBJECT_STREAM
 }
 if(Linux)
 {

@@ -2,6 +2,8 @@
 
 #include "openstrike/core/content_filesystem.hpp"
 #include "openstrike/core/log.hpp"
+#include "openstrike/source/source_asset_store.hpp"
+#include "openstrike/source/source_model.hpp"
 
 #include <algorithm>
 #include <array>
@@ -10,12 +12,15 @@
 #include <cmath>
 #include <cstring>
 #include <fstream>
+#include <iterator>
 #include <limits>
 #include <set>
+#include <span>
 #include <sstream>
 #include <stdexcept>
 #include <string>
 #include <system_error>
+#include <unordered_map>
 
 namespace openstrike
 {
@@ -26,11 +31,16 @@ constexpr std::size_t kBspLumpCount = 64;
 constexpr std::size_t kBspHeaderSize = 8 + (kBspLumpCount * 16) + 4;
 constexpr std::size_t kEntitiesLump = 0;
 constexpr std::size_t kPlanesLump = 1;
+constexpr std::size_t kTexDataLump = 2;
 constexpr std::size_t kVerticesLump = 3;
 constexpr std::size_t kTexInfoLump = 6;
 constexpr std::size_t kFacesLump = 7;
 constexpr std::size_t kEdgesLump = 12;
 constexpr std::size_t kSurfEdgesLump = 13;
+constexpr std::size_t kGameLump = 35;
+constexpr std::size_t kPakFileLump = 40;
+constexpr std::size_t kTexDataStringDataLump = 43;
+constexpr std::size_t kTexDataStringTableLump = 44;
 constexpr std::uint32_t kSurfaceSky2D = 0x0002;
 constexpr std::uint32_t kSurfaceSky = 0x0004;
 constexpr std::uint32_t kSurfaceNoDraw = 0x0080;
@@ -55,7 +65,16 @@ struct BspEdge
 
 struct BspTexInfo
 {
+    std::array<std::array<float, 4>, 2> texture_vecs{};
     std::uint32_t flags = 0;
+    std::int32_t texdata = -1;
+};
+
+struct BspTexData
+{
+    std::string name;
+    std::uint32_t width = 1;
+    std::uint32_t height = 1;
 };
 
 struct BspFace
@@ -65,6 +84,12 @@ struct BspFace
     std::int32_t first_edge = 0;
     std::int16_t edge_count = 0;
     std::int16_t texinfo = -1;
+};
+
+struct RenderMeshChunk
+{
+    std::vector<WorldMeshVertex> vertices;
+    std::vector<std::uint32_t> indices;
 };
 
 std::string lower_copy(std::string_view text)
@@ -173,6 +198,41 @@ std::uint16_t read_u16_le(const std::vector<unsigned char>& bytes, std::size_t o
     }
 
     return static_cast<std::uint16_t>(bytes[offset]) | static_cast<std::uint16_t>(static_cast<std::uint16_t>(bytes[offset + 1]) << 8U);
+}
+
+std::uint16_t read_u16_le(std::span<const unsigned char> bytes, std::size_t offset)
+{
+    if (offset + 2 > bytes.size())
+    {
+        throw std::runtime_error("unexpected end of buffer");
+    }
+
+    return static_cast<std::uint16_t>(bytes[offset]) | static_cast<std::uint16_t>(static_cast<std::uint16_t>(bytes[offset + 1]) << 8U);
+}
+
+std::uint32_t read_u32_le(std::span<const unsigned char> bytes, std::size_t offset)
+{
+    if (offset + 4 > bytes.size())
+    {
+        throw std::runtime_error("unexpected end of buffer");
+    }
+
+    return static_cast<std::uint32_t>(bytes[offset]) | (static_cast<std::uint32_t>(bytes[offset + 1]) << 8U) |
+           (static_cast<std::uint32_t>(bytes[offset + 2]) << 16U) | (static_cast<std::uint32_t>(bytes[offset + 3]) << 24U);
+}
+
+std::int32_t read_s32_le(std::span<const unsigned char> bytes, std::size_t offset)
+{
+    return static_cast<std::int32_t>(read_u32_le(bytes, offset));
+}
+
+float read_f32_le(std::span<const unsigned char> bytes, std::size_t offset)
+{
+    const std::uint32_t raw = read_u32_le(bytes, offset);
+    float value = 0.0F;
+    static_assert(sizeof(value) == sizeof(raw));
+    std::memcpy(&value, &raw, sizeof(value));
+    return value;
 }
 
 std::int16_t read_s16_le(const std::vector<unsigned char>& bytes, std::size_t offset)
@@ -420,6 +480,86 @@ std::vector<WorldSpawnPoint> collect_spawn_points(const std::vector<ParsedEntity
     return spawns;
 }
 
+bool is_entity_prop_class(std::string_view class_name)
+{
+    const std::string lower = lower_copy(class_name);
+    return lower == "prop_static" || lower == "prop_dynamic" || lower == "prop_dynamic_override" ||
+           lower == "prop_physics" || lower == "prop_physics_multiplayer" || lower == "prop_detail";
+}
+
+void apply_entity_angles(WorldProp& prop, const ParsedEntity& entity)
+{
+    if (const std::optional<std::string> angles = find_property(entity, "angles"))
+    {
+        prop.angles = parse_vec3(*angles).value_or(Vec3{});
+        return;
+    }
+
+    if (const std::optional<std::string> angle = find_property(entity, "angle"))
+    {
+        if (const std::optional<float> yaw = parse_float(*angle))
+        {
+            prop.angles.y = *yaw;
+        }
+    }
+}
+
+void apply_entity_color(WorldProp& prop, const ParsedEntity& entity)
+{
+    if (const std::optional<std::string> color = find_property(entity, "rendercolor"))
+    {
+        if (const std::optional<Vec3> parsed = parse_vec3(*color))
+        {
+            prop.color[0] = std::clamp(parsed->x / 255.0F, 0.0F, 1.0F);
+            prop.color[1] = std::clamp(parsed->y / 255.0F, 0.0F, 1.0F);
+            prop.color[2] = std::clamp(parsed->z / 255.0F, 0.0F, 1.0F);
+        }
+    }
+
+    if (const std::optional<std::string> alpha = find_property(entity, "renderamt"))
+    {
+        if (const std::optional<float> parsed = parse_float(*alpha))
+        {
+            prop.color[3] = std::clamp(*parsed / 255.0F, 0.0F, 1.0F);
+        }
+    }
+}
+
+std::vector<WorldProp> collect_entity_props(const std::vector<ParsedEntity>& entities)
+{
+    std::vector<WorldProp> props;
+    for (const ParsedEntity& entity : entities)
+    {
+        const std::optional<std::string> class_name = find_property(entity, "classname");
+        const std::optional<std::string> model = find_property(entity, "model");
+        if (!class_name || !model || !is_entity_prop_class(*class_name))
+        {
+            continue;
+        }
+
+        WorldProp prop;
+        prop.kind = WorldPropKind::EntityProp;
+        prop.class_name = *class_name;
+        prop.model_path = *model;
+        normalize_slashes(prop.model_path);
+        if (const std::optional<std::string> origin = find_property(entity, "origin"))
+        {
+            prop.origin = parse_vec3(*origin).value_or(Vec3{});
+        }
+        apply_entity_angles(prop, entity);
+        apply_entity_color(prop, entity);
+        if (const std::optional<std::string> skin = find_property(entity, "skin"))
+        {
+            if (const std::optional<float> parsed = parse_float(*skin))
+            {
+                prop.skin = static_cast<std::int32_t>(*parsed);
+            }
+        }
+        props.push_back(std::move(prop));
+    }
+    return props;
+}
+
 BspLump read_lump(const std::vector<unsigned char>& bytes, std::size_t lump_index)
 {
     const std::size_t offset = 8 + (lump_index * 16);
@@ -562,8 +702,340 @@ std::vector<std::int32_t> read_bsp_surfedges(const std::vector<unsigned char>& b
 std::vector<BspTexInfo> read_bsp_texinfo(const std::vector<unsigned char>& bytes)
 {
     return read_lump_array<BspTexInfo>(bytes, read_lump(bytes, kTexInfoLump), 72, "texinfo", [&](std::size_t offset) {
-        return BspTexInfo{read_u32_le(bytes, offset + 64)};
+        BspTexInfo texinfo;
+        for (std::size_t axis = 0; axis < 2; ++axis)
+        {
+            for (std::size_t component = 0; component < 4; ++component)
+            {
+                texinfo.texture_vecs[axis][component] = read_f32_le(bytes, offset + (axis * 16) + (component * 4));
+            }
+        }
+        texinfo.flags = read_u32_le(bytes, offset + 64);
+        texinfo.texdata = read_s32_le(bytes, offset + 68);
+        return texinfo;
     });
+}
+
+std::string read_texture_name(const std::vector<unsigned char>& string_data, const std::vector<std::int32_t>& string_table, std::int32_t name_index)
+{
+    if (name_index < 0 || static_cast<std::size_t>(name_index) >= string_table.size())
+    {
+        return {};
+    }
+
+    const std::int32_t string_offset = string_table[static_cast<std::size_t>(name_index)];
+    if (string_offset < 0 || static_cast<std::size_t>(string_offset) >= string_data.size())
+    {
+        return {};
+    }
+
+    const auto begin = string_data.begin() + string_offset;
+    const auto end = std::find(begin, string_data.end(), '\0');
+    std::string name(begin, end);
+    normalize_slashes(name);
+    return lower_copy(name);
+}
+
+std::vector<BspTexData> read_bsp_texdata(const std::vector<unsigned char>& bytes)
+{
+    const BspLump string_data_lump = read_lump(bytes, kTexDataStringDataLump);
+    validate_lump_range(bytes, string_data_lump, "texdata string data");
+    const std::vector<unsigned char> string_data(bytes.begin() + string_data_lump.offset, bytes.begin() + string_data_lump.offset + string_data_lump.length);
+
+    const std::vector<std::int32_t> string_table =
+        read_lump_array<std::int32_t>(bytes, read_lump(bytes, kTexDataStringTableLump), 4, "texdata string table", [&](std::size_t offset) {
+            return read_s32_le(bytes, offset);
+        });
+
+    return read_lump_array<BspTexData>(bytes, read_lump(bytes, kTexDataLump), 32, "texdata", [&](std::size_t offset) {
+        const std::int32_t name_index = read_s32_le(bytes, offset + 12);
+        const std::int32_t width = read_s32_le(bytes, offset + 16);
+        const std::int32_t height = read_s32_le(bytes, offset + 20);
+        return BspTexData{
+            .name = read_texture_name(string_data, string_table, name_index),
+            .width = static_cast<std::uint32_t>(std::max(width, 1)),
+            .height = static_cast<std::uint32_t>(std::max(height, 1)),
+        };
+    });
+}
+
+std::unordered_map<std::string, std::vector<unsigned char>> read_bsp_pakfile_assets(const std::vector<unsigned char>& bytes)
+{
+    constexpr std::uint32_t kZipLocalHeaderSignature = 0x04034B50U;
+    constexpr std::uint16_t kZipStoredMethod = 0;
+
+    const BspLump pak_lump = read_lump(bytes, kPakFileLump);
+    validate_lump_range(bytes, pak_lump, "pakfile");
+    std::span<const unsigned char> pak(bytes.data() + pak_lump.offset, pak_lump.length);
+    std::unordered_map<std::string, std::vector<unsigned char>> assets;
+
+    std::size_t cursor = 0;
+    while (cursor + 30 <= pak.size() && read_u32_le(pak, cursor) == kZipLocalHeaderSignature)
+    {
+        const std::uint16_t method = read_u16_le(pak, cursor + 8);
+        const std::uint32_t compressed_size = read_u32_le(pak, cursor + 18);
+        const std::uint32_t uncompressed_size = read_u32_le(pak, cursor + 22);
+        const std::uint16_t name_length = read_u16_le(pak, cursor + 26);
+        const std::uint16_t extra_length = read_u16_le(pak, cursor + 28);
+        const std::size_t name_offset = cursor + 30;
+        const std::size_t data_offset = name_offset + name_length + extra_length;
+        const std::size_t next = data_offset + compressed_size;
+        if (data_offset > pak.size() || next > pak.size() || next < data_offset)
+        {
+            break;
+        }
+
+        std::string name(reinterpret_cast<const char*>(pak.data() + name_offset), name_length);
+        normalize_slashes(name);
+        name = lower_copy(name);
+        if (method == kZipStoredMethod && compressed_size == uncompressed_size && !name.empty())
+        {
+            assets.try_emplace(name, pak.begin() + data_offset, pak.begin() + data_offset + compressed_size);
+        }
+
+        cursor = next;
+    }
+
+    return assets;
+}
+
+struct GameLumpData
+{
+    std::span<const unsigned char> bytes;
+    std::uint16_t version = 0;
+};
+
+std::uint32_t fourcc(std::string_view text)
+{
+    if (text.size() != 4)
+    {
+        return 0;
+    }
+
+    return static_cast<std::uint32_t>(static_cast<unsigned char>(text[0])) |
+           (static_cast<std::uint32_t>(static_cast<unsigned char>(text[1])) << 8U) |
+           (static_cast<std::uint32_t>(static_cast<unsigned char>(text[2])) << 16U) |
+           (static_cast<std::uint32_t>(static_cast<unsigned char>(text[3])) << 24U);
+}
+
+bool is_static_prop_game_lump_id(std::uint32_t id)
+{
+    return id == fourcc("sprp") || id == fourcc("prps");
+}
+
+std::optional<GameLumpData> find_static_prop_game_lump(const std::vector<unsigned char>& bytes)
+{
+    const BspLump game_lump = read_lump(bytes, kGameLump);
+    if (game_lump.length == 0)
+    {
+        return std::nullopt;
+    }
+
+    validate_lump_range(bytes, game_lump, "game");
+    std::span<const unsigned char> data(bytes.data() + game_lump.offset, game_lump.length);
+    if (data.size() < 4)
+    {
+        return std::nullopt;
+    }
+
+    const std::int32_t count = read_s32_le(data, 0);
+    if (count <= 0 || count > 4096)
+    {
+        return std::nullopt;
+    }
+
+    std::size_t cursor = 4;
+    for (std::int32_t index = 0; index < count; ++index)
+    {
+        if (cursor + 16 > data.size())
+        {
+            break;
+        }
+
+        const std::uint32_t id = read_u32_le(data, cursor);
+        const std::uint16_t flags = read_u16_le(data, cursor + 4);
+        const std::uint16_t version = read_u16_le(data, cursor + 6);
+        const std::uint32_t file_offset = read_u32_le(data, cursor + 8);
+        const std::uint32_t file_length = read_u32_le(data, cursor + 12);
+        cursor += 16;
+        if (!is_static_prop_game_lump_id(id))
+        {
+            continue;
+        }
+
+        if ((flags & 0x0001U) != 0)
+        {
+            log_warning("static prop game lump is compressed; skipping static props");
+            return std::nullopt;
+        }
+
+        const std::uint64_t begin = file_offset;
+        const std::uint64_t end = begin + file_length;
+        if (end > bytes.size() || end < begin)
+        {
+            log_warning("static prop game lump points outside the BSP file");
+            return std::nullopt;
+        }
+
+        return GameLumpData{
+            .bytes = std::span<const unsigned char>(bytes.data() + begin, file_length),
+            .version = version,
+        };
+    }
+
+    return std::nullopt;
+}
+
+std::string read_fixed_string(std::span<const unsigned char> bytes, std::size_t offset, std::size_t length)
+{
+    if (offset + length > bytes.size())
+    {
+        throw std::runtime_error("unexpected end of static prop lump");
+    }
+
+    const char* begin = reinterpret_cast<const char*>(bytes.data() + offset);
+    const char* end = begin + length;
+    const char* zero = std::find(begin, end, '\0');
+    std::string value(begin, zero);
+    normalize_slashes(value);
+    return value;
+}
+
+std::size_t static_prop_record_size(std::uint16_t version)
+{
+    switch (version)
+    {
+    case 4:
+        return 56;
+    case 5:
+        return 60;
+    case 6:
+        return 64;
+    case 7:
+    case 8:
+        return 68;
+    case 9:
+        return 72;
+    default:
+        return version >= 10 ? 76 : 0;
+    }
+}
+
+Vec3 read_vec3(std::span<const unsigned char> bytes, std::size_t offset)
+{
+    return Vec3{
+        read_f32_le(bytes, offset),
+        read_f32_le(bytes, offset + 4),
+        read_f32_le(bytes, offset + 8),
+    };
+}
+
+WorldProp read_static_prop_record(
+    std::span<const unsigned char> record,
+    std::uint16_t version,
+    const std::vector<std::string>& dictionary)
+{
+    WorldProp prop;
+    prop.kind = WorldPropKind::StaticProp;
+    prop.class_name = "static_prop";
+    prop.origin = read_vec3(record, 0);
+    prop.angles = read_vec3(record, 12);
+    const std::uint16_t prop_type = read_u16_le(record, 24);
+    if (prop_type < dictionary.size())
+    {
+        prop.model_path = dictionary[prop_type];
+    }
+    prop.solid = record[30];
+    prop.flags = record[31];
+    prop.skin = read_s32_le(record, 32);
+    prop.lighting_origin = read_vec3(record, 44);
+    if (version >= 7 && record.size() >= 68)
+    {
+        prop.color[0] = static_cast<float>(record[64]) / 255.0F;
+        prop.color[1] = static_cast<float>(record[65]) / 255.0F;
+        prop.color[2] = static_cast<float>(record[66]) / 255.0F;
+        prop.color[3] = static_cast<float>(record[67]) / 255.0F;
+    }
+    if (version >= 10 && record.size() >= 76)
+    {
+        prop.flags_ex = read_u32_le(record, 72);
+    }
+    return prop;
+}
+
+std::vector<WorldProp> read_static_props(const std::vector<unsigned char>& bytes)
+{
+    const std::optional<GameLumpData> lump = find_static_prop_game_lump(bytes);
+    if (!lump)
+    {
+        return {};
+    }
+
+    std::vector<WorldProp> props;
+    try
+    {
+        std::size_t cursor = 0;
+        const auto read_count = [&](std::string_view label) -> std::int32_t {
+            if (cursor + 4 > lump->bytes.size())
+            {
+                throw std::runtime_error("static prop " + std::string(label) + " count is truncated");
+            }
+            const std::int32_t count = read_s32_le(lump->bytes, cursor);
+            cursor += 4;
+            if (count < 0 || count > 1'000'000)
+            {
+                throw std::runtime_error("static prop " + std::string(label) + " count is invalid");
+            }
+            return count;
+        };
+
+        const std::int32_t dictionary_count = read_count("dictionary");
+        std::vector<std::string> dictionary;
+        dictionary.reserve(static_cast<std::size_t>(dictionary_count));
+        for (std::int32_t index = 0; index < dictionary_count; ++index)
+        {
+            dictionary.push_back(read_fixed_string(lump->bytes, cursor, 128));
+            cursor += 128;
+        }
+
+        const std::int32_t leaf_count = read_count("leaf");
+        const std::uint64_t leaf_bytes = static_cast<std::uint64_t>(leaf_count) * 2U;
+        if (cursor + leaf_bytes > lump->bytes.size())
+        {
+            throw std::runtime_error("static prop leaf list is truncated");
+        }
+        cursor += static_cast<std::size_t>(leaf_bytes);
+
+        const std::int32_t prop_count = read_count("instance");
+        const std::size_t record_size = static_prop_record_size(lump->version);
+        if (record_size == 0)
+        {
+            log_warning("unsupported static prop game lump version {}", lump->version);
+            return {};
+        }
+
+        props.reserve(static_cast<std::size_t>(prop_count));
+        for (std::int32_t index = 0; index < prop_count; ++index)
+        {
+            if (cursor + record_size > lump->bytes.size())
+            {
+                throw std::runtime_error("static prop instance list is truncated");
+            }
+            WorldProp prop = read_static_prop_record(lump->bytes.subspan(cursor, record_size), lump->version, dictionary);
+            cursor += record_size;
+            if (!prop.model_path.empty())
+            {
+                props.push_back(std::move(prop));
+            }
+        }
+    }
+    catch (const std::exception& error)
+    {
+        log_warning("failed to parse static props: {}", error.what());
+        props.clear();
+    }
+
+    return props;
 }
 
 std::vector<BspFace> read_bsp_faces(const std::vector<unsigned char>& bytes)
@@ -593,6 +1065,61 @@ std::uint32_t surface_flags_for_face(const BspFace& face, const std::vector<BspT
     }
 
     return texinfo[static_cast<std::size_t>(face.texinfo)].flags;
+}
+
+const BspTexInfo* texinfo_for_face(const BspFace& face, const std::vector<BspTexInfo>& texinfo)
+{
+    if (face.texinfo < 0 || static_cast<std::size_t>(face.texinfo) >= texinfo.size())
+    {
+        return nullptr;
+    }
+
+    return &texinfo[static_cast<std::size_t>(face.texinfo)];
+}
+
+Vec2 texture_coordinate(Vec3 point, const BspTexInfo& texinfo, const WorldMaterial& material)
+{
+    const float width = static_cast<float>(std::max<std::uint32_t>(material.width, 1));
+    const float height = static_cast<float>(std::max<std::uint32_t>(material.height, 1));
+    const auto& s = texinfo.texture_vecs[0];
+    const auto& t = texinfo.texture_vecs[1];
+    return Vec2{
+        ((point.x * s[0]) + (point.y * s[1]) + (point.z * s[2]) + s[3]) / width,
+        ((point.x * t[0]) + (point.y * t[1]) + (point.z * t[2]) + t[3]) / height,
+    };
+}
+
+std::uint32_t material_index_for_texinfo(
+    WorldMesh& mesh,
+    std::vector<RenderMeshChunk>& chunks,
+    std::unordered_map<std::int32_t, std::uint32_t>& texdata_to_material,
+    const BspTexInfo* texinfo,
+    const std::vector<BspTexData>& texdata)
+{
+    const std::int32_t texdata_index = texinfo != nullptr ? texinfo->texdata : -1;
+    if (const auto it = texdata_to_material.find(texdata_index); it != texdata_to_material.end())
+    {
+        return it->second;
+    }
+
+    WorldMaterial material;
+    if (texdata_index >= 0 && static_cast<std::size_t>(texdata_index) < texdata.size())
+    {
+        const BspTexData& source = texdata[static_cast<std::size_t>(texdata_index)];
+        material.name = source.name.empty() ? "__missing" : source.name;
+        material.width = source.width;
+        material.height = source.height;
+    }
+    else
+    {
+        material.name = "__missing";
+    }
+
+    const std::uint32_t material_index = static_cast<std::uint32_t>(mesh.materials.size());
+    mesh.materials.push_back(std::move(material));
+    chunks.emplace_back();
+    texdata_to_material.emplace(texdata_index, material_index);
+    return material_index;
 }
 
 std::optional<std::vector<Vec3>> polygon_for_face(
@@ -649,15 +1176,15 @@ Vec3 polygon_normal(const std::vector<Vec3>& polygon)
     return normalize(normal);
 }
 
-void append_render_triangle(WorldMesh& mesh, Vec3 a, Vec3 b, Vec3 c, Vec3 normal)
+void append_render_triangle(RenderMeshChunk& chunk, Vec3 a, Vec3 b, Vec3 c, Vec3 normal, const BspTexInfo& texinfo, const WorldMaterial& material)
 {
-    const std::uint32_t first_index = static_cast<std::uint32_t>(mesh.vertices.size());
-    mesh.vertices.push_back(WorldMeshVertex{a, normal});
-    mesh.vertices.push_back(WorldMeshVertex{b, normal});
-    mesh.vertices.push_back(WorldMeshVertex{c, normal});
-    mesh.indices.push_back(first_index);
-    mesh.indices.push_back(first_index + 1);
-    mesh.indices.push_back(first_index + 2);
+    const std::uint32_t first_index = static_cast<std::uint32_t>(chunk.vertices.size());
+    chunk.vertices.push_back(WorldMeshVertex{a, normal, texture_coordinate(a, texinfo, material)});
+    chunk.vertices.push_back(WorldMeshVertex{b, normal, texture_coordinate(b, texinfo, material)});
+    chunk.vertices.push_back(WorldMeshVertex{c, normal, texture_coordinate(c, texinfo, material)});
+    chunk.indices.push_back(first_index);
+    chunk.indices.push_back(first_index + 1);
+    chunk.indices.push_back(first_index + 2);
 }
 
 void append_collision_triangle(WorldMesh& mesh, Vec3 a, Vec3 b, Vec3 c, Vec3 normal, std::uint32_t surface_flags)
@@ -671,19 +1198,280 @@ void append_collision_triangle(WorldMesh& mesh, Vec3 a, Vec3 b, Vec3 c, Vec3 nor
     mesh.collision_triangles.push_back(triangle);
 }
 
+void flatten_render_chunks(WorldMesh& mesh, const std::vector<RenderMeshChunk>& chunks)
+{
+    for (std::uint32_t material_index = 0; material_index < chunks.size(); ++material_index)
+    {
+        const RenderMeshChunk& chunk = chunks[material_index];
+        if (chunk.indices.empty())
+        {
+            continue;
+        }
+
+        const std::uint32_t first_index = static_cast<std::uint32_t>(mesh.indices.size());
+        const std::uint32_t first_vertex = static_cast<std::uint32_t>(mesh.vertices.size());
+        mesh.vertices.insert(mesh.vertices.end(), chunk.vertices.begin(), chunk.vertices.end());
+        for (const std::uint32_t index : chunk.indices)
+        {
+            mesh.indices.push_back(first_vertex + index);
+        }
+
+        mesh.batches.push_back(WorldMeshBatch{
+            .material_index = material_index,
+            .first_index = first_index,
+            .index_count = static_cast<std::uint32_t>(chunk.indices.size()),
+        });
+    }
+}
+
+using SourceModelInfoCache = std::unordered_map<std::string, std::optional<SourceModelInfo>>;
+
+const SourceModelInfo* cached_source_model_info(SourceModelInfoCache& cache, const SourceAssetStore& assets, const std::string& model_path)
+{
+    const std::string key = lower_copy(model_path);
+    auto [it, inserted] = cache.try_emplace(key);
+    if (inserted)
+    {
+        it->second = load_source_model_info(assets, model_path);
+    }
+    return it->second ? &*it->second : nullptr;
+}
+
+void resolve_prop_model_info(std::vector<WorldProp>& props, const SourceAssetStore& assets, SourceModelInfoCache& model_cache)
+{
+    for (WorldProp& prop : props)
+    {
+        if (prop.model_path.empty())
+        {
+            continue;
+        }
+
+        if (const SourceModelInfo* model = cached_source_model_info(model_cache, assets, prop.model_path))
+        {
+            prop.bounds_min = model->bounds.mins;
+            prop.bounds_max = model->bounds.maxs;
+            prop.model_bounds_loaded = true;
+            prop.material_name = source_model_material_for_skin(*model, prop.skin, 0);
+            prop.model_material_loaded = !prop.material_name.empty();
+            prop.model_mesh_loaded = !model->meshes.empty();
+        }
+    }
+}
+
+Vec3 transform_prop_point(const WorldProp& prop, Vec3 point)
+{
+    const float pitch = prop.angles.x * (3.14159265358979323846F / 180.0F);
+    const float yaw = prop.angles.y * (3.14159265358979323846F / 180.0F);
+    const float roll = prop.angles.z * (3.14159265358979323846F / 180.0F);
+    const float sp = std::sin(pitch);
+    const float cp = std::cos(pitch);
+    const float sy = std::sin(yaw);
+    const float cy = std::cos(yaw);
+    const float sr = std::sin(roll);
+    const float cr = std::cos(roll);
+
+    const Vec3 forward{cp * cy, cp * sy, -sp};
+    const Vec3 right{(-sr * sp * cy) + (cr * sy), (-sr * sp * sy) - (cr * cy), -sr * cp};
+    const Vec3 up{(cr * sp * cy) + (sr * sy), (cr * sp * sy) - (sr * cy), cr * cp};
+    return {
+        prop.origin.x + (forward.x * point.x) - (right.x * point.y) + (up.x * point.z),
+        prop.origin.y + (forward.y * point.x) - (right.y * point.y) + (up.y * point.z),
+        prop.origin.z + (forward.z * point.x) - (right.z * point.y) + (up.z * point.z),
+    };
+}
+
+Vec3 rotate_prop_vector(const WorldProp& prop, Vec3 vector)
+{
+    const float pitch = prop.angles.x * (3.14159265358979323846F / 180.0F);
+    const float yaw = prop.angles.y * (3.14159265358979323846F / 180.0F);
+    const float roll = prop.angles.z * (3.14159265358979323846F / 180.0F);
+    const float sp = std::sin(pitch);
+    const float cp = std::cos(pitch);
+    const float sy = std::sin(yaw);
+    const float cy = std::cos(yaw);
+    const float sr = std::sin(roll);
+    const float cr = std::cos(roll);
+
+    const Vec3 forward{cp * cy, cp * sy, -sp};
+    const Vec3 right{(-sr * sp * cy) + (cr * sy), (-sr * sp * sy) - (cr * cy), -sr * cp};
+    const Vec3 up{(cr * sp * cy) + (sr * sy), (cr * sp * sy) - (sr * cy), cr * cp};
+    return normalize({
+        (forward.x * vector.x) - (right.x * vector.y) + (up.x * vector.z),
+        (forward.y * vector.x) - (right.y * vector.y) + (up.y * vector.z),
+        (forward.z * vector.x) - (right.z * vector.y) + (up.z * vector.z),
+    });
+}
+
+std::uint32_t material_index_for_prop(
+    WorldMesh& mesh,
+    std::vector<RenderMeshChunk>& chunks,
+    std::unordered_map<std::string, std::uint32_t>& material_to_index,
+    std::string material_name)
+{
+    material_name = lower_copy(material_name.empty() ? "__prop_missing" : material_name);
+    if (const auto it = material_to_index.find(material_name); it != material_to_index.end())
+    {
+        return it->second;
+    }
+
+    const std::uint32_t material_index = static_cast<std::uint32_t>(mesh.materials.size());
+    mesh.materials.push_back(WorldMaterial{
+        .name = material_name,
+        .width = 1,
+        .height = 1,
+    });
+    chunks.emplace_back();
+    material_to_index.emplace(std::move(material_name), material_index);
+    return material_index;
+}
+
+void append_prop_triangle(RenderMeshChunk& chunk, Vec3 a, Vec3 b, Vec3 c)
+{
+    const Vec3 normal = normalize(cross(b - a, c - a));
+    const std::uint32_t first_index = static_cast<std::uint32_t>(chunk.vertices.size());
+    chunk.vertices.push_back(WorldMeshVertex{a, normal, {0.0F, 0.0F}});
+    chunk.vertices.push_back(WorldMeshVertex{b, normal, {1.0F, 0.0F}});
+    chunk.vertices.push_back(WorldMeshVertex{c, normal, {1.0F, 1.0F}});
+    chunk.indices.push_back(first_index);
+    chunk.indices.push_back(first_index + 1);
+    chunk.indices.push_back(first_index + 2);
+}
+
+void append_prop_box(WorldMesh& mesh, RenderMeshChunk& chunk, const WorldProp& prop)
+{
+    const Vec3 mins = prop.bounds_min;
+    const Vec3 maxs = prop.bounds_max;
+    std::array<Vec3, 8> corners{{
+        {mins.x, mins.y, mins.z},
+        {maxs.x, mins.y, mins.z},
+        {maxs.x, maxs.y, mins.z},
+        {mins.x, maxs.y, mins.z},
+        {mins.x, mins.y, maxs.z},
+        {maxs.x, mins.y, maxs.z},
+        {maxs.x, maxs.y, maxs.z},
+        {mins.x, maxs.y, maxs.z},
+    }};
+
+    for (Vec3& corner : corners)
+    {
+        corner = transform_prop_point(prop, corner);
+        include_bounds(mesh, corner);
+    }
+
+    constexpr std::array<std::array<std::uint8_t, 4>, 6> faces{{
+        {{0, 1, 2, 3}},
+        {{4, 7, 6, 5}},
+        {{0, 4, 5, 1}},
+        {{1, 5, 6, 2}},
+        {{2, 6, 7, 3}},
+        {{3, 7, 4, 0}},
+    }};
+
+    for (const auto& face : faces)
+    {
+        append_prop_triangle(chunk, corners[face[0]], corners[face[1]], corners[face[2]]);
+        append_prop_triangle(chunk, corners[face[0]], corners[face[2]], corners[face[3]]);
+    }
+}
+
+bool append_prop_model_meshes(
+    WorldMesh& world_mesh,
+    std::vector<RenderMeshChunk>& chunks,
+    std::unordered_map<std::string, std::uint32_t>& material_to_index,
+    const WorldProp& prop,
+    const SourceModelInfo& model)
+{
+    bool appended = false;
+    for (const SourceModelMesh& source_mesh : model.meshes)
+    {
+        if (source_mesh.indices.empty())
+        {
+            continue;
+        }
+
+        std::string material_name = source_model_material_for_skin(model, prop.skin, source_mesh.material);
+        if (material_name.empty())
+        {
+            material_name = prop.material_name.empty() ? prop.model_path : prop.material_name;
+        }
+
+        const std::uint32_t material_index = material_index_for_prop(world_mesh, chunks, material_to_index, std::move(material_name));
+        RenderMeshChunk& chunk = chunks[material_index];
+        const std::uint32_t first_vertex = static_cast<std::uint32_t>(chunk.vertices.size());
+        for (const std::uint32_t source_index : source_mesh.indices)
+        {
+            if (source_index >= source_mesh.vertices.size())
+            {
+                continue;
+            }
+
+            const SourceModelVertex& source_vertex = source_mesh.vertices[source_index];
+            const Vec3 position = transform_prop_point(prop, source_vertex.position);
+            chunk.vertices.push_back(WorldMeshVertex{
+                .position = position,
+                .normal = rotate_prop_vector(prop, source_vertex.normal),
+                .texcoord = source_vertex.texcoord,
+            });
+            chunk.indices.push_back(first_vertex + static_cast<std::uint32_t>(chunk.vertices.size() - first_vertex - 1));
+            include_bounds(world_mesh, position);
+            appended = true;
+        }
+    }
+    return appended;
+}
+
+void append_prop_render_meshes(WorldMesh& mesh, const std::vector<WorldProp>& props, const SourceModelInfoCache& model_cache)
+{
+    if (props.empty())
+    {
+        return;
+    }
+
+    std::vector<RenderMeshChunk> chunks(mesh.materials.size());
+    std::unordered_map<std::string, std::uint32_t> material_to_index;
+    for (std::uint32_t index = 0; index < mesh.materials.size(); ++index)
+    {
+        material_to_index.emplace(lower_copy(mesh.materials[index].name), index);
+    }
+
+    for (const WorldProp& prop : props)
+    {
+        const auto model = model_cache.find(lower_copy(prop.model_path));
+        if (model != model_cache.end() && model->second && append_prop_model_meshes(mesh, chunks, material_to_index, prop, *model->second))
+        {
+            continue;
+        }
+
+        const std::string material_name = prop.material_name.empty() ? prop.model_path : prop.material_name;
+        const std::uint32_t material_index = material_index_for_prop(mesh, chunks, material_to_index, material_name);
+        append_prop_box(mesh, chunks[material_index], prop);
+    }
+
+    flatten_render_chunks(mesh, chunks);
+}
+
 WorldMesh build_bsp_world_mesh(const std::vector<unsigned char>& bytes)
 {
     const std::vector<Vec3> vertices = read_bsp_vertices(bytes);
     const std::vector<BspEdge> edges = read_bsp_edges(bytes);
     const std::vector<std::int32_t> surfedges = read_bsp_surfedges(bytes);
+    const std::vector<BspTexData> texdata = read_bsp_texdata(bytes);
     const std::vector<BspTexInfo> texinfo = read_bsp_texinfo(bytes);
     const std::vector<BspFace> faces = read_bsp_faces(bytes);
 
     WorldMesh mesh;
+    std::vector<RenderMeshChunk> render_chunks;
+    std::unordered_map<std::int32_t, std::uint32_t> texdata_to_material;
     std::size_t skipped_faces = 0;
     for (const BspFace& face : faces)
     {
         const std::uint32_t surface_flags = surface_flags_for_face(face, texinfo);
+        if (has_any_surface_flag(surface_flags, kSurfaceSky2D | kSurfaceSky))
+        {
+            mesh.has_sky_surfaces = true;
+        }
+
+        const BspTexInfo* face_texinfo = texinfo_for_face(face, texinfo);
         const bool render_surface = should_render_surface(surface_flags);
         const bool collide_surface = should_collide_surface(surface_flags);
         if (!render_surface && !collide_surface)
@@ -716,7 +1504,14 @@ WorldMesh build_bsp_world_mesh(const std::vector<unsigned char>& bytes)
 
             if (render_surface)
             {
-                append_render_triangle(mesh, a, b, c, normal);
+                const std::uint32_t material_index = material_index_for_texinfo(mesh, render_chunks, texdata_to_material, face_texinfo, texdata);
+                append_render_triangle(render_chunks[material_index],
+                    a,
+                    b,
+                    c,
+                    normal,
+                    face_texinfo != nullptr ? *face_texinfo : BspTexInfo{},
+                    mesh.materials[material_index]);
             }
 
             if (collide_surface)
@@ -731,10 +1526,15 @@ WorldMesh build_bsp_world_mesh(const std::vector<unsigned char>& bytes)
         log_warning("skipped {} malformed BSP face(s)", skipped_faces);
     }
 
+    flatten_render_chunks(mesh, render_chunks);
     return mesh;
 }
 
-LoadedWorld load_source_bsp(std::string name, std::filesystem::path relative_path, std::filesystem::path resolved_path)
+LoadedWorld load_source_bsp(
+    const ContentFileSystem& filesystem,
+    std::string name,
+    std::filesystem::path relative_path,
+    std::filesystem::path resolved_path)
 {
     std::vector<unsigned char> bytes = read_binary_file(resolved_path);
     if (bytes.size() < kBspHeaderSize)
@@ -774,7 +1574,15 @@ LoadedWorld load_source_bsp(std::string name, std::filesystem::path relative_pat
     }
 
     world.spawn_points = collect_spawn_points(entities);
+    world.embedded_assets = read_bsp_pakfile_assets(bytes);
+    world.props = read_static_props(bytes);
+    std::vector<WorldProp> entity_props = collect_entity_props(entities);
+    world.props.insert(world.props.end(), std::make_move_iterator(entity_props.begin()), std::make_move_iterator(entity_props.end()));
+    SourceAssetStore source_assets(filesystem, &world.embedded_assets);
+    SourceModelInfoCache source_model_cache;
+    resolve_prop_model_info(world.props, source_assets, source_model_cache);
     world.mesh = build_bsp_world_mesh(bytes);
+    append_prop_render_meshes(world.mesh, world.props, source_model_cache);
     return world;
 }
 
@@ -904,7 +1712,7 @@ std::optional<LoadedWorld> try_load_candidate(
     const std::string relative = relative_path.generic_string();
     if (has_suffix(relative, ".bsp"))
     {
-        return load_source_bsp(canonical_map_name(requested_name), relative_path, *resolved);
+        return load_source_bsp(filesystem, canonical_map_name(requested_name), relative_path, *resolved);
     }
 
     if (has_suffix(relative, ".level.json"))
@@ -984,12 +1792,14 @@ bool WorldManager::load_map(std::string_view map_name, ContentFileSystem& filesy
             current_world_ = std::move(*loaded);
             ++generation_;
 
-            log_info("loaded {} world '{}' from '{}' entities={} spawns={} render_tris={} collision_tris={} bytes={}",
+            log_info("loaded {} world '{}' from '{}' entities={} spawns={} props={} embedded_assets={} render_tris={} collision_tris={} bytes={}",
                 to_string(current_world_->kind),
                 current_world_->name,
                 current_world_->resolved_path.string(),
                 current_world_->entity_count,
                 current_world_->spawn_points.size(),
+                current_world_->props.size(),
+                current_world_->embedded_assets.size(),
                 current_world_->mesh.indices.size() / 3,
                 current_world_->mesh.collision_triangles.size(),
                 current_world_->byte_size);

@@ -34,6 +34,7 @@ struct RuntimeConfig
     int max_ticks_per_frame = 8;
     std::uint32_t window_width = 1280;
     std::uint32_t window_height = 720;
+    std::uint16_t network_port = 27015;
     double tick_rate = 64.0;
     bool vsync = true;
     bool deterministic_frames = false;

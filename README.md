@@ -1,6 +1,10 @@
+<p align="center">
+  <img src="docs/assets/openstrike-logo.png" alt="OpenStrike logo" width="620">
+</p>
+
 # OpenStrike
 
-OpenStrike is a clean recreation of the `UrbanStrike` runtime. The goal is to keep the useful Counter-Strike style architecture, fixed tick simulation, client/server split, editor path, and content pipeline ideas without carrying forward the full legacy Source tree.
+OpenStrike is a small, buildable first-person shooter runtime focused on Counter-Strike style architecture, fixed tick simulation, a client/server split, editor tooling, and a content pipeline.
 
 This repository starts as a small, buildable spine:
 
@@ -67,4 +71,4 @@ Important runtime flags:
 
 ## Direction
 
-The current code intentionally avoids copying UrbanStrike's module sprawl. New systems should land behind narrow interfaces and come with tests before they grow into renderer, physics, networking, or editor-specific code.
+The current code intentionally keeps systems narrow and testable. New systems should land behind focused interfaces and come with tests before they grow into renderer, physics, networking, or editor-specific code.

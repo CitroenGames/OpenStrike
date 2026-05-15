@@ -2,6 +2,7 @@
 
 #include "openstrike/core/math.hpp"
 
+#include <array>
 #include <cstdint>
 #include <filesystem>
 #include <optional>
@@ -27,10 +28,38 @@ struct WorldSpawnPoint
     Vec3 angles;
 };
 
+enum class WorldPropKind
+{
+    StaticProp,
+    EntityProp
+};
+
+struct WorldProp
+{
+    WorldPropKind kind = WorldPropKind::StaticProp;
+    std::string class_name;
+    std::string model_path;
+    Vec3 origin;
+    Vec3 angles;
+    Vec3 bounds_min{-16.0F, -16.0F, 0.0F};
+    Vec3 bounds_max{16.0F, 16.0F, 32.0F};
+    Vec3 lighting_origin;
+    std::array<float, 4> color{1.0F, 1.0F, 1.0F, 1.0F};
+    std::uint32_t flags = 0;
+    std::uint32_t flags_ex = 0;
+    std::int32_t skin = 0;
+    std::uint8_t solid = 0;
+    std::string material_name;
+    bool model_bounds_loaded = false;
+    bool model_material_loaded = false;
+    bool model_mesh_loaded = false;
+};
+
 struct WorldMeshVertex
 {
     Vec3 position;
     Vec3 normal;
+    Vec2 texcoord;
 };
 
 struct WorldTriangle
@@ -40,14 +69,31 @@ struct WorldTriangle
     std::uint32_t surface_flags = 0;
 };
 
+struct WorldMaterial
+{
+    std::string name;
+    std::uint32_t width = 1;
+    std::uint32_t height = 1;
+};
+
+struct WorldMeshBatch
+{
+    std::uint32_t material_index = 0;
+    std::uint32_t first_index = 0;
+    std::uint32_t index_count = 0;
+};
+
 struct WorldMesh
 {
     std::vector<WorldMeshVertex> vertices;
     std::vector<std::uint32_t> indices;
+    std::vector<WorldMaterial> materials;
+    std::vector<WorldMeshBatch> batches;
     std::vector<WorldTriangle> collision_triangles;
     Vec3 bounds_min;
     Vec3 bounds_max;
     bool has_bounds = false;
+    bool has_sky_surfaces = false;
 };
 
 struct LoadedWorld
@@ -62,7 +108,9 @@ struct LoadedWorld
     std::uint32_t checksum = 0;
     std::size_t entity_count = 0;
     std::unordered_map<std::string, std::string> worldspawn;
+    std::unordered_map<std::string, std::vector<unsigned char>> embedded_assets;
     std::vector<WorldSpawnPoint> spawn_points;
+    std::vector<WorldProp> props;
     WorldMesh mesh;
 };
 

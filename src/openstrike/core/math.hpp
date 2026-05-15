@@ -4,6 +4,12 @@
 
 namespace openstrike
 {
+struct Vec2
+{
+    float x = 0.0F;
+    float y = 0.0F;
+};
+
 struct Vec3
 {
     float x = 0.0F;
@@ -53,4 +59,3 @@ inline Vec3 normalize_2d(Vec3 value)
     return {value.x / length, value.y / length, 0.0F};
 }
 }
-

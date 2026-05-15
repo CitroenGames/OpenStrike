@@ -1,6 +1,7 @@
 #include "openstrike/engine/runtime_config.hpp"
 
 #include <charconv>
+#include <algorithm>
 #include <filesystem>
 #include <stdexcept>
 #include <string>
@@ -182,6 +183,31 @@ RuntimeConfig RuntimeConfig::from_command_line(const CommandLine& command_line)
         {
             throw std::invalid_argument("--height must be positive");
         }
+    }
+
+    if (const auto port = command_line.option("net-port"))
+    {
+        const std::uint64_t parsed = parse_u64(*port, "net-port");
+        if (parsed == 0 || parsed > 65535)
+        {
+            throw std::invalid_argument("--net-port must be between 1 and 65535");
+        }
+        config.network_port = static_cast<std::uint16_t>(parsed);
+    }
+
+    if (const auto port = command_line.option("port"))
+    {
+        const std::uint64_t parsed = parse_u64(*port, "port");
+        if (parsed == 0 || parsed > 65535)
+        {
+            throw std::invalid_argument("--port must be between 1 and 65535");
+        }
+        config.network_port = static_cast<std::uint16_t>(parsed);
+    }
+
+    if (const auto connect = command_line.option("connect"))
+    {
+        config.startup_commands.push_back("connect " + *connect);
     }
 
     config.vsync = !command_line.has_flag("no-vsync");

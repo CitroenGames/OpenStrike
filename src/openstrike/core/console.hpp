@@ -12,7 +12,9 @@
 namespace openstrike
 {
 class ContentFileSystem;
+class NetworkSystem;
 class WorldManager;
+class AudioSystem;
 
 struct ConsoleVariable
 {
@@ -58,6 +60,8 @@ struct ConsoleCommandContext
     const CommandRegistry* registry = nullptr;
     ContentFileSystem* filesystem = nullptr;
     WorldManager* world = nullptr;
+    NetworkSystem* network = nullptr;
+    AudioSystem* audio = nullptr;
     std::function<void()> request_quit;
 };
 

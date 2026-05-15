@@ -1,7 +1,9 @@
 #pragma once
 
 #include "openstrike/engine/module.hpp"
+#include "openstrike/game/fps_controller.hpp"
 #include "openstrike/game/movement.hpp"
+#include "openstrike/physics/physics_world.hpp"
 
 #include <cstdint>
 
@@ -19,9 +21,14 @@ public:
 
 private:
     void sync_world(EngineContext& engine);
+    void update_camera(EngineContext& engine) const;
+    void update_hud(EngineContext& engine) const;
 
     PlayerState local_player_;
     MovementTuning movement_;
+    FpsControllerSettings fps_settings_;
+    FpsViewState fps_view_;
+    PhysicsWorld physics_;
     InputCommand input_;
     std::uint64_t observed_world_generation_ = 0;
 };

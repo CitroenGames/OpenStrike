@@ -4,7 +4,9 @@
 #include "openstrike/engine/engine_context.hpp"
 #include "openstrike/world/world.hpp"
 
+#include <algorithm>
 #include <optional>
+#include <string>
 
 namespace openstrike
 {
@@ -13,21 +15,40 @@ const char* GameSimulation::name() const
     return "game";
 }
 
-void GameSimulation::on_start(const RuntimeConfig& config, EngineContext&)
+void GameSimulation::on_start(const RuntimeConfig& config, EngineContext& engine)
 {
     movement_.tick_interval_seconds = static_cast<float>(config.tick_interval_seconds());
-    input_.move_y = 1.0F;
     local_player_.on_ground = true;
+    update_hud(engine);
     log_info("game simulation started");
 }
 
 void GameSimulation::on_fixed_update(const SimulationStep&, EngineContext& engine)
 {
     sync_world(engine);
+    const FpsInputSample input_sample = sample_fps_input(engine.input);
+    update_fps_view(fps_view_, input_sample, fps_settings_);
+    input_ = build_fps_move_command(fps_view_, input_sample);
+
     if (const LoadedWorld* world = engine.world.current_world())
     {
         const std::optional<float> floor_z = find_floor_z(*world, local_player_.origin, 512.0F);
-        simulate_player_move(local_player_, input_, movement_, floor_z);
+        PlayerState desired_player = local_player_;
+        simulate_player_move(desired_player, input_, movement_, floor_z);
+
+        if (physics_.has_character())
+        {
+            const PhysicsCharacterState resolved =
+                physics_.move_character_to(desired_player.origin, desired_player.velocity, movement_.tick_interval_seconds);
+            local_player_.origin = resolved.origin;
+            local_player_.velocity = resolved.velocity;
+            local_player_.on_ground = resolved.on_ground;
+            update_camera(engine);
+            update_hud(engine);
+            return;
+        }
+
+        local_player_ = desired_player;
         if (const std::optional<float> post_move_floor_z = find_floor_z(*world, local_player_.origin, 512.0F);
             post_move_floor_z && local_player_.velocity.z <= 0.0F && local_player_.origin.z <= *post_move_floor_z + 2.0F)
         {
@@ -35,14 +56,20 @@ void GameSimulation::on_fixed_update(const SimulationStep&, EngineContext& engin
             local_player_.velocity.z = 0.0F;
             local_player_.on_ground = true;
         }
+        update_camera(engine);
+        update_hud(engine);
         return;
     }
 
     simulate_player_move(local_player_, input_, movement_);
+    engine.camera.active = false;
+    update_hud(engine);
 }
 
-void GameSimulation::on_frame(const FrameContext& context, EngineContext&)
+void GameSimulation::on_frame(const FrameContext& context, EngineContext& engine)
 {
+    update_camera(engine);
+    update_hud(engine);
     if (context.frame_index == 0)
     {
         log_info("player origin=({}, {}, {})", local_player_.origin.x, local_player_.origin.y, local_player_.origin.z);
@@ -66,15 +93,23 @@ void GameSimulation::sync_world(EngineContext& engine)
     const LoadedWorld* world = engine.world.current_world();
     if (world == nullptr)
     {
+        physics_.clear_character();
+        physics_.clear_static_world();
+        engine.camera.active = false;
         return;
     }
 
+    physics_.clear_character();
+    physics_.clear_static_world();
     local_player_ = {};
     local_player_.on_ground = true;
 
     if (!world->spawn_points.empty())
     {
-        local_player_.origin = world->spawn_points.front().origin;
+        const WorldSpawnPoint& spawn = world->spawn_points.front();
+        local_player_.origin = spawn.origin;
+        fps_view_.pitch_degrees = spawn.angles.x;
+        fps_view_.yaw_degrees = spawn.angles.y;
     }
 
     if (const std::optional<float> floor_z = find_floor_z(*world, local_player_.origin, 512.0F))
@@ -83,10 +118,76 @@ void GameSimulation::sync_world(EngineContext& engine)
         local_player_.on_ground = true;
     }
 
+    if (physics_.load_static_world(*world))
+    {
+        physics_.reset_character(local_player_.origin, local_player_.velocity);
+    }
+    else
+    {
+        log_warning("falling back to legacy floor probing for world '{}'", world->name);
+    }
+
     log_info("game simulation entered world '{}' at player origin=({}, {}, {})",
         world->name,
         local_player_.origin.x,
         local_player_.origin.y,
         local_player_.origin.z);
+    update_camera(engine);
+}
+
+void GameSimulation::update_camera(EngineContext& engine) const
+{
+    if (engine.world.current_world() == nullptr)
+    {
+        engine.camera.active = false;
+        return;
+    }
+
+    engine.camera.active = true;
+    engine.camera.origin = fps_eye_origin(local_player_, fps_settings_);
+    engine.camera.pitch_degrees = fps_view_.pitch_degrees;
+    engine.camera.yaw_degrees = fps_view_.yaw_degrees;
+}
+
+void GameSimulation::update_hud(EngineContext& engine) const
+{
+    const LoadedWorld* world = engine.world.current_world();
+
+    HudState next;
+    next.visible = world != nullptr;
+    next.alive = true;
+    next.grounded = local_player_.on_ground;
+    next.health = 100;
+    next.max_health = 100;
+    next.armor = 0;
+    next.money = 800;
+    next.ammo_in_clip = 12;
+    next.reserve_ammo = 24;
+    next.team_name = "Counter-Terrorists";
+    next.weapon_name = "USP-S";
+    next.round_phase = world != nullptr ? world->name : "MENU";
+    next.round_time_seconds = 115.0;
+    next.speed = local_player_.velocity.length_2d();
+    next.crosshair_gap = std::clamp(10.0F + (next.speed * 0.04F), 12.0F, 28.0F);
+
+    const NetworkClient& client = engine.network.client();
+    const NetworkServer& server = engine.network.server();
+    if (client.is_connected())
+    {
+        next.connected = true;
+        next.network_label = client.remote_address().to_string();
+    }
+    else if (server.is_running())
+    {
+        next.connected = !server.clients().empty();
+        next.network_label = "Listen " + std::to_string(server.local_port());
+    }
+    else
+    {
+        next.network_label = "Local";
+    }
+
+    next.revision = engine.hud.revision + 1;
+    engine.hud = next;
 }
 }

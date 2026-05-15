@@ -1,5 +1,6 @@
 #include "openstrike/app/application.hpp"
 
+#include "openstrike/audio/audio_module.hpp"
 #include "openstrike/client/client_module.hpp"
 #include "openstrike/core/log.hpp"
 #include "openstrike/editor/editor_module.hpp"
@@ -31,6 +32,7 @@ int run_application(const RuntimeConfig& config)
     }
     else
     {
+        engine.add_module(std::make_unique<AudioModule>());
         engine.add_module(std::make_unique<ClientModule>());
     }
 
