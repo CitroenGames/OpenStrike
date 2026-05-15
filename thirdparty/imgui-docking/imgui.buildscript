@@ -1,0 +1,52 @@
+[project:imgui-docking]
+type = lib
+std = 17
+sources = {
+    imgui.cpp
+    imgui_draw.cpp
+    imgui_widgets.cpp
+    imgui_tables.cpp
+    imgui_demo.cpp
+    backends/imgui_impl_sdl3.cpp
+    backends/imgui_impl_opengl3.cpp
+}
+headers = {
+    *.h
+    backends/imgui_impl_sdl3.h
+    backends/imgui_impl_opengl3.h
+    backends/imgui_impl_opengl3_loader.h
+}
+includes = ., backends
+public_includes = ., backends
+multiprocessor = true
+simd = AdvancedVectorExtensions2
+defines = IMGUI_STATIC, SDL_MAIN_HANDLED
+target_link_libraries(SDL3)
+
+[config:Debug|x64]
+runtime_library = MultiThreadedDebug
+optimization = Disabled
+debug_info = ProgramDatabase
+generate_debug_info = true
+outdir = ../../bin/x64/Debug
+intdir = ../../build/obj/x64/Debug/imgui-docking
+if(posix)
+{
+    outdir = ../../bin/posix/Debug
+    intdir = ../../build/obj/posix/Debug/imgui-docking
+}
+
+[config:Release|x64]
+runtime_library = MultiThreaded
+optimization = MaxSpeed
+debug_info = ProgramDatabase
+generate_debug_info = true
+function_level_linking = true
+intrinsic_functions = true
+outdir = ../../bin/x64/Release
+intdir = ../../build/obj/x64/Release/imgui-docking
+if(posix)
+{
+    outdir = ../../bin/posix/Release
+    intdir = ../../build/obj/posix/Release/imgui-docking
+}

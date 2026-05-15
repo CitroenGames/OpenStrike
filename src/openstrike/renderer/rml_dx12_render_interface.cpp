@@ -115,6 +115,53 @@ bool succeeded(HRESULT result, const char* operation)
     return false;
 }
 
+bool is_device_lost_result(HRESULT result)
+{
+    return result == DXGI_ERROR_DEVICE_REMOVED || result == DXGI_ERROR_DEVICE_RESET || result == DXGI_ERROR_DEVICE_HUNG ||
+        result == DXGI_ERROR_DRIVER_INTERNAL_ERROR;
+}
+
+void log_device_removed_reason(ID3D12Device* device, const char* operation, HRESULT result)
+{
+    if (device == nullptr)
+    {
+        return;
+    }
+
+    const HRESULT reason = device->GetDeviceRemovedReason();
+    if (FAILED(reason) || is_device_lost_result(result))
+    {
+        log_error("{} device removed reason HRESULT 0x{:08X}", operation, static_cast<unsigned>(reason));
+    }
+}
+
+bool succeeded_with_device(ID3D12Device* device, HRESULT result, const char* operation)
+{
+    if (SUCCEEDED(result))
+    {
+        return true;
+    }
+
+    log_error("{}", hresult_message(operation, result));
+    log_device_removed_reason(device, operation, result);
+    return false;
+}
+
+bool wait_for_fence_event(HANDLE event, const char* operation)
+{
+    const DWORD wait_result = WaitForSingleObject(event, INFINITE);
+    if (wait_result == WAIT_OBJECT_0)
+    {
+        return true;
+    }
+
+    log_error("{} failed while waiting for a DX12 fence, WaitForSingleObject={} GetLastError={}",
+        operation,
+        wait_result,
+        GetLastError());
+    return false;
+}
+
 D3D12_HEAP_PROPERTIES heap_properties(D3D12_HEAP_TYPE type)
 {
     D3D12_HEAP_PROPERTIES properties{};
@@ -425,6 +472,7 @@ struct RmlDx12RenderInterface::Impl
             return false;
         }
 
+        srv_heap->SetName(L"OpenStrike RmlUi SRV Heap");
         descriptor_size = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
         return true;
     }
@@ -436,18 +484,24 @@ struct RmlDx12RenderInterface::Impl
         {
             return false;
         }
+        upload_allocator->SetName(L"OpenStrike RmlUi Upload Allocator");
 
         if (!succeeded(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, upload_allocator.Get(), nullptr,
                 IID_PPV_ARGS(&upload_command_list)), "ID3D12Device::CreateCommandList RmlUi upload"))
         {
             return false;
         }
-        upload_command_list->Close();
+        upload_command_list->SetName(L"OpenStrike RmlUi Upload Command List");
+        if (!succeeded_with_device(device, upload_command_list->Close(), "ID3D12GraphicsCommandList::Close RmlUi upload initial"))
+        {
+            return false;
+        }
 
         if (!succeeded(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&upload_fence)), "ID3D12Device::CreateFence RmlUi upload"))
         {
             return false;
         }
+        upload_fence->SetName(L"OpenStrike RmlUi Upload Fence");
 
         upload_fence_event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
         if (upload_fence_event == nullptr)
@@ -524,6 +578,7 @@ struct RmlDx12RenderInterface::Impl
         {
             return false;
         }
+        root_signature->SetName(L"OpenStrike RmlUi Root Signature");
 
         ComPtr<ID3DBlob> vertex_shader = compile_shader(kVertexShader, "main", "vs_5_0");
         ComPtr<ID3DBlob> pixel_shader = compile_shader(kPixelShader, "main", "ps_5_0");
@@ -566,8 +621,13 @@ struct RmlDx12RenderInterface::Impl
         pso_desc.RTVFormats[0] = kRenderTargetFormat;
         pso_desc.SampleDesc.Count = 1;
 
-        return succeeded(device->CreateGraphicsPipelineState(&pso_desc, IID_PPV_ARGS(&pipeline_state)),
-            "ID3D12Device::CreateGraphicsPipelineState RmlUi");
+        if (!succeeded(device->CreateGraphicsPipelineState(&pso_desc, IID_PPV_ARGS(&pipeline_state)),
+                "ID3D12Device::CreateGraphicsPipelineState RmlUi"))
+        {
+            return false;
+        }
+        pipeline_state->SetName(L"OpenStrike RmlUi Pipeline State");
+        return true;
     }
 
     [[nodiscard]] bool create_white_texture()
@@ -744,9 +804,12 @@ struct RmlDx12RenderInterface::Impl
         }
         upload_buffer->Unmap(0, nullptr);
 
-        wait_for_uploads();
-        upload_allocator->Reset();
-        upload_command_list->Reset(upload_allocator.Get(), nullptr);
+        if (!wait_for_uploads() ||
+            !succeeded_with_device(device, upload_allocator->Reset(), "ID3D12CommandAllocator::Reset RmlUi upload") ||
+            !succeeded_with_device(device, upload_command_list->Reset(upload_allocator.Get(), nullptr), "ID3D12GraphicsCommandList::Reset RmlUi upload"))
+        {
+            return nullptr;
+        }
 
         D3D12_TEXTURE_COPY_LOCATION dst{};
         dst.pResource = texture->resource.Get();
@@ -768,11 +831,16 @@ struct RmlDx12RenderInterface::Impl
         barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
         upload_command_list->ResourceBarrier(1, &barrier);
 
-        upload_command_list->Close();
+        if (!succeeded_with_device(device, upload_command_list->Close(), "ID3D12GraphicsCommandList::Close RmlUi upload"))
+        {
+            return nullptr;
+        }
         ID3D12CommandList* lists[] = {upload_command_list.Get()};
         command_queue->ExecuteCommandLists(1, lists);
-        signal_upload_fence();
-        wait_for_uploads();
+        if (!signal_upload_fence() || !wait_for_uploads())
+        {
+            return nullptr;
+        }
 
         D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc{};
         srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
@@ -786,24 +854,30 @@ struct RmlDx12RenderInterface::Impl
         return result;
     }
 
-    void wait_for_uploads()
+    bool wait_for_uploads()
     {
         if (!upload_fence || upload_fence_event == nullptr)
         {
-            return;
+            return true;
         }
 
         if (upload_fence->GetCompletedValue() < last_upload_signal)
         {
-            upload_fence->SetEventOnCompletion(last_upload_signal, upload_fence_event);
-            WaitForSingleObject(upload_fence_event, INFINITE);
+            if (!succeeded_with_device(device,
+                    upload_fence->SetEventOnCompletion(last_upload_signal, upload_fence_event),
+                    "ID3D12Fence::SetEventOnCompletion RmlUi upload") ||
+                !wait_for_fence_event(upload_fence_event, "RmlDx12RenderInterface::wait_for_uploads"))
+            {
+                return false;
+            }
         }
+        return true;
     }
 
-    void signal_upload_fence()
+    bool signal_upload_fence()
     {
         last_upload_signal = upload_fence_value++;
-        command_queue->Signal(upload_fence.Get(), last_upload_signal);
+        return succeeded_with_device(device, command_queue->Signal(upload_fence.Get(), last_upload_signal), "ID3D12CommandQueue::Signal RmlUi upload");
     }
 
     void render_geometry(const Geometry& geometry, Rml::Vector2f translation, Texture* texture)
@@ -981,6 +1055,11 @@ Rml::CompiledGeometryHandle RmlDx12RenderInterface::CompileGeometry(Rml::Span<co
 void RmlDx12RenderInterface::RenderGeometry(Rml::CompiledGeometryHandle handle, Rml::Vector2f translation, Rml::TextureHandle texture)
 {
     const auto* geometry = reinterpret_cast<const Geometry*>(handle);
+    if (geometry == nullptr)
+    {
+        return;
+    }
+
     auto* texture_data = reinterpret_cast<Texture*>(texture);
     impl_->render_geometry(*geometry, translation, texture_data);
 }

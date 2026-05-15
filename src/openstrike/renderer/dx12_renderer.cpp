@@ -40,6 +40,8 @@
 #include <cstring>
 #include <filesystem>
 #include <format>
+#include <fstream>
+#include <future>
 #include <limits>
 #include <optional>
 #include <string>
@@ -57,6 +59,10 @@ constexpr DXGI_FORMAT kRenderTargetFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
 constexpr DXGI_FORMAT kDepthFormat = DXGI_FORMAT_D32_FLOAT;
 constexpr float kPi = 3.14159265358979323846F;
 constexpr std::uint32_t kSkyboxFaceCount = 6;
+constexpr std::size_t kWorldTransformFloatCount = 16;
+constexpr std::size_t kWorldShaderFloatCount = 24;
+constexpr std::uint32_t kSkyboxCommandListIndex = 0;
+constexpr std::uint32_t kWorldCommandListIndex = 1;
 
 struct WorldDrawVertex
 {
@@ -84,9 +90,75 @@ struct TextureGpuResources
     ComPtr<ID3D12Resource> upload_buffer;
 };
 
+std::optional<std::filesystem::path> resolve_shader_path(const EngineContext* engine_context, const char* relative_path)
+{
+    if (relative_path == nullptr || relative_path[0] == '\0')
+    {
+        return std::nullopt;
+    }
+
+    const std::filesystem::path path(relative_path);
+    if (engine_context != nullptr)
+    {
+        if (const std::optional<std::filesystem::path> game_path = engine_context->filesystem.resolve(path, "GAME"))
+        {
+            return game_path;
+        }
+
+        if (const std::optional<std::filesystem::path> any_path = engine_context->filesystem.resolve(path))
+        {
+            return any_path;
+        }
+    }
+
+    std::error_code error;
+    if (std::filesystem::exists(path, error))
+    {
+        return path.lexically_normal();
+    }
+
+    return std::nullopt;
+}
+
 std::string hresult_message(const char* operation, HRESULT result)
 {
     return std::string(operation) + " failed with HRESULT 0x" + std::format("{:08X}", static_cast<unsigned>(result));
+}
+
+std::wstring widen_debug_name(std::string_view name)
+{
+    return {name.begin(), name.end()};
+}
+
+void set_debug_name(ID3D12Object* object, std::string_view name)
+{
+    if (object == nullptr || name.empty())
+    {
+        return;
+    }
+
+    const std::wstring wide_name = widen_debug_name(name);
+    object->SetName(wide_name.c_str());
+}
+
+bool is_device_lost_result(HRESULT result)
+{
+    return result == DXGI_ERROR_DEVICE_REMOVED || result == DXGI_ERROR_DEVICE_RESET || result == DXGI_ERROR_DEVICE_HUNG ||
+        result == DXGI_ERROR_DRIVER_INTERNAL_ERROR;
+}
+
+void log_device_removed_reason(ID3D12Device* device, const char* operation, HRESULT result)
+{
+    if (device == nullptr)
+    {
+        return;
+    }
+
+    const HRESULT reason = device->GetDeviceRemovedReason();
+    if (FAILED(reason) || is_device_lost_result(result))
+    {
+        log_error("{} device removed reason HRESULT 0x{:08X}", operation, static_cast<unsigned>(reason));
+    }
 }
 
 bool succeeded(HRESULT result, const char* operation)
@@ -97,6 +169,33 @@ bool succeeded(HRESULT result, const char* operation)
     }
 
     log_error("{}", hresult_message(operation, result));
+    return false;
+}
+
+bool succeeded_with_device(ID3D12Device* device, HRESULT result, const char* operation)
+{
+    if (SUCCEEDED(result))
+    {
+        return true;
+    }
+
+    log_error("{}", hresult_message(operation, result));
+    log_device_removed_reason(device, operation, result);
+    return false;
+}
+
+bool wait_for_fence_event(HANDLE event, const char* operation)
+{
+    const DWORD wait_result = WaitForSingleObject(event, INFINITE);
+    if (wait_result == WAIT_OBJECT_0)
+    {
+        return true;
+    }
+
+    log_error("{} failed while waiting for a DX12 fence, WaitForSingleObject={} GetLastError={}",
+        operation,
+        wait_result,
+        GetLastError());
     return false;
 }
 
@@ -145,6 +244,74 @@ D3D12_RESOURCE_DESC texture2d_desc(std::uint32_t width, std::uint32_t height, st
     return desc;
 }
 
+bool upload_static_buffer_to_gpu(
+    ID3D12Device* device,
+    ID3D12GraphicsCommandList* command_list,
+    const void* data,
+    std::uint64_t byte_count,
+    D3D12_RESOURCE_STATES final_state,
+    std::string_view debug_name,
+    ComPtr<ID3D12Resource>& output,
+    ComPtr<ID3D12Resource>& upload_buffer)
+{
+    if (device == nullptr || command_list == nullptr || data == nullptr || byte_count == 0)
+    {
+        return false;
+    }
+
+    const auto default_heap = heap_properties(D3D12_HEAP_TYPE_DEFAULT);
+    const auto upload_heap = heap_properties(D3D12_HEAP_TYPE_UPLOAD);
+    const auto desc = buffer_desc(byte_count);
+    if (!succeeded_with_device(device,
+            device->CreateCommittedResource(&default_heap,
+                D3D12_HEAP_FLAG_NONE,
+                &desc,
+                D3D12_RESOURCE_STATE_COPY_DEST,
+                nullptr,
+                IID_PPV_ARGS(&output)),
+            "ID3D12Device::CreateCommittedResource static buffer"))
+    {
+        return false;
+    }
+
+    if (!succeeded_with_device(device,
+            device->CreateCommittedResource(&upload_heap,
+                D3D12_HEAP_FLAG_NONE,
+                &desc,
+                D3D12_RESOURCE_STATE_GENERIC_READ,
+                nullptr,
+                IID_PPV_ARGS(&upload_buffer)),
+            "ID3D12Device::CreateCommittedResource static buffer upload"))
+    {
+        return false;
+    }
+
+    set_debug_name(output.Get(), debug_name);
+    if (!debug_name.empty())
+    {
+        set_debug_name(upload_buffer.Get(), std::format("{} Upload", debug_name));
+    }
+
+    void* mapped = nullptr;
+    if (!succeeded_with_device(device, upload_buffer->Map(0, nullptr, &mapped), "ID3D12Resource::Map static buffer upload"))
+    {
+        return false;
+    }
+    std::memcpy(mapped, data, static_cast<std::size_t>(byte_count));
+    upload_buffer->Unmap(0, nullptr);
+
+    command_list->CopyBufferRegion(output.Get(), 0, upload_buffer.Get(), 0, byte_count);
+
+    D3D12_RESOURCE_BARRIER barrier{};
+    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    barrier.Transition.pResource = output.Get();
+    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+    barrier.Transition.StateAfter = final_state;
+    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    command_list->ResourceBarrier(1, &barrier);
+    return true;
+}
+
 DXGI_FORMAT dxgi_format_for_source(SourceTextureFormat format)
 {
     switch (format)
@@ -167,7 +334,8 @@ bool upload_source_texture_to_gpu(
     ID3D12GraphicsCommandList* command_list,
     const SourceTexture& texture,
     D3D12_CPU_DESCRIPTOR_HANDLE cpu_handle,
-    TextureGpuResources& output)
+    TextureGpuResources& output,
+    std::string_view debug_name)
 {
     if (device == nullptr || command_list == nullptr || texture.mips.empty())
     {
@@ -188,6 +356,7 @@ bool upload_source_texture_to_gpu(
     {
         return false;
     }
+    set_debug_name(output.resource.Get(), debug_name);
 
     std::vector<D3D12_PLACED_SUBRESOURCE_FOOTPRINT> layouts(mip_count);
     std::vector<UINT> row_counts(mip_count);
@@ -206,6 +375,10 @@ bool upload_source_texture_to_gpu(
             "ID3D12Device::CreateCommittedResource texture upload"))
     {
         return false;
+    }
+    if (!debug_name.empty())
+    {
+        set_debug_name(output.upload_buffer.Get(), std::format("{} Upload", debug_name));
     }
 
     unsigned char* mapped = nullptr;
@@ -271,7 +444,40 @@ bool upload_source_texture_to_gpu(
     return true;
 }
 
-ComPtr<ID3DBlob> compile_shader(const char* source, const char* entry, const char* target)
+ComPtr<ID3DBlob> read_shader_blob(const std::filesystem::path& path, const char* debug_name)
+{
+    std::ifstream file(path, std::ios::binary | std::ios::ate);
+    if (!file)
+    {
+        log_warning("failed to open compiled shader '{}': {}", debug_name, path.string());
+        return {};
+    }
+
+    const std::streamoff file_size = static_cast<std::streamoff>(file.tellg());
+    if (file_size <= 0)
+    {
+        log_warning("compiled shader '{}' is empty: {}", debug_name, path.string());
+        return {};
+    }
+
+    ComPtr<ID3DBlob> shader;
+    if (!succeeded(D3DCreateBlob(static_cast<SIZE_T>(file_size), &shader), "D3DCreateBlob shader bytecode"))
+    {
+        return {};
+    }
+
+    file.seekg(0, std::ios::beg);
+    file.read(static_cast<char*>(shader->GetBufferPointer()), static_cast<std::streamsize>(file_size));
+    if (!file)
+    {
+        log_warning("failed to read compiled shader '{}': {}", debug_name, path.string());
+        return {};
+    }
+
+    return shader;
+}
+
+ComPtr<ID3DBlob> compile_shader_file(const std::filesystem::path& source_path, const Dx12ShaderFile& shader_file)
 {
     UINT flags = D3DCOMPILE_ENABLE_STRICTNESS;
 #if defined(_DEBUG)
@@ -280,12 +486,21 @@ ComPtr<ID3DBlob> compile_shader(const char* source, const char* entry, const cha
 
     ComPtr<ID3DBlob> shader;
     ComPtr<ID3DBlob> errors;
-    const HRESULT result = D3DCompile(source, std::strlen(source), nullptr, nullptr, nullptr, entry, target, flags, 0, &shader, &errors);
+    const HRESULT result = D3DCompileFromFile(
+        source_path.c_str(),
+        nullptr,
+        D3D_COMPILE_STANDARD_FILE_INCLUDE,
+        shader_file.entry_point,
+        shader_file.target,
+        flags,
+        0,
+        &shader,
+        &errors);
     if (FAILED(result))
     {
         if (errors)
         {
-            log_error("renderer shader compile error: {}", static_cast<const char*>(errors->GetBufferPointer()));
+            log_error("renderer shader compile error in '{}': {}", shader_file.debug_name, static_cast<const char*>(errors->GetBufferPointer()));
         }
         else
         {
@@ -295,6 +510,29 @@ ComPtr<ID3DBlob> compile_shader(const char* source, const char* entry, const cha
     }
 
     return shader;
+}
+
+ComPtr<ID3DBlob> load_shader_bytecode(const EngineContext* engine_context, const Dx12ShaderFile& shader_file)
+{
+    if (const std::optional<std::filesystem::path> compiled_path = resolve_shader_path(engine_context, shader_file.compiled_path))
+    {
+        if (ComPtr<ID3DBlob> shader = read_shader_blob(*compiled_path, shader_file.debug_name))
+        {
+            return shader;
+        }
+    }
+
+    const std::optional<std::filesystem::path> source_path = resolve_shader_path(engine_context, shader_file.source_path);
+    if (!source_path)
+    {
+        log_error("missing DX12 shader '{}' (expected '{}' or '{}')",
+            shader_file.debug_name,
+            shader_file.compiled_path,
+            shader_file.source_path);
+        return {};
+    }
+
+    return compile_shader_file(*source_path, shader_file);
 }
 
 bool query_tearing_support(IDXGIFactory5* factory)
@@ -647,6 +885,28 @@ std::array<float, 16> world_to_clip_matrix(const WorldMesh& mesh, const CameraSt
     return overview_world_to_clip_matrix(mesh, width, height);
 }
 
+std::array<float, kWorldShaderFloatCount> world_shader_constants(
+    const WorldMesh& mesh,
+    const CameraState* camera,
+    std::uint32_t width,
+    std::uint32_t height)
+{
+    std::array<float, kWorldShaderFloatCount> constants{};
+    const std::array<float, 16> transform = world_to_clip_matrix(mesh, camera, width, height);
+    std::copy(transform.begin(), transform.end(), constants.begin());
+
+    const Vec3 light_direction = normalize({-0.35F, -0.45F, 0.82F});
+    constants[kWorldTransformFloatCount + 0] = light_direction.x;
+    constants[kWorldTransformFloatCount + 1] = light_direction.y;
+    constants[kWorldTransformFloatCount + 2] = light_direction.z;
+    constants[kWorldTransformFloatCount + 3] = 0.36F;
+    constants[kWorldTransformFloatCount + 4] = 1.0F;
+    constants[kWorldTransformFloatCount + 5] = 0.96F;
+    constants[kWorldTransformFloatCount + 6] = 0.88F;
+    constants[kWorldTransformFloatCount + 7] = 0.78F;
+    return constants;
+}
+
 SkyboxDrawVertex make_skybox_vertex(float s, float t, std::uint32_t axis)
 {
     static constexpr std::array<std::array<int, 3>, kSkyboxFaceCount> kSourceSkyStToVec{{
@@ -741,6 +1001,8 @@ struct Dx12Renderer::WorldGpuResources
 {
     Microsoft::WRL::ComPtr<ID3D12Resource> vertex_buffer;
     Microsoft::WRL::ComPtr<ID3D12Resource> index_buffer;
+    Microsoft::WRL::ComPtr<ID3D12Resource> vertex_upload_buffer;
+    Microsoft::WRL::ComPtr<ID3D12Resource> index_upload_buffer;
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> srv_heap;
     D3D12_VERTEX_BUFFER_VIEW vertex_view{};
     D3D12_INDEX_BUFFER_VIEW index_view{};
@@ -758,6 +1020,8 @@ struct Dx12Renderer::SkyboxGpuResources
     std::string sky_name;
     Microsoft::WRL::ComPtr<ID3D12Resource> vertex_buffer;
     Microsoft::WRL::ComPtr<ID3D12Resource> index_buffer;
+    Microsoft::WRL::ComPtr<ID3D12Resource> vertex_upload_buffer;
+    Microsoft::WRL::ComPtr<ID3D12Resource> index_upload_buffer;
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> srv_heap;
     D3D12_VERTEX_BUFFER_VIEW vertex_view{};
     D3D12_INDEX_BUFFER_VIEW index_view{};
@@ -788,8 +1052,8 @@ bool Dx12Renderer::initialize(const RuntimeConfig& config)
     height_ = config.window_height;
     vsync_ = config.vsync;
 
-    if (!create_window(config) || !create_device_objects(config) || !create_world_pipeline() || !create_skybox_pipeline() || !create_render_targets() ||
-        !create_depth_buffer() || !initialize_rml(config))
+    if (!create_window(config) || !create_device_objects(config) || !create_multicore_command_objects() || !create_world_pipeline() ||
+        !create_skybox_pipeline() || !create_render_targets() || !create_depth_buffer() || !initialize_rml(config))
     {
         shutdown();
         return false;
@@ -842,8 +1106,16 @@ void Dx12Renderer::render(const FrameContext& context)
 
     const std::uint32_t frame = frame_index_;
     ID3D12CommandAllocator* allocator = command_allocators_[frame].Get();
-    allocator->Reset();
-    command_list_->Reset(allocator, nullptr);
+    if (!succeeded_with_device(device_.Get(), allocator->Reset(), "ID3D12CommandAllocator::Reset frame"))
+    {
+        window_closed_ = true;
+        return;
+    }
+    if (!succeeded_with_device(device_.Get(), command_list_->Reset(allocator, nullptr), "ID3D12GraphicsCommandList::Reset frame"))
+    {
+        window_closed_ = true;
+        return;
+    }
 
     D3D12_RESOURCE_BARRIER begin_barrier{};
     begin_barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
@@ -864,9 +1136,10 @@ void Dx12Renderer::render(const FrameContext& context)
     command_list_->ClearDepthStencilView(dsv_handle, D3D12_CLEAR_FLAG_DEPTH, 1.0F, 0, 0, nullptr);
 
     const LoadedWorld* active_world = engine_context_ != nullptr ? engine_context_->world.current_world() : nullptr;
+    bool skybox_ready = false;
     if (active_world != nullptr)
     {
-        render_skybox(*active_world);
+        skybox_ready = ensure_skybox_gpu_resources(*active_world);
     }
     else
     {
@@ -874,11 +1147,83 @@ void Dx12Renderer::render(const FrameContext& context)
         skybox_gpu_generation_ = engine_context_ != nullptr ? engine_context_->world.generation() : 0;
     }
 
-    render_world();
+    const bool world_ready = ensure_world_gpu_resources();
+
+    if (!succeeded_with_device(device_.Get(), command_list_->Close(), "ID3D12GraphicsCommandList::Close setup"))
+    {
+        window_closed_ = true;
+        return;
+    }
+
+    if (skybox_ready)
+    {
+        ID3D12CommandAllocator* scene_allocator = scene_command_allocators_[frame][kSkyboxCommandListIndex].Get();
+        ID3D12GraphicsCommandList* scene_list = scene_command_lists_[kSkyboxCommandListIndex].Get();
+        if (!succeeded_with_device(device_.Get(), scene_allocator->Reset(), "ID3D12CommandAllocator::Reset skybox scene") ||
+            !succeeded_with_device(device_.Get(), scene_list->Reset(scene_allocator, nullptr), "ID3D12GraphicsCommandList::Reset skybox scene"))
+        {
+            window_closed_ = true;
+            return;
+        }
+    }
+
+    if (world_ready)
+    {
+        ID3D12CommandAllocator* scene_allocator = scene_command_allocators_[frame][kWorldCommandListIndex].Get();
+        ID3D12GraphicsCommandList* scene_list = scene_command_lists_[kWorldCommandListIndex].Get();
+        if (!succeeded_with_device(device_.Get(), scene_allocator->Reset(), "ID3D12CommandAllocator::Reset world scene") ||
+            !succeeded_with_device(device_.Get(), scene_list->Reset(scene_allocator, nullptr), "ID3D12GraphicsCommandList::Reset world scene"))
+        {
+            window_closed_ = true;
+            return;
+        }
+    }
+
+    auto close_scene_list = [this](ID3D12GraphicsCommandList* list, const char* operation) {
+        return succeeded_with_device(device_.Get(), list->Close(), operation);
+    };
+
+    bool scene_recording_ok = true;
+    if (skybox_ready && world_ready)
+    {
+        std::future<bool> skybox_recording = std::async(std::launch::async, [this, active_world, close_scene_list] {
+            ID3D12GraphicsCommandList* list = scene_command_lists_[kSkyboxCommandListIndex].Get();
+            return record_skybox(list, *active_world) && close_scene_list(list, "ID3D12GraphicsCommandList::Close skybox scene");
+        });
+
+        ID3D12GraphicsCommandList* world_list = scene_command_lists_[kWorldCommandListIndex].Get();
+        scene_recording_ok = record_world(world_list) && close_scene_list(world_list, "ID3D12GraphicsCommandList::Close world scene");
+        scene_recording_ok = skybox_recording.get() && scene_recording_ok;
+    }
+    else if (skybox_ready)
+    {
+        ID3D12GraphicsCommandList* list = scene_command_lists_[kSkyboxCommandListIndex].Get();
+        scene_recording_ok = record_skybox(list, *active_world) && close_scene_list(list, "ID3D12GraphicsCommandList::Close skybox scene");
+    }
+    else if (world_ready)
+    {
+        ID3D12GraphicsCommandList* list = scene_command_lists_[kWorldCommandListIndex].Get();
+        scene_recording_ok = record_world(list) && close_scene_list(list, "ID3D12GraphicsCommandList::Close world scene");
+    }
+
+    if (!scene_recording_ok)
+    {
+        window_closed_ = true;
+        return;
+    }
+
+    ID3D12CommandAllocator* post_allocator = post_command_allocators_[frame].Get();
+    if (!succeeded_with_device(device_.Get(), post_allocator->Reset(), "ID3D12CommandAllocator::Reset post") ||
+        !succeeded_with_device(device_.Get(), post_command_list_->Reset(post_allocator, nullptr), "ID3D12GraphicsCommandList::Reset post"))
+    {
+        window_closed_ = true;
+        return;
+    }
 
     if (rml_context_ != nullptr && rml_render_interface_)
     {
-        rml_render_interface_->begin_frame(command_list_.Get(), frame, width_, height_);
+        post_command_list_->OMSetRenderTargets(1, &rtv_handle, FALSE, nullptr);
+        rml_render_interface_->begin_frame(post_command_list_.Get(), frame, width_, height_);
         rml_context_->Render();
         rml_render_interface_->end_frame();
     }
@@ -886,23 +1231,42 @@ void Dx12Renderer::render(const FrameContext& context)
     D3D12_RESOURCE_BARRIER end_barrier = begin_barrier;
     end_barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
     end_barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
-    command_list_->ResourceBarrier(1, &end_barrier);
+    post_command_list_->ResourceBarrier(1, &end_barrier);
 
-    command_list_->Close();
-    ID3D12CommandList* lists[] = {command_list_.Get()};
-    command_queue_->ExecuteCommandLists(1, lists);
-
-    const UINT present_sync = vsync_ ? 1U : 0U;
-    const UINT present_flags = (!vsync_ && allow_tearing_) ? DXGI_PRESENT_ALLOW_TEARING : 0U;
-    const HRESULT present_result = swap_chain_->Present(present_sync, present_flags);
-    if (FAILED(present_result))
+    if (!succeeded_with_device(device_.Get(), post_command_list_->Close(), "ID3D12GraphicsCommandList::Close post"))
     {
-        log_error("{}", hresult_message("IDXGISwapChain::Present", present_result));
         window_closed_ = true;
         return;
     }
 
-    move_to_next_frame();
+    std::array<ID3D12CommandList*, kSceneCommandListCount + 2> lists{};
+    std::uint32_t list_count = 0;
+    lists[list_count++] = command_list_.Get();
+    if (skybox_ready)
+    {
+        lists[list_count++] = scene_command_lists_[kSkyboxCommandListIndex].Get();
+    }
+    if (world_ready)
+    {
+        lists[list_count++] = scene_command_lists_[kWorldCommandListIndex].Get();
+    }
+    lists[list_count++] = post_command_list_.Get();
+    command_queue_->ExecuteCommandLists(list_count, lists.data());
+
+    const UINT present_sync = vsync_ ? 1U : 0U;
+    const UINT present_flags = (!vsync_ && allow_tearing_) ? DXGI_PRESENT_ALLOW_TEARING : 0U;
+    const HRESULT present_result = swap_chain_->Present(present_sync, present_flags);
+    if (!succeeded_with_device(device_.Get(), present_result, "IDXGISwapChain::Present"))
+    {
+        window_closed_ = true;
+        return;
+    }
+
+    if (!move_to_next_frame())
+    {
+        window_closed_ = true;
+        return;
+    }
 }
 
 bool Dx12Renderer::should_close() const
@@ -934,6 +1298,10 @@ void Dx12Renderer::shutdown()
     world_pipeline_state_.Reset();
     world_root_signature_.Reset();
     command_list_.Reset();
+    scene_command_lists_ = {};
+    scene_command_allocators_ = {};
+    post_command_list_.Reset();
+    post_command_allocators_ = {};
     rtv_heap_.Reset();
     dsv_heap_.Reset();
     swap_chain_.Reset();
@@ -1041,6 +1409,7 @@ bool Dx12Renderer::create_device_objects(const RuntimeConfig&)
     {
         return false;
     }
+    set_debug_name(device_.Get(), "OpenStrike D3D12 Device");
 
     D3D12_COMMAND_QUEUE_DESC queue_desc{};
     queue_desc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
@@ -1049,6 +1418,7 @@ bool Dx12Renderer::create_device_objects(const RuntimeConfig&)
     {
         return false;
     }
+    set_debug_name(command_queue_.Get(), "OpenStrike Graphics Queue");
 
     DXGI_SWAP_CHAIN_DESC1 swap_chain_desc{};
     swap_chain_desc.BufferCount = kFrameCount;
@@ -1082,6 +1452,7 @@ bool Dx12Renderer::create_device_objects(const RuntimeConfig&)
     {
         return false;
     }
+    set_debug_name(rtv_heap_.Get(), "OpenStrike Back Buffer RTV Heap");
 
     rtv_descriptor_size_ = device_->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
     dsv_descriptor_size_ = device_->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
@@ -1093,6 +1464,7 @@ bool Dx12Renderer::create_device_objects(const RuntimeConfig&)
         {
             return false;
         }
+        set_debug_name(command_allocators_[frame].Get(), std::format("OpenStrike Frame {} Command Allocator", frame));
     }
 
     if (!succeeded(device_->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, command_allocators_[frame_index_].Get(), nullptr,
@@ -1100,18 +1472,91 @@ bool Dx12Renderer::create_device_objects(const RuntimeConfig&)
     {
         return false;
     }
-    command_list_->Close();
+    set_debug_name(command_list_.Get(), "OpenStrike Main Command List");
+    if (!succeeded_with_device(device_.Get(), command_list_->Close(), "ID3D12GraphicsCommandList::Close initial"))
+    {
+        return false;
+    }
 
     if (!succeeded(device_->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence_)), "ID3D12Device::CreateFence"))
     {
         return false;
     }
+    set_debug_name(fence_.Get(), "OpenStrike Frame Fence");
 
     fence_value_ = 1;
     fence_event_ = CreateEventW(nullptr, FALSE, FALSE, nullptr);
     if (fence_event_ == nullptr)
     {
         log_error("CreateEventW failed for DX12 fence");
+        return false;
+    }
+
+    return true;
+}
+
+bool Dx12Renderer::create_multicore_command_objects()
+{
+    if (!device_)
+    {
+        return false;
+    }
+
+    for (std::uint32_t frame = 0; frame < kFrameCount; ++frame)
+    {
+        for (std::uint32_t list_index = 0; list_index < kSceneCommandListCount; ++list_index)
+        {
+            if (!succeeded(device_->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&scene_command_allocators_[frame][list_index])),
+                    "ID3D12Device::CreateCommandAllocator scene"))
+            {
+                return false;
+            }
+            set_debug_name(scene_command_allocators_[frame][list_index].Get(),
+                std::format("OpenStrike Frame {} Scene Command Allocator {}", frame, list_index));
+        }
+
+        if (!succeeded(device_->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&post_command_allocators_[frame])),
+                "ID3D12Device::CreateCommandAllocator post"))
+        {
+            return false;
+        }
+        set_debug_name(post_command_allocators_[frame].Get(), std::format("OpenStrike Frame {} Post Command Allocator", frame));
+    }
+
+    for (std::uint32_t list_index = 0; list_index < kSceneCommandListCount; ++list_index)
+    {
+        if (!succeeded(device_->CreateCommandList(0,
+                D3D12_COMMAND_LIST_TYPE_DIRECT,
+                scene_command_allocators_[frame_index_][list_index].Get(),
+                nullptr,
+                IID_PPV_ARGS(&scene_command_lists_[list_index])),
+                "ID3D12Device::CreateCommandList scene"))
+        {
+            return false;
+        }
+
+        set_debug_name(scene_command_lists_[list_index].Get(), std::format("OpenStrike Scene Command List {}", list_index));
+        if (!succeeded_with_device(device_.Get(),
+                scene_command_lists_[list_index]->Close(),
+                "ID3D12GraphicsCommandList::Close scene initial"))
+        {
+            return false;
+        }
+    }
+
+    if (!succeeded(device_->CreateCommandList(0,
+            D3D12_COMMAND_LIST_TYPE_DIRECT,
+            post_command_allocators_[frame_index_].Get(),
+            nullptr,
+            IID_PPV_ARGS(&post_command_list_)),
+            "ID3D12Device::CreateCommandList post"))
+    {
+        return false;
+    }
+
+    set_debug_name(post_command_list_.Get(), "OpenStrike Post Command List");
+    if (!succeeded_with_device(device_.Get(), post_command_list_->Close(), "ID3D12GraphicsCommandList::Close post initial"))
+    {
         return false;
     }
 
@@ -1128,6 +1573,7 @@ bool Dx12Renderer::create_render_targets()
         {
             return false;
         }
+        set_debug_name(render_targets_[frame].Get(), std::format("OpenStrike Back Buffer {}", frame));
 
         device_->CreateRenderTargetView(render_targets_[frame].Get(), nullptr, rtv_handle);
         rtv_handle.ptr += rtv_descriptor_size_;
@@ -1152,6 +1598,7 @@ bool Dx12Renderer::create_depth_buffer()
         {
             return false;
         }
+        set_debug_name(dsv_heap_.Get(), "OpenStrike Depth DSV Heap");
     }
 
     D3D12_CLEAR_VALUE clear_value{};
@@ -1172,6 +1619,7 @@ bool Dx12Renderer::create_depth_buffer()
     {
         return false;
     }
+    set_debug_name(depth_buffer_.Get(), "OpenStrike Depth Buffer");
 
     device_->CreateDepthStencilView(depth_buffer_.Get(), nullptr, dsv_heap_->GetCPUDescriptorHandleForHeapStart());
     return true;
@@ -1188,10 +1636,10 @@ bool Dx12Renderer::create_world_pipeline()
 
     std::array<D3D12_ROOT_PARAMETER, 3> root_parameters{};
     root_parameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    root_parameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+    root_parameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
     root_parameters[0].Constants.ShaderRegister = 0;
     root_parameters[0].Constants.RegisterSpace = 0;
-    root_parameters[0].Constants.Num32BitValues = 16;
+    root_parameters[0].Constants.Num32BitValues = static_cast<UINT>(kWorldShaderFloatCount);
 
     root_parameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     root_parameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
@@ -1247,9 +1695,10 @@ bool Dx12Renderer::create_world_pipeline()
     {
         return false;
     }
+    set_debug_name(world_root_signature_.Get(), "OpenStrike World Root Signature");
 
-    ComPtr<ID3DBlob> vertex_shader = compile_shader(world_material_vertex_shader_source(), "main", "vs_5_0");
-    ComPtr<ID3DBlob> pixel_shader = compile_shader(world_material_pixel_shader_source(), "main", "ps_5_0");
+    ComPtr<ID3DBlob> vertex_shader = load_shader_bytecode(engine_context_, world_material_vertex_shader_file());
+    ComPtr<ID3DBlob> pixel_shader = load_shader_bytecode(engine_context_, world_material_pixel_shader_file());
     if (!vertex_shader || !pixel_shader)
     {
         return false;
@@ -1286,8 +1735,13 @@ bool Dx12Renderer::create_world_pipeline()
     pso_desc.DSVFormat = kDepthFormat;
     pso_desc.SampleDesc.Count = 1;
 
-    return succeeded(device_->CreateGraphicsPipelineState(&pso_desc, IID_PPV_ARGS(&world_pipeline_state_)),
-        "ID3D12Device::CreateGraphicsPipelineState world");
+    if (!succeeded(device_->CreateGraphicsPipelineState(&pso_desc, IID_PPV_ARGS(&world_pipeline_state_)),
+            "ID3D12Device::CreateGraphicsPipelineState world"))
+    {
+        return false;
+    }
+    set_debug_name(world_pipeline_state_.Get(), "OpenStrike World Pipeline State");
+    return true;
 }
 
 bool Dx12Renderer::create_skybox_pipeline()
@@ -1354,9 +1808,10 @@ bool Dx12Renderer::create_skybox_pipeline()
     {
         return false;
     }
+    set_debug_name(skybox_root_signature_.Get(), "OpenStrike Skybox Root Signature");
 
-    ComPtr<ID3DBlob> vertex_shader = compile_shader(skybox_vertex_shader_source(), "main", "vs_5_0");
-    ComPtr<ID3DBlob> pixel_shader = compile_shader(skybox_pixel_shader_source(), "main", "ps_5_0");
+    ComPtr<ID3DBlob> vertex_shader = load_shader_bytecode(engine_context_, skybox_vertex_shader_file());
+    ComPtr<ID3DBlob> pixel_shader = load_shader_bytecode(engine_context_, skybox_pixel_shader_file());
     if (!vertex_shader || !pixel_shader)
     {
         return false;
@@ -1392,8 +1847,13 @@ bool Dx12Renderer::create_skybox_pipeline()
     pso_desc.DSVFormat = kDepthFormat;
     pso_desc.SampleDesc.Count = 1;
 
-    return succeeded(device_->CreateGraphicsPipelineState(&pso_desc, IID_PPV_ARGS(&skybox_pipeline_state_)),
-        "ID3D12Device::CreateGraphicsPipelineState skybox");
+    if (!succeeded(device_->CreateGraphicsPipelineState(&pso_desc, IID_PPV_ARGS(&skybox_pipeline_state_)),
+            "ID3D12Device::CreateGraphicsPipelineState skybox"))
+    {
+        return false;
+    }
+    set_debug_name(skybox_pipeline_state_.Get(), "OpenStrike Skybox Pipeline State");
+    return true;
 }
 
 bool Dx12Renderer::resize_swap_chain(std::uint32_t width, std::uint32_t height)
@@ -1403,12 +1863,17 @@ bool Dx12Renderer::resize_swap_chain(std::uint32_t width, std::uint32_t height)
         return true;
     }
 
-    wait_for_gpu();
+    if (!wait_for_gpu())
+    {
+        return false;
+    }
     render_targets_ = {};
     depth_buffer_.Reset();
 
     const UINT flags = allow_tearing_ ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0U;
-    if (!succeeded(swap_chain_->ResizeBuffers(kFrameCount, width, height, DXGI_FORMAT_R8G8B8A8_UNORM, flags), "IDXGISwapChain::ResizeBuffers"))
+    if (!succeeded_with_device(device_.Get(),
+            swap_chain_->ResizeBuffers(kFrameCount, width, height, DXGI_FORMAT_R8G8B8A8_UNORM, flags),
+            "IDXGISwapChain::ResizeBuffers"))
     {
         return false;
     }
@@ -1555,11 +2020,11 @@ void Dx12Renderer::sync_main_menu_visibility()
     }
 }
 
-void Dx12Renderer::render_skybox(const LoadedWorld& world)
+bool Dx12Renderer::ensure_skybox_gpu_resources(const LoadedWorld& world)
 {
     if (engine_context_ == nullptr || skybox_pipeline_state_ == nullptr || skybox_root_signature_ == nullptr || command_list_ == nullptr)
     {
-        return;
+        return false;
     }
 
     const std::uint64_t generation = engine_context_->world.generation();
@@ -1570,7 +2035,7 @@ void Dx12Renderer::render_skybox(const LoadedWorld& world)
             skybox_gpu_.reset();
             skybox_gpu_generation_ = generation;
         }
-        return;
+        return false;
     }
 
     const std::optional<std::string> requested_sky_name = skybox_name_from_world(world);
@@ -1581,7 +2046,7 @@ void Dx12Renderer::render_skybox(const LoadedWorld& world)
             skybox_gpu_.reset();
             skybox_gpu_generation_ = generation;
         }
-        return;
+        return false;
     }
 
     if (skybox_gpu_generation_ != generation || (skybox_gpu_ != nullptr && skybox_gpu_->sky_name != *requested_sky_name))
@@ -1620,7 +2085,7 @@ void Dx12Renderer::render_skybox(const LoadedWorld& world)
         if (!sky_textures)
         {
             log_warning("skybox '{}' is missing one or more Source VTF faces; sky draw disabled", resolved_sky_name);
-            return;
+            return false;
         }
 
         auto gpu = std::make_unique<SkyboxGpuResources>();
@@ -1630,36 +2095,29 @@ void Dx12Renderer::render_skybox(const LoadedWorld& world)
         const std::array<std::uint16_t, kSkyboxFaceCount * 6> indices = build_skybox_indices();
         const auto vertex_bytes = static_cast<std::uint64_t>(vertices.size() * sizeof(SkyboxDrawVertex));
         const auto index_bytes = static_cast<std::uint64_t>(indices.size() * sizeof(std::uint16_t));
-        const auto upload_heap = heap_properties(D3D12_HEAP_TYPE_UPLOAD);
-
-        const auto vertex_desc = buffer_desc(vertex_bytes);
-        if (!succeeded(device_->CreateCommittedResource(&upload_heap, D3D12_HEAP_FLAG_NONE, &vertex_desc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
-                IID_PPV_ARGS(&gpu->vertex_buffer)), "ID3D12Device::CreateCommittedResource skybox vertex buffer"))
+        if (!upload_static_buffer_to_gpu(device_.Get(),
+                command_list_.Get(),
+                vertices.data(),
+                vertex_bytes,
+                D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER,
+                "OpenStrike Skybox Vertex Buffer",
+                gpu->vertex_buffer,
+                gpu->vertex_upload_buffer))
         {
-            return;
+            return false;
         }
 
-        const auto index_desc = buffer_desc(index_bytes);
-        if (!succeeded(device_->CreateCommittedResource(&upload_heap, D3D12_HEAP_FLAG_NONE, &index_desc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
-                IID_PPV_ARGS(&gpu->index_buffer)), "ID3D12Device::CreateCommittedResource skybox index buffer"))
+        if (!upload_static_buffer_to_gpu(device_.Get(),
+                command_list_.Get(),
+                indices.data(),
+                index_bytes,
+                D3D12_RESOURCE_STATE_INDEX_BUFFER,
+                "OpenStrike Skybox Index Buffer",
+                gpu->index_buffer,
+                gpu->index_upload_buffer))
         {
-            return;
+            return false;
         }
-
-        void* mapped = nullptr;
-        if (!succeeded(gpu->vertex_buffer->Map(0, nullptr, &mapped), "ID3D12Resource::Map skybox vertex buffer"))
-        {
-            return;
-        }
-        std::memcpy(mapped, vertices.data(), static_cast<std::size_t>(vertex_bytes));
-        gpu->vertex_buffer->Unmap(0, nullptr);
-
-        if (!succeeded(gpu->index_buffer->Map(0, nullptr, &mapped), "ID3D12Resource::Map skybox index buffer"))
-        {
-            return;
-        }
-        std::memcpy(mapped, indices.data(), static_cast<std::size_t>(index_bytes));
-        gpu->index_buffer->Unmap(0, nullptr);
 
         gpu->vertex_view.BufferLocation = gpu->vertex_buffer->GetGPUVirtualAddress();
         gpu->vertex_view.SizeInBytes = static_cast<UINT>(vertex_bytes);
@@ -1674,17 +2132,19 @@ void Dx12Renderer::render_skybox(const LoadedWorld& world)
         srv_heap_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
         if (!succeeded(device_->CreateDescriptorHeap(&srv_heap_desc, IID_PPV_ARGS(&gpu->srv_heap)), "ID3D12Device::CreateDescriptorHeap skybox SRV"))
         {
-            return;
+            return false;
         }
+        set_debug_name(gpu->srv_heap.Get(), "OpenStrike Skybox SRV Heap");
         gpu->srv_descriptor_size = device_->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
         D3D12_CPU_DESCRIPTOR_HANDLE cpu_handle = gpu->srv_heap->GetCPUDescriptorHandleForHeapStart();
         for (std::size_t face = 0; face < kSkyboxFaceCount; ++face)
         {
-            if (!upload_source_texture_to_gpu(device_.Get(), command_list_.Get(), (*sky_textures)[face], cpu_handle, gpu->textures[face]))
+            const std::string texture_name = std::format("OpenStrike Skybox {} {}", resolved_sky_name, kSkyboxSuffixByDrawAxis[face]);
+            if (!upload_source_texture_to_gpu(device_.Get(), command_list_.Get(), (*sky_textures)[face], cpu_handle, gpu->textures[face], texture_name))
             {
                 log_warning("failed to upload skybox '{}' face '{}'", resolved_sky_name, kSkyboxSuffixByDrawAxis[face]);
-                return;
+                return false;
             }
             cpu_handle.ptr += gpu->srv_descriptor_size;
         }
@@ -1695,7 +2155,17 @@ void Dx12Renderer::render_skybox(const LoadedWorld& world)
 
     if (skybox_gpu_ == nullptr)
     {
-        return;
+        return false;
+    }
+
+    return true;
+}
+
+bool Dx12Renderer::record_skybox(ID3D12GraphicsCommandList* command_list, const LoadedWorld&) const
+{
+    if (command_list == nullptr || engine_context_ == nullptr || skybox_gpu_ == nullptr || skybox_pipeline_state_ == nullptr || skybox_root_signature_ == nullptr)
+    {
+        return false;
     }
 
     D3D12_VIEWPORT viewport{};
@@ -1714,31 +2184,32 @@ void Dx12Renderer::render_skybox(const LoadedWorld& world)
 
     const std::array<float, 16> constants = skybox_to_clip_matrix(&engine_context_->camera, width_, height_);
     ID3D12DescriptorHeap* descriptor_heaps[] = {skybox_gpu_->srv_heap.Get()};
-    command_list_->SetDescriptorHeaps(1, descriptor_heaps);
-    command_list_->SetPipelineState(skybox_pipeline_state_.Get());
-    command_list_->SetGraphicsRootSignature(skybox_root_signature_.Get());
-    command_list_->SetGraphicsRoot32BitConstants(0, static_cast<UINT>(constants.size()), constants.data(), 0);
-    command_list_->RSSetViewports(1, &viewport);
-    command_list_->RSSetScissorRects(1, &scissor);
-    command_list_->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    command_list_->IASetVertexBuffers(0, 1, &skybox_gpu_->vertex_view);
-    command_list_->IASetIndexBuffer(&skybox_gpu_->index_view);
+    command_list->SetDescriptorHeaps(1, descriptor_heaps);
+    command_list->SetPipelineState(skybox_pipeline_state_.Get());
+    command_list->SetGraphicsRootSignature(skybox_root_signature_.Get());
+    command_list->SetGraphicsRoot32BitConstants(0, static_cast<UINT>(constants.size()), constants.data(), 0);
+    command_list->RSSetViewports(1, &viewport);
+    command_list->RSSetScissorRects(1, &scissor);
+    command_list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    command_list->IASetVertexBuffers(0, 1, &skybox_gpu_->vertex_view);
+    command_list->IASetIndexBuffer(&skybox_gpu_->index_view);
 
     const D3D12_GPU_DESCRIPTOR_HANDLE gpu_start = skybox_gpu_->srv_heap->GetGPUDescriptorHandleForHeapStart();
     for (std::uint32_t face = 0; face < kSkyboxFaceCount; ++face)
     {
         D3D12_GPU_DESCRIPTOR_HANDLE texture_handle = gpu_start;
         texture_handle.ptr += static_cast<UINT64>(face) * skybox_gpu_->srv_descriptor_size;
-        command_list_->SetGraphicsRootDescriptorTable(1, texture_handle);
-        command_list_->DrawIndexedInstanced(6, 1, face * 6, 0, 0);
+        command_list->SetGraphicsRootDescriptorTable(1, texture_handle);
+        command_list->DrawIndexedInstanced(6, 1, face * 6, 0, 0);
     }
+    return true;
 }
 
-void Dx12Renderer::render_world()
+bool Dx12Renderer::ensure_world_gpu_resources()
 {
     if (engine_context_ == nullptr || world_pipeline_state_ == nullptr || world_root_signature_ == nullptr || command_list_ == nullptr)
     {
-        return;
+        return false;
     }
 
     const LoadedWorld* world = engine_context_->world.current_world();
@@ -1747,7 +2218,7 @@ void Dx12Renderer::render_world()
     {
         world_gpu_.reset();
         world_gpu_generation_ = generation;
-        return;
+        return false;
     }
 
     if (world_gpu_ == nullptr || world_gpu_generation_ != generation)
@@ -1765,37 +2236,31 @@ void Dx12Renderer::render_world()
 
         const auto vertex_bytes = static_cast<std::uint64_t>(vertices.size() * sizeof(WorldDrawVertex));
         const auto index_bytes = static_cast<std::uint64_t>(world->mesh.indices.size() * sizeof(std::uint32_t));
-        const auto upload_heap = heap_properties(D3D12_HEAP_TYPE_UPLOAD);
         auto gpu = std::make_unique<WorldGpuResources>();
 
-        const auto vertex_desc = buffer_desc(vertex_bytes);
-        if (!succeeded(device_->CreateCommittedResource(&upload_heap, D3D12_HEAP_FLAG_NONE, &vertex_desc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
-                IID_PPV_ARGS(&gpu->vertex_buffer)), "ID3D12Device::CreateCommittedResource world vertex buffer"))
+        if (!upload_static_buffer_to_gpu(device_.Get(),
+                command_list_.Get(),
+                vertices.data(),
+                vertex_bytes,
+                D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER,
+                std::format("OpenStrike World {} Vertex Buffer", world->name),
+                gpu->vertex_buffer,
+                gpu->vertex_upload_buffer))
         {
-            return;
+            return false;
         }
 
-        const auto index_desc = buffer_desc(index_bytes);
-        if (!succeeded(device_->CreateCommittedResource(&upload_heap, D3D12_HEAP_FLAG_NONE, &index_desc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
-                IID_PPV_ARGS(&gpu->index_buffer)), "ID3D12Device::CreateCommittedResource world index buffer"))
+        if (!upload_static_buffer_to_gpu(device_.Get(),
+                command_list_.Get(),
+                world->mesh.indices.data(),
+                index_bytes,
+                D3D12_RESOURCE_STATE_INDEX_BUFFER,
+                std::format("OpenStrike World {} Index Buffer", world->name),
+                gpu->index_buffer,
+                gpu->index_upload_buffer))
         {
-            return;
+            return false;
         }
-
-        void* mapped = nullptr;
-        if (!succeeded(gpu->vertex_buffer->Map(0, nullptr, &mapped), "ID3D12Resource::Map world vertex buffer"))
-        {
-            return;
-        }
-        std::memcpy(mapped, vertices.data(), static_cast<std::size_t>(vertex_bytes));
-        gpu->vertex_buffer->Unmap(0, nullptr);
-
-        if (!succeeded(gpu->index_buffer->Map(0, nullptr, &mapped), "ID3D12Resource::Map world index buffer"))
-        {
-            return;
-        }
-        std::memcpy(mapped, world->mesh.indices.data(), static_cast<std::size_t>(index_bytes));
-        gpu->index_buffer->Unmap(0, nullptr);
 
         gpu->vertex_view.BufferLocation = gpu->vertex_buffer->GetGPUVirtualAddress();
         gpu->vertex_view.SizeInBytes = static_cast<UINT>(vertex_bytes);
@@ -1812,8 +2277,9 @@ void Dx12Renderer::render_world()
         srv_heap_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
         if (!succeeded(device_->CreateDescriptorHeap(&srv_heap_desc, IID_PPV_ARGS(&gpu->srv_heap)), "ID3D12Device::CreateDescriptorHeap world SRV"))
         {
-            return;
+            return false;
         }
+        set_debug_name(gpu->srv_heap.Get(), std::format("OpenStrike World {} SRV Heap", world->name));
         gpu->srv_descriptor_size = device_->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
         gpu->textures.reserve(material_count);
         gpu->material_constants.reserve(material_count);
@@ -1828,12 +2294,22 @@ void Dx12Renderer::render_world()
             LoadedMaterial loaded_material = material_system.load_world_material(material.name);
 
             TextureGpuResources gpu_texture;
-            if (!upload_source_texture_to_gpu(device_.Get(), command_list_.Get(), loaded_material.base_texture, cpu_handle, gpu_texture))
+            if (!upload_source_texture_to_gpu(device_.Get(),
+                    command_list_.Get(),
+                    loaded_material.base_texture,
+                    cpu_handle,
+                    gpu_texture,
+                    std::format("OpenStrike Material {}", material.name)))
             {
                 SourceTexture fallback = material_system.fallback_texture(material.name);
-                if (!upload_source_texture_to_gpu(device_.Get(), command_list_.Get(), fallback, cpu_handle, gpu_texture))
+                if (!upload_source_texture_to_gpu(device_.Get(),
+                        command_list_.Get(),
+                        fallback,
+                        cpu_handle,
+                        gpu_texture,
+                        std::format("OpenStrike Fallback Material {}", material.name)))
                 {
-                    return;
+                    return false;
                 }
                 loaded_material.base_texture_loaded = false;
                 loaded_material.using_fallback_texture = true;
@@ -1882,6 +2358,22 @@ void Dx12Renderer::render_world()
             world_gpu_->batches.size());
     }
 
+    return world_gpu_ != nullptr;
+}
+
+bool Dx12Renderer::record_world(ID3D12GraphicsCommandList* command_list) const
+{
+    if (command_list == nullptr || engine_context_ == nullptr || world_gpu_ == nullptr || world_pipeline_state_ == nullptr || world_root_signature_ == nullptr)
+    {
+        return false;
+    }
+
+    const LoadedWorld* world = engine_context_->world.current_world();
+    if (world == nullptr || world->mesh.vertices.empty() || world->mesh.indices.empty())
+    {
+        return false;
+    }
+
     D3D12_VIEWPORT viewport{};
     viewport.TopLeftX = 0.0F;
     viewport.TopLeftY = 0.0F;
@@ -1896,17 +2388,17 @@ void Dx12Renderer::render_world()
     scissor.right = static_cast<LONG>(width_);
     scissor.bottom = static_cast<LONG>(height_);
 
-    const std::array<float, 16> constants = world_to_clip_matrix(world->mesh, &engine_context_->camera, width_, height_);
+    const std::array<float, kWorldShaderFloatCount> constants = world_shader_constants(world->mesh, &engine_context_->camera, width_, height_);
     ID3D12DescriptorHeap* descriptor_heaps[] = {world_gpu_->srv_heap.Get()};
-    command_list_->SetDescriptorHeaps(1, descriptor_heaps);
-    command_list_->SetPipelineState(world_pipeline_state_.Get());
-    command_list_->SetGraphicsRootSignature(world_root_signature_.Get());
-    command_list_->SetGraphicsRoot32BitConstants(0, static_cast<UINT>(constants.size()), constants.data(), 0);
-    command_list_->RSSetViewports(1, &viewport);
-    command_list_->RSSetScissorRects(1, &scissor);
-    command_list_->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    command_list_->IASetVertexBuffers(0, 1, &world_gpu_->vertex_view);
-    command_list_->IASetIndexBuffer(&world_gpu_->index_view);
+    command_list->SetDescriptorHeaps(1, descriptor_heaps);
+    command_list->SetPipelineState(world_pipeline_state_.Get());
+    command_list->SetGraphicsRootSignature(world_root_signature_.Get());
+    command_list->SetGraphicsRoot32BitConstants(0, static_cast<UINT>(constants.size()), constants.data(), 0);
+    command_list->RSSetViewports(1, &viewport);
+    command_list->RSSetScissorRects(1, &scissor);
+    command_list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    command_list->IASetVertexBuffers(0, 1, &world_gpu_->vertex_view);
+    command_list->IASetIndexBuffer(&world_gpu_->index_view);
     const D3D12_GPU_DESCRIPTOR_HANDLE gpu_start = world_gpu_->srv_heap->GetGPUDescriptorHandleForHeapStart();
     for (const WorldDrawBatch& batch : world_gpu_->batches)
     {
@@ -1917,13 +2409,14 @@ void Dx12Renderer::render_world()
 
         D3D12_GPU_DESCRIPTOR_HANDLE texture_handle = gpu_start;
         texture_handle.ptr += static_cast<UINT64>(batch.material_index) * world_gpu_->srv_descriptor_size;
-        command_list_->SetGraphicsRootDescriptorTable(1, texture_handle);
-        command_list_->SetGraphicsRoot32BitConstants(2,
+        command_list->SetGraphicsRootDescriptorTable(1, texture_handle);
+        command_list->SetGraphicsRoot32BitConstants(2,
             static_cast<UINT>(sizeof(MaterialGpuConstants) / sizeof(std::uint32_t)),
             &world_gpu_->material_constants[batch.material_index],
             0);
-        command_list_->DrawIndexedInstanced(batch.index_count, 1, batch.first_index, 0, 0);
+        command_list->DrawIndexedInstanced(batch.index_count, 1, batch.first_index, 0, 0);
     }
+    return true;
 }
 
 void Dx12Renderer::shutdown_rml()
@@ -2040,32 +2533,44 @@ void Dx12Renderer::pump_messages()
     }
 }
 
-void Dx12Renderer::wait_for_gpu()
+bool Dx12Renderer::wait_for_gpu()
 {
     if (!command_queue_ || !fence_ || fence_event_ == nullptr)
     {
-        return;
+        return true;
     }
 
     const std::uint64_t signal_value = fence_value_++;
-    command_queue_->Signal(fence_.Get(), signal_value);
+    if (!succeeded_with_device(device_.Get(), command_queue_->Signal(fence_.Get(), signal_value), "ID3D12CommandQueue::Signal wait_for_gpu"))
+    {
+        return false;
+    }
 
     if (fence_->GetCompletedValue() < signal_value)
     {
-        fence_->SetEventOnCompletion(signal_value, fence_event_);
-        WaitForSingleObject(fence_event_, INFINITE);
+        if (!succeeded_with_device(device_.Get(),
+                fence_->SetEventOnCompletion(signal_value, fence_event_),
+                "ID3D12Fence::SetEventOnCompletion wait_for_gpu") ||
+            !wait_for_fence_event(fence_event_, "Dx12Renderer::wait_for_gpu"))
+        {
+            return false;
+        }
     }
 
     for (std::uint64_t& value : frame_fence_values_)
     {
         value = signal_value;
     }
+    return true;
 }
 
-void Dx12Renderer::move_to_next_frame()
+bool Dx12Renderer::move_to_next_frame()
 {
     const std::uint64_t current_fence_value = fence_value_;
-    command_queue_->Signal(fence_.Get(), current_fence_value);
+    if (!succeeded_with_device(device_.Get(), command_queue_->Signal(fence_.Get(), current_fence_value), "ID3D12CommandQueue::Signal frame"))
+    {
+        return false;
+    }
     frame_fence_values_[frame_index_] = current_fence_value;
     ++fence_value_;
 
@@ -2073,8 +2578,14 @@ void Dx12Renderer::move_to_next_frame()
 
     if (fence_->GetCompletedValue() < frame_fence_values_[frame_index_])
     {
-        fence_->SetEventOnCompletion(frame_fence_values_[frame_index_], fence_event_);
-        WaitForSingleObject(fence_event_, INFINITE);
+        if (!succeeded_with_device(device_.Get(),
+                fence_->SetEventOnCompletion(frame_fence_values_[frame_index_], fence_event_),
+                "ID3D12Fence::SetEventOnCompletion frame") ||
+            !wait_for_fence_event(fence_event_, "Dx12Renderer::move_to_next_frame"))
+        {
+            return false;
+        }
     }
+    return true;
 }
 }

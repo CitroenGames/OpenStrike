@@ -30,6 +30,12 @@ Build Debug:
 sighmake --build . --config Debug --parallel 8
 ```
 
+Compile DX12 shaders:
+
+```powershell
+.\CompileShaders.bat
+```
+
 Run tests:
 
 ```powershell

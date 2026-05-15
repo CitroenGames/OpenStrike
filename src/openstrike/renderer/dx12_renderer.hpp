@@ -53,6 +53,7 @@ public:
 
 private:
     static constexpr std::uint32_t kFrameCount = 2;
+    static constexpr std::uint32_t kSceneCommandListCount = 2;
 
     bool create_window(const RuntimeConfig& config);
     bool create_device_objects(const RuntimeConfig& config);
@@ -60,15 +61,18 @@ private:
     bool create_depth_buffer();
     bool create_world_pipeline();
     bool create_skybox_pipeline();
+    bool create_multicore_command_objects();
     bool resize_swap_chain(std::uint32_t width, std::uint32_t height);
     bool initialize_rml(const RuntimeConfig& config);
     void sync_main_menu_visibility();
-    void render_skybox(const LoadedWorld& world);
-    void render_world();
+    bool ensure_skybox_gpu_resources(const LoadedWorld& world);
+    bool ensure_world_gpu_resources();
+    bool record_skybox(ID3D12GraphicsCommandList* command_list, const LoadedWorld& world) const;
+    bool record_world(ID3D12GraphicsCommandList* command_list) const;
     void shutdown_rml();
     void pump_messages();
-    void wait_for_gpu();
-    void move_to_next_frame();
+    bool wait_for_gpu();
+    bool move_to_next_frame();
 
     std::uint32_t width_ = 1280;
     std::uint32_t height_ = 720;
@@ -101,6 +105,10 @@ private:
     Microsoft::WRL::ComPtr<ID3D12Resource> depth_buffer_;
     std::array<Microsoft::WRL::ComPtr<ID3D12CommandAllocator>, kFrameCount> command_allocators_;
     Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> command_list_;
+    std::array<std::array<Microsoft::WRL::ComPtr<ID3D12CommandAllocator>, kSceneCommandListCount>, kFrameCount> scene_command_allocators_;
+    std::array<Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList>, kSceneCommandListCount> scene_command_lists_;
+    std::array<Microsoft::WRL::ComPtr<ID3D12CommandAllocator>, kFrameCount> post_command_allocators_;
+    Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> post_command_list_;
     Microsoft::WRL::ComPtr<ID3D12Fence> fence_;
     struct WorldGpuResources;
     struct SkyboxGpuResources;

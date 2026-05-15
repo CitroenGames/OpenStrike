@@ -1,0 +1,53 @@
+[project:OpenStrikeEditor]
+type = exe
+std = 20
+sources = src/**/*.cpp
+headers = src/**/*.hpp
+includes = {
+    src
+    ../../src
+    ../../thirdparty/imgui-docking
+    ../../thirdparty/imgui-docking/backends
+    ../../thirdparty/imguizmo
+}
+warning_level = Level4
+multiprocessor = true
+exceptions = true
+rtti = true
+defines = NOMINMAX, WIN32_LEAN_AND_MEAN, SDL_MAIN_HANDLED, IMGUI_STATIC
+subsystem = Windows
+target_link_libraries(PRIVATE OpenStrikeCore imgui-docking imguizmo SDL3)
+if(Windows)
+{
+    libs = opengl32.lib, comdlg32.lib, shell32.lib, dwmapi.lib, ole32.lib
+}
+
+[config:Debug|x64]
+runtime_library = MultiThreadedDebug
+optimization = Disabled
+debug_info = ProgramDatabase
+generate_debug_info = true
+outdir = ../../bin/x64/Debug
+intdir = ../../build/obj/x64/Debug/OpenStrikeEditor
+postbuild = copy /Y ..\thirdparty\SDL3-3.4.4\lib\x64\SDL3.dll ..\bin\x64\Debug\SDL3.dll
+if(posix)
+{
+    outdir = ../../bin/posix/Debug
+    intdir = ../../build/obj/posix/Debug/OpenStrikeEditor
+}
+
+[config:Release|x64]
+runtime_library = MultiThreaded
+optimization = MaxSpeed
+debug_info = ProgramDatabase
+generate_debug_info = true
+function_level_linking = true
+intrinsic_functions = true
+outdir = ../../bin/x64/Release
+intdir = ../../build/obj/x64/Release/OpenStrikeEditor
+postbuild = copy /Y ..\thirdparty\SDL3-3.4.4\lib\x64\SDL3.dll ..\bin\x64\Release\SDL3.dll
+if(posix)
+{
+    outdir = ../../bin/posix/Release
+    intdir = ../../build/obj/posix/Release/OpenStrikeEditor
+}

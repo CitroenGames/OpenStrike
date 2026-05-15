@@ -1,0 +1,37 @@
+[project:imguizmo]
+type = lib
+std = 17
+sources = ImGuizmo.cpp
+headers = ImGuizmo.h
+includes = ., ../imgui-docking, ../imgui-docking/backends
+public_includes = .
+defines = IMGUI_STATIC
+target_link_libraries(PRIVATE imgui-docking)
+
+[config:Debug|x64]
+runtime_library = MultiThreadedDebug
+optimization = Disabled
+debug_info = ProgramDatabase
+generate_debug_info = true
+outdir = ../../bin/x64/Debug
+intdir = ../../build/obj/x64/Debug/imguizmo
+if(posix)
+{
+    outdir = ../../bin/posix/Debug
+    intdir = ../../build/obj/posix/Debug/imguizmo
+}
+
+[config:Release|x64]
+runtime_library = MultiThreaded
+optimization = MaxSpeed
+debug_info = ProgramDatabase
+generate_debug_info = true
+function_level_linking = true
+intrinsic_functions = true
+outdir = ../../bin/x64/Release
+intdir = ../../build/obj/x64/Release/imguizmo
+if(posix)
+{
+    outdir = ../../bin/posix/Release
+    intdir = ../../build/obj/posix/Release/imguizmo
+}

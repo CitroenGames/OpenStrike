@@ -598,13 +598,25 @@ void test_material_system_resolves_source_vmt_without_shader_combos()
     std::filesystem::remove_all(root);
 }
 
-void test_skybox_shader_sources_are_dedicated()
+void test_renderer_shader_files_are_dedicated()
 {
-    const std::string_view vertex_source = openstrike::skybox_vertex_shader_source();
-    const std::string_view pixel_source = openstrike::skybox_pixel_shader_source();
-    REQUIRE(vertex_source.find("SkyboxConstants") != std::string_view::npos);
-    REQUIRE(pixel_source.find("skybox_texture") != std::string_view::npos);
-    REQUIRE(pixel_source.find("return float4(texel.rgb, 1.0f)") != std::string_view::npos);
+    const openstrike::Dx12ShaderFile world_vertex = openstrike::world_material_vertex_shader_file();
+    const openstrike::Dx12ShaderFile world_pixel = openstrike::world_material_pixel_shader_file();
+    REQUIRE(std::string_view(world_vertex.source_path) == "shaders/world_material.hlsl");
+    REQUIRE(std::string_view(world_pixel.source_path) == "shaders/world_material.hlsl");
+    REQUIRE(std::string_view(world_vertex.entry_point) == "VSMain");
+    REQUIRE(std::string_view(world_pixel.entry_point) == "PSMain");
+    REQUIRE(std::string_view(world_vertex.compiled_path).find("world_material.vs.cso") != std::string_view::npos);
+    REQUIRE(std::string_view(world_pixel.compiled_path).find("world_material.ps.cso") != std::string_view::npos);
+
+    const openstrike::Dx12ShaderFile skybox_vertex = openstrike::skybox_vertex_shader_file();
+    const openstrike::Dx12ShaderFile skybox_pixel = openstrike::skybox_pixel_shader_file();
+    REQUIRE(std::string_view(skybox_vertex.source_path) == "shaders/skybox.hlsl");
+    REQUIRE(std::string_view(skybox_pixel.source_path) == "shaders/skybox.hlsl");
+    REQUIRE(std::string_view(skybox_vertex.entry_point) == "VSMain");
+    REQUIRE(std::string_view(skybox_pixel.entry_point) == "PSMain");
+    REQUIRE(std::string_view(skybox_vertex.compiled_path).find("skybox.vs.cso") != std::string_view::npos);
+    REQUIRE(std::string_view(skybox_pixel.compiled_path).find("skybox.ps.cso") != std::string_view::npos);
 }
 
 void test_network_stream_and_protocol_roundtrip()
@@ -1430,7 +1442,7 @@ int main()
         test_fixed_step_clamps_runaway_frames();
         test_content_filesystem_path_ids();
         test_material_system_resolves_source_vmt_without_shader_combos();
-        test_skybox_shader_sources_are_dedicated();
+        test_renderer_shader_files_are_dedicated();
         test_network_stream_and_protocol_roundtrip();
         test_network_udp_loopback_connects_and_exchanges_text();
         test_command_buffer_cvars_and_quit();

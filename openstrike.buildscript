@@ -6,11 +6,18 @@ platforms = x64
 folder(thirdparty)
 {
     include = thirdparty/SDL3-3.4.4/sdl3.buildscript
+    include = thirdparty/imgui-docking/imgui.buildscript
+    include = thirdparty/imguizmo/imguizmo.buildscript
     include = thirdparty/freetype/freetype.buildscript
     include = thirdparty/RmlUi-6.2/rmlui.buildscript
     include = thirdparty/JoltPhysics-5.5.0/jolt.buildscript
     include = thirdparty/steamaudio/steamaudio.buildscript
     include = thirdparty/miniaudio/miniaudio.buildscript
+}
+
+folder(tools)
+{
+    include = tools/editor/editor.buildscript
 }
 
 [project:OpenStrikeCore]
