@@ -12,6 +12,7 @@
 namespace openstrike
 {
 class ContentFileSystem;
+class WorldManager;
 
 struct ConsoleVariable
 {
@@ -56,6 +57,7 @@ struct ConsoleCommandContext
     CommandBuffer& command_buffer;
     const CommandRegistry* registry = nullptr;
     ContentFileSystem* filesystem = nullptr;
+    WorldManager* world = nullptr;
     std::function<void()> request_quit;
 };
 

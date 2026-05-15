@@ -36,6 +36,7 @@ void MainMenuController::attach(Rml::ElementDocument& document)
     set_play_mode(play_mode_);
     set_play_tab(active_play_tab_);
     update_go_button_state();
+    set_visible(true);
 }
 
 void MainMenuController::detach()
@@ -56,6 +57,7 @@ void MainMenuController::detach()
     }
 
     document_ = nullptr;
+    visible_ = false;
 }
 
 bool MainMenuController::should_quit() const
@@ -63,9 +65,38 @@ bool MainMenuController::should_quit() const
     return should_quit_;
 }
 
+bool MainMenuController::visible() const
+{
+    return visible_;
+}
+
 void MainMenuController::set_open_console_callback(std::function<void()> callback)
 {
     open_console_callback_ = std::move(callback);
+}
+
+void MainMenuController::set_launch_map_callback(std::function<void(std::string)> callback)
+{
+    launch_map_callback_ = std::move(callback);
+}
+
+void MainMenuController::set_visible(bool visible)
+{
+    if (document_ == nullptr)
+    {
+        visible_ = false;
+        return;
+    }
+
+    visible_ = visible;
+    if (visible_)
+    {
+        document_->Show();
+    }
+    else
+    {
+        document_->Hide();
+    }
 }
 
 void MainMenuController::ProcessEvent(Rml::Event& event)
@@ -295,7 +326,15 @@ void MainMenuController::execute_go()
     }
 
     const std::string mode = play_mode_ == "bots" ? "Bot game" : "Matchmaking";
-    set_status(mode + " launch for " + selected_map_ + " is not wired yet.", true);
+    if (launch_map_callback_)
+    {
+        set_status("Loading " + selected_map_ + "...", true);
+        launch_map_callback_(std::string(selected_map_));
+    }
+    else
+    {
+        set_status(mode + " launch for " + selected_map_ + " is not wired yet.", true);
+    }
     log_info("{} requested for map '{}'", mode, selected_map_);
 }
 

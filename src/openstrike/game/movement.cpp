@@ -41,6 +41,11 @@ void accelerate(PlayerState& player, Vec3 wish_direction, float wish_speed, cons
 
 void simulate_player_move(PlayerState& player, const InputCommand& input, const MovementTuning& tuning)
 {
+    simulate_player_move(player, input, tuning, 0.0F);
+}
+
+void simulate_player_move(PlayerState& player, const InputCommand& input, const MovementTuning& tuning, std::optional<float> ground_z)
+{
     if (player.on_ground)
     {
         apply_ground_friction(player, tuning);
@@ -66,12 +71,15 @@ void simulate_player_move(PlayerState& player, const InputCommand& input, const 
 
     player.origin += player.velocity * tuning.tick_interval_seconds;
 
-    if (player.origin.z <= 0.0F)
+    if (ground_z && player.origin.z <= *ground_z)
     {
-        player.origin.z = 0.0F;
+        player.origin.z = *ground_z;
         player.velocity.z = 0.0F;
         player.on_ground = true;
     }
+    else if (!ground_z)
+    {
+        player.on_ground = false;
+    }
 }
 }
-

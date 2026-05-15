@@ -3,6 +3,8 @@
 #include "openstrike/engine/module.hpp"
 #include "openstrike/game/movement.hpp"
 
+#include <cstdint>
+
 namespace openstrike
 {
 class GameSimulation final : public EngineModule
@@ -16,8 +18,11 @@ public:
     [[nodiscard]] const PlayerState& local_player() const;
 
 private:
+    void sync_world(EngineContext& engine);
+
     PlayerState local_player_;
     MovementTuning movement_;
     InputCommand input_;
+    std::uint64_t observed_world_generation_ = 0;
 };
 }

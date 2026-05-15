@@ -26,8 +26,11 @@ public:
     void attach(Rml::ElementDocument& document);
     void detach();
     void set_open_console_callback(std::function<void()> callback);
+    void set_launch_map_callback(std::function<void(std::string)> callback);
+    void set_visible(bool visible);
 
     [[nodiscard]] bool should_quit() const;
+    [[nodiscard]] bool visible() const;
 
     void ProcessEvent(Rml::Event& event) override;
 
@@ -52,6 +55,7 @@ private:
     [[nodiscard]] Rml::Element* element(const char* id) const;
 
     Rml::ElementDocument* document_ = nullptr;
+    bool visible_ = false;
     bool should_quit_ = false;
     bool prime_only_ = true;
     bool settings_visible_ = false;
@@ -60,5 +64,6 @@ private:
     Rml::String active_play_tab_ = "competitive";
     Rml::String selected_map_;
     std::function<void()> open_console_callback_;
+    std::function<void(std::string)> launch_map_callback_;
 };
 }

@@ -3,6 +3,7 @@
 #include "openstrike/core/console.hpp"
 #include "openstrike/core/content_filesystem.hpp"
 #include "openstrike/engine/runtime_config.hpp"
+#include "openstrike/world/world.hpp"
 
 namespace openstrike
 {
@@ -13,6 +14,7 @@ public:
     CommandRegistry commands;
     CommandBuffer command_buffer;
     ContentFileSystem filesystem;
+    WorldManager world;
     bool quit_requested = false;
 
     [[nodiscard]] ConsoleCommandContext console_context();

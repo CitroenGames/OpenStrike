@@ -1,0 +1,1109 @@
+#include "openstrike/world/world.hpp"
+
+#include "openstrike/core/content_filesystem.hpp"
+#include "openstrike/core/log.hpp"
+
+#include <algorithm>
+#include <array>
+#include <charconv>
+#include <cctype>
+#include <cmath>
+#include <cstring>
+#include <fstream>
+#include <limits>
+#include <set>
+#include <sstream>
+#include <stdexcept>
+#include <string>
+#include <system_error>
+
+namespace openstrike
+{
+namespace
+{
+constexpr std::uint32_t kBspIdent = 0x50534256;
+constexpr std::size_t kBspLumpCount = 64;
+constexpr std::size_t kBspHeaderSize = 8 + (kBspLumpCount * 16) + 4;
+constexpr std::size_t kEntitiesLump = 0;
+constexpr std::size_t kPlanesLump = 1;
+constexpr std::size_t kVerticesLump = 3;
+constexpr std::size_t kTexInfoLump = 6;
+constexpr std::size_t kFacesLump = 7;
+constexpr std::size_t kEdgesLump = 12;
+constexpr std::size_t kSurfEdgesLump = 13;
+constexpr std::uint32_t kSurfaceSky2D = 0x0002;
+constexpr std::uint32_t kSurfaceSky = 0x0004;
+constexpr std::uint32_t kSurfaceNoDraw = 0x0080;
+constexpr std::uint32_t kSurfaceSkip = 0x0200;
+
+struct BspLump
+{
+    std::uint32_t offset = 0;
+    std::uint32_t length = 0;
+    std::uint32_t version = 0;
+};
+
+struct ParsedEntity
+{
+    std::unordered_map<std::string, std::string> properties;
+};
+
+struct BspEdge
+{
+    std::uint16_t vertices[2]{};
+};
+
+struct BspTexInfo
+{
+    std::uint32_t flags = 0;
+};
+
+struct BspFace
+{
+    std::uint16_t plane = 0;
+    std::uint8_t side = 0;
+    std::int32_t first_edge = 0;
+    std::int16_t edge_count = 0;
+    std::int16_t texinfo = -1;
+};
+
+std::string lower_copy(std::string_view text)
+{
+    std::string result(text);
+    std::transform(result.begin(), result.end(), result.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+    return result;
+}
+
+std::string trim_copy(std::string_view text)
+{
+    std::size_t first = 0;
+    while (first < text.size() && std::isspace(static_cast<unsigned char>(text[first])) != 0)
+    {
+        ++first;
+    }
+
+    std::size_t last = text.size();
+    while (last > first && std::isspace(static_cast<unsigned char>(text[last - 1])) != 0)
+    {
+        --last;
+    }
+
+    return std::string(text.substr(first, last - first));
+}
+
+void normalize_slashes(std::string& path)
+{
+    std::replace(path.begin(), path.end(), '\\', '/');
+}
+
+bool has_suffix(std::string_view text, std::string_view suffix)
+{
+    return text.size() >= suffix.size() && lower_copy(text.substr(text.size() - suffix.size())) == suffix;
+}
+
+std::string remove_suffix(std::string text, std::string_view suffix)
+{
+    if (has_suffix(text, suffix))
+    {
+        text.resize(text.size() - suffix.size());
+    }
+    return text;
+}
+
+std::string canonical_map_name(std::string_view map_name)
+{
+    std::string name = trim_copy(map_name);
+    normalize_slashes(name);
+    if (name.rfind("maps/", 0) == 0)
+    {
+        name.erase(0, 5);
+    }
+    name = remove_suffix(std::move(name), ".bsp");
+    name = remove_suffix(std::move(name), ".level.json");
+    return name;
+}
+
+std::vector<std::filesystem::path> map_candidates(std::string_view map_name)
+{
+    std::string token = trim_copy(map_name);
+    normalize_slashes(token);
+    const std::filesystem::path token_path(token);
+    const std::string canonical = canonical_map_name(token);
+
+    std::vector<std::filesystem::path> candidates;
+    if (!token.empty())
+    {
+        candidates.push_back(token_path);
+    }
+
+    if (!canonical.empty())
+    {
+        candidates.emplace_back("maps/" + canonical + ".bsp");
+        candidates.emplace_back(canonical + ".bsp");
+        candidates.emplace_back("assets/levels/" + canonical + ".level.json");
+        candidates.emplace_back(canonical + ".level.json");
+    }
+
+    return candidates;
+}
+
+std::uint32_t read_u32_le(const std::vector<unsigned char>& bytes, std::size_t offset)
+{
+    if (offset + 4 > bytes.size())
+    {
+        throw std::runtime_error("unexpected end of file");
+    }
+
+    return static_cast<std::uint32_t>(bytes[offset]) | (static_cast<std::uint32_t>(bytes[offset + 1]) << 8U) |
+           (static_cast<std::uint32_t>(bytes[offset + 2]) << 16U) | (static_cast<std::uint32_t>(bytes[offset + 3]) << 24U);
+}
+
+std::int32_t read_s32_le(const std::vector<unsigned char>& bytes, std::size_t offset)
+{
+    return static_cast<std::int32_t>(read_u32_le(bytes, offset));
+}
+
+std::uint16_t read_u16_le(const std::vector<unsigned char>& bytes, std::size_t offset)
+{
+    if (offset + 2 > bytes.size())
+    {
+        throw std::runtime_error("unexpected end of file");
+    }
+
+    return static_cast<std::uint16_t>(bytes[offset]) | static_cast<std::uint16_t>(static_cast<std::uint16_t>(bytes[offset + 1]) << 8U);
+}
+
+std::int16_t read_s16_le(const std::vector<unsigned char>& bytes, std::size_t offset)
+{
+    return static_cast<std::int16_t>(read_u16_le(bytes, offset));
+}
+
+float read_f32_le(const std::vector<unsigned char>& bytes, std::size_t offset)
+{
+    const std::uint32_t raw = read_u32_le(bytes, offset);
+    float value = 0.0F;
+    static_assert(sizeof(value) == sizeof(raw));
+    std::memcpy(&value, &raw, sizeof(value));
+    return value;
+}
+
+std::uint32_t fnv1a32(const std::vector<unsigned char>& bytes)
+{
+    std::uint32_t hash = 2166136261U;
+    for (const unsigned char byte : bytes)
+    {
+        hash ^= byte;
+        hash *= 16777619U;
+    }
+    return hash;
+}
+
+std::vector<unsigned char> read_binary_file(const std::filesystem::path& path)
+{
+    std::ifstream file(path, std::ios::binary);
+    if (!file)
+    {
+        throw std::runtime_error("failed to open file: " + path.string());
+    }
+
+    file.seekg(0, std::ios::end);
+    const std::streamoff size = file.tellg();
+    if (size < 0)
+    {
+        throw std::runtime_error("failed to query file size: " + path.string());
+    }
+
+    file.seekg(0, std::ios::beg);
+    std::vector<unsigned char> bytes(static_cast<std::size_t>(size));
+    if (!bytes.empty())
+    {
+        file.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    }
+
+    if (!file && !file.eof())
+    {
+        throw std::runtime_error("failed to read file: " + path.string());
+    }
+
+    return bytes;
+}
+
+std::string read_text_file(const std::filesystem::path& path)
+{
+    std::ifstream file(path, std::ios::binary);
+    if (!file)
+    {
+        throw std::runtime_error("failed to open file: " + path.string());
+    }
+
+    std::ostringstream contents;
+    contents << file.rdbuf();
+    return contents.str();
+}
+
+void skip_whitespace(std::string_view text, std::size_t& cursor)
+{
+    while (cursor < text.size() && std::isspace(static_cast<unsigned char>(text[cursor])) != 0)
+    {
+        ++cursor;
+    }
+}
+
+std::string parse_quoted(std::string_view text, std::size_t& cursor)
+{
+    if (cursor >= text.size() || text[cursor] != '"')
+    {
+        return {};
+    }
+
+    ++cursor;
+    std::string value;
+    while (cursor < text.size())
+    {
+        const char ch = text[cursor++];
+        if (ch == '"')
+        {
+            break;
+        }
+
+        if (ch == '\\' && cursor < text.size())
+        {
+            value.push_back(text[cursor++]);
+            continue;
+        }
+
+        value.push_back(ch);
+    }
+
+    return value;
+}
+
+std::vector<ParsedEntity> parse_entity_lump(std::string_view text)
+{
+    std::vector<ParsedEntity> entities;
+    std::size_t cursor = 0;
+
+    while (cursor < text.size())
+    {
+        skip_whitespace(text, cursor);
+        if (cursor >= text.size())
+        {
+            break;
+        }
+
+        if (text[cursor] != '{')
+        {
+            ++cursor;
+            continue;
+        }
+
+        ++cursor;
+        ParsedEntity entity;
+        while (cursor < text.size())
+        {
+            skip_whitespace(text, cursor);
+            if (cursor >= text.size())
+            {
+                break;
+            }
+
+            if (text[cursor] == '}')
+            {
+                ++cursor;
+                break;
+            }
+
+            const std::string key = parse_quoted(text, cursor);
+            skip_whitespace(text, cursor);
+            const std::string value = parse_quoted(text, cursor);
+            if (!key.empty())
+            {
+                entity.properties[key] = value;
+            }
+        }
+
+        if (!entity.properties.empty())
+        {
+            entities.push_back(std::move(entity));
+        }
+    }
+
+    return entities;
+}
+
+std::optional<float> parse_float(std::string_view text)
+{
+    float value = 0.0F;
+    const char* begin = text.data();
+    const char* end = text.data() + text.size();
+    const auto result = std::from_chars(begin, end, value);
+    if (result.ec != std::errc{} || result.ptr != end)
+    {
+        return std::nullopt;
+    }
+
+    return value;
+}
+
+std::optional<Vec3> parse_vec3(std::string_view text)
+{
+    std::istringstream stream{std::string(text)};
+    std::array<std::string, 3> tokens{};
+    if (!(stream >> tokens[0] >> tokens[1] >> tokens[2]))
+    {
+        return std::nullopt;
+    }
+
+    const std::optional<float> x = parse_float(tokens[0]);
+    const std::optional<float> y = parse_float(tokens[1]);
+    const std::optional<float> z = parse_float(tokens[2]);
+    if (!x || !y || !z)
+    {
+        return std::nullopt;
+    }
+
+    return Vec3{*x, *y, *z};
+}
+
+std::optional<std::string> find_property(const ParsedEntity& entity, std::string_view name)
+{
+    const auto it = entity.properties.find(std::string(name));
+    if (it == entity.properties.end())
+    {
+        return std::nullopt;
+    }
+    return it->second;
+}
+
+bool is_spawn_class(std::string_view class_name)
+{
+    return class_name == "info_player_start" || class_name == "info_player_deathmatch" ||
+           class_name == "info_player_terrorist" || class_name == "info_player_counterterrorist" ||
+           class_name == "info_player_teamspawn";
+}
+
+std::vector<WorldSpawnPoint> collect_spawn_points(const std::vector<ParsedEntity>& entities)
+{
+    std::vector<WorldSpawnPoint> spawns;
+    for (const ParsedEntity& entity : entities)
+    {
+        const std::optional<std::string> class_name = find_property(entity, "classname");
+        if (!class_name || !is_spawn_class(*class_name))
+        {
+            continue;
+        }
+
+        WorldSpawnPoint spawn;
+        spawn.class_name = *class_name;
+        if (const std::optional<std::string> origin = find_property(entity, "origin"))
+        {
+            spawn.origin = parse_vec3(*origin).value_or(Vec3{});
+        }
+
+        if (const std::optional<std::string> angles = find_property(entity, "angles"))
+        {
+            spawn.angles = parse_vec3(*angles).value_or(Vec3{});
+        }
+        else if (const std::optional<std::string> angle = find_property(entity, "angle"))
+        {
+            if (const std::optional<float> yaw = parse_float(*angle))
+            {
+                spawn.angles.y = *yaw;
+            }
+        }
+
+        spawns.push_back(std::move(spawn));
+    }
+
+    return spawns;
+}
+
+BspLump read_lump(const std::vector<unsigned char>& bytes, std::size_t lump_index)
+{
+    const std::size_t offset = 8 + (lump_index * 16);
+    return BspLump{
+        .offset = read_u32_le(bytes, offset),
+        .length = read_u32_le(bytes, offset + 4),
+        .version = read_u32_le(bytes, offset + 8),
+    };
+}
+
+void validate_lump_range(const std::vector<unsigned char>& bytes, const BspLump& lump, std::string_view name)
+{
+    const std::uint64_t begin = lump.offset;
+    const std::uint64_t end = begin + lump.length;
+    if (end > bytes.size() || end < begin)
+    {
+        throw std::runtime_error("BSP " + std::string(name) + " lump points outside the file");
+    }
+}
+
+std::string entity_lump_text(const std::vector<unsigned char>& bytes, const BspLump& lump)
+{
+    validate_lump_range(bytes, lump, "entity");
+
+    return std::string(reinterpret_cast<const char*>(bytes.data() + lump.offset), static_cast<std::size_t>(lump.length));
+}
+
+template <typename T, typename Reader>
+std::vector<T> read_lump_array(const std::vector<unsigned char>& bytes, const BspLump& lump, std::size_t stride, std::string_view name, Reader reader)
+{
+    validate_lump_range(bytes, lump, name);
+    if (stride == 0 || (lump.length % stride) != 0)
+    {
+        throw std::runtime_error("BSP " + std::string(name) + " lump has an invalid size");
+    }
+
+    std::vector<T> values;
+    values.reserve(lump.length / stride);
+    for (std::size_t offset = lump.offset; offset < static_cast<std::size_t>(lump.offset) + lump.length; offset += stride)
+    {
+        values.push_back(reader(offset));
+    }
+
+    return values;
+}
+
+Vec3 cross(Vec3 lhs, Vec3 rhs)
+{
+    return Vec3{
+        (lhs.y * rhs.z) - (lhs.z * rhs.y),
+        (lhs.z * rhs.x) - (lhs.x * rhs.z),
+        (lhs.x * rhs.y) - (lhs.y * rhs.x),
+    };
+}
+
+float dot(Vec3 lhs, Vec3 rhs)
+{
+    return (lhs.x * rhs.x) + (lhs.y * rhs.y) + (lhs.z * rhs.z);
+}
+
+float length(Vec3 value)
+{
+    return std::sqrt(dot(value, value));
+}
+
+Vec3 normalize(Vec3 value)
+{
+    const float value_length = length(value);
+    if (value_length <= 0.00001F)
+    {
+        return Vec3{0.0F, 0.0F, 1.0F};
+    }
+
+    return value * (1.0F / value_length);
+}
+
+void include_bounds(WorldMesh& mesh, Vec3 point)
+{
+    if (!mesh.has_bounds)
+    {
+        mesh.bounds_min = point;
+        mesh.bounds_max = point;
+        mesh.has_bounds = true;
+        return;
+    }
+
+    mesh.bounds_min.x = std::min(mesh.bounds_min.x, point.x);
+    mesh.bounds_min.y = std::min(mesh.bounds_min.y, point.y);
+    mesh.bounds_min.z = std::min(mesh.bounds_min.z, point.z);
+    mesh.bounds_max.x = std::max(mesh.bounds_max.x, point.x);
+    mesh.bounds_max.y = std::max(mesh.bounds_max.y, point.y);
+    mesh.bounds_max.z = std::max(mesh.bounds_max.z, point.z);
+}
+
+bool has_any_surface_flag(std::uint32_t flags, std::uint32_t mask)
+{
+    return (flags & mask) != 0;
+}
+
+bool should_render_surface(std::uint32_t flags)
+{
+    constexpr std::uint32_t skip_flags = kSurfaceSky2D | kSurfaceSky | kSurfaceNoDraw | kSurfaceSkip;
+    return !has_any_surface_flag(flags, skip_flags);
+}
+
+bool should_collide_surface(std::uint32_t flags)
+{
+    constexpr std::uint32_t skip_flags = kSurfaceSky2D | kSurfaceSky | kSurfaceSkip;
+    return !has_any_surface_flag(flags, skip_flags);
+}
+
+std::vector<Vec3> read_bsp_vertices(const std::vector<unsigned char>& bytes)
+{
+    return read_lump_array<Vec3>(bytes, read_lump(bytes, kVerticesLump), 12, "vertices", [&](std::size_t offset) {
+        return Vec3{
+            read_f32_le(bytes, offset),
+            read_f32_le(bytes, offset + 4),
+            read_f32_le(bytes, offset + 8),
+        };
+    });
+}
+
+std::vector<BspEdge> read_bsp_edges(const std::vector<unsigned char>& bytes)
+{
+    return read_lump_array<BspEdge>(bytes, read_lump(bytes, kEdgesLump), 4, "edges", [&](std::size_t offset) {
+        return BspEdge{{
+            read_u16_le(bytes, offset),
+            read_u16_le(bytes, offset + 2),
+        }};
+    });
+}
+
+std::vector<std::int32_t> read_bsp_surfedges(const std::vector<unsigned char>& bytes)
+{
+    return read_lump_array<std::int32_t>(bytes, read_lump(bytes, kSurfEdgesLump), 4, "surfedges", [&](std::size_t offset) {
+        return read_s32_le(bytes, offset);
+    });
+}
+
+std::vector<BspTexInfo> read_bsp_texinfo(const std::vector<unsigned char>& bytes)
+{
+    return read_lump_array<BspTexInfo>(bytes, read_lump(bytes, kTexInfoLump), 72, "texinfo", [&](std::size_t offset) {
+        return BspTexInfo{read_u32_le(bytes, offset + 64)};
+    });
+}
+
+std::vector<BspFace> read_bsp_faces(const std::vector<unsigned char>& bytes)
+{
+    BspLump lump = read_lump(bytes, kFacesLump);
+    if (const BspLump hdr_faces = read_lump(bytes, 58); hdr_faces.length > 0)
+    {
+        lump = hdr_faces;
+    }
+
+    return read_lump_array<BspFace>(bytes, lump, 56, "faces", [&](std::size_t offset) {
+        return BspFace{
+            .plane = read_u16_le(bytes, offset),
+            .side = bytes[offset + 2],
+            .first_edge = read_s32_le(bytes, offset + 4),
+            .edge_count = read_s16_le(bytes, offset + 8),
+            .texinfo = read_s16_le(bytes, offset + 10),
+        };
+    });
+}
+
+std::uint32_t surface_flags_for_face(const BspFace& face, const std::vector<BspTexInfo>& texinfo)
+{
+    if (face.texinfo < 0 || static_cast<std::size_t>(face.texinfo) >= texinfo.size())
+    {
+        return 0;
+    }
+
+    return texinfo[static_cast<std::size_t>(face.texinfo)].flags;
+}
+
+std::optional<std::vector<Vec3>> polygon_for_face(
+    const BspFace& face, const std::vector<Vec3>& vertices, const std::vector<BspEdge>& edges, const std::vector<std::int32_t>& surfedges)
+{
+    if (face.edge_count < 3 || face.first_edge < 0)
+    {
+        return std::nullopt;
+    }
+
+    const std::size_t first_edge = static_cast<std::size_t>(face.first_edge);
+    const std::size_t edge_count = static_cast<std::size_t>(face.edge_count);
+    if (first_edge + edge_count > surfedges.size())
+    {
+        return std::nullopt;
+    }
+
+    std::vector<Vec3> polygon;
+    polygon.reserve(edge_count);
+    for (std::size_t edge_offset = 0; edge_offset < edge_count; ++edge_offset)
+    {
+        const std::int32_t edge_ref = surfedges[first_edge + edge_offset];
+        const std::uint32_t edge_index = edge_ref < 0 ? static_cast<std::uint32_t>(-edge_ref) : static_cast<std::uint32_t>(edge_ref);
+        if (edge_index >= edges.size())
+        {
+            return std::nullopt;
+        }
+
+        const BspEdge& edge = edges[edge_index];
+        const std::uint16_t vertex_index = edge_ref < 0 ? edge.vertices[1] : edge.vertices[0];
+        if (vertex_index >= vertices.size())
+        {
+            return std::nullopt;
+        }
+
+        polygon.push_back(vertices[vertex_index]);
+    }
+
+    return polygon;
+}
+
+Vec3 polygon_normal(const std::vector<Vec3>& polygon)
+{
+    Vec3 normal{};
+    for (std::size_t index = 0; index < polygon.size(); ++index)
+    {
+        const Vec3 current = polygon[index];
+        const Vec3 next = polygon[(index + 1) % polygon.size()];
+        normal.x += (current.y - next.y) * (current.z + next.z);
+        normal.y += (current.z - next.z) * (current.x + next.x);
+        normal.z += (current.x - next.x) * (current.y + next.y);
+    }
+
+    return normalize(normal);
+}
+
+void append_render_triangle(WorldMesh& mesh, Vec3 a, Vec3 b, Vec3 c, Vec3 normal)
+{
+    const std::uint32_t first_index = static_cast<std::uint32_t>(mesh.vertices.size());
+    mesh.vertices.push_back(WorldMeshVertex{a, normal});
+    mesh.vertices.push_back(WorldMeshVertex{b, normal});
+    mesh.vertices.push_back(WorldMeshVertex{c, normal});
+    mesh.indices.push_back(first_index);
+    mesh.indices.push_back(first_index + 1);
+    mesh.indices.push_back(first_index + 2);
+}
+
+void append_collision_triangle(WorldMesh& mesh, Vec3 a, Vec3 b, Vec3 c, Vec3 normal, std::uint32_t surface_flags)
+{
+    WorldTriangle triangle;
+    triangle.points[0] = a;
+    triangle.points[1] = b;
+    triangle.points[2] = c;
+    triangle.normal = normal;
+    triangle.surface_flags = surface_flags;
+    mesh.collision_triangles.push_back(triangle);
+}
+
+WorldMesh build_bsp_world_mesh(const std::vector<unsigned char>& bytes)
+{
+    const std::vector<Vec3> vertices = read_bsp_vertices(bytes);
+    const std::vector<BspEdge> edges = read_bsp_edges(bytes);
+    const std::vector<std::int32_t> surfedges = read_bsp_surfedges(bytes);
+    const std::vector<BspTexInfo> texinfo = read_bsp_texinfo(bytes);
+    const std::vector<BspFace> faces = read_bsp_faces(bytes);
+
+    WorldMesh mesh;
+    std::size_t skipped_faces = 0;
+    for (const BspFace& face : faces)
+    {
+        const std::uint32_t surface_flags = surface_flags_for_face(face, texinfo);
+        const bool render_surface = should_render_surface(surface_flags);
+        const bool collide_surface = should_collide_surface(surface_flags);
+        if (!render_surface && !collide_surface)
+        {
+            continue;
+        }
+
+        std::optional<std::vector<Vec3>> polygon = polygon_for_face(face, vertices, edges, surfedges);
+        if (!polygon || polygon->size() < 3)
+        {
+            ++skipped_faces;
+            continue;
+        }
+
+        const Vec3 normal = polygon_normal(*polygon);
+        for (const Vec3 point : *polygon)
+        {
+            include_bounds(mesh, point);
+        }
+
+        for (std::size_t vertex = 1; vertex + 1 < polygon->size(); ++vertex)
+        {
+            const Vec3 a = (*polygon)[0];
+            const Vec3 b = (*polygon)[vertex];
+            const Vec3 c = (*polygon)[vertex + 1];
+            if (length(cross(b - a, c - a)) <= 0.001F)
+            {
+                continue;
+            }
+
+            if (render_surface)
+            {
+                append_render_triangle(mesh, a, b, c, normal);
+            }
+
+            if (collide_surface)
+            {
+                append_collision_triangle(mesh, a, b, c, normal, surface_flags);
+            }
+        }
+    }
+
+    if (skipped_faces > 0)
+    {
+        log_warning("skipped {} malformed BSP face(s)", skipped_faces);
+    }
+
+    return mesh;
+}
+
+LoadedWorld load_source_bsp(std::string name, std::filesystem::path relative_path, std::filesystem::path resolved_path)
+{
+    std::vector<unsigned char> bytes = read_binary_file(resolved_path);
+    if (bytes.size() < kBspHeaderSize)
+    {
+        throw std::runtime_error("BSP header is truncated");
+    }
+
+    const std::uint32_t ident = read_u32_le(bytes, 0);
+    if (ident != kBspIdent)
+    {
+        throw std::runtime_error("not a Source BSP file");
+    }
+
+    LoadedWorld world;
+    world.name = std::move(name);
+    world.relative_path = std::move(relative_path);
+    world.resolved_path = std::move(resolved_path);
+    world.kind = WorldAssetKind::SourceBsp;
+    world.asset_version = read_u32_le(bytes, 4);
+    world.map_revision = read_u32_le(bytes, 8 + (kBspLumpCount * 16));
+    world.byte_size = bytes.size();
+    world.checksum = fnv1a32(bytes);
+
+    const BspLump entities_lump = read_lump(bytes, kEntitiesLump);
+    const std::string entities_text = entity_lump_text(bytes, entities_lump);
+    const std::vector<ParsedEntity> entities = parse_entity_lump(entities_text);
+    world.entity_count = entities.size();
+
+    for (const ParsedEntity& entity : entities)
+    {
+        const std::optional<std::string> class_name = find_property(entity, "classname");
+        if (class_name && *class_name == "worldspawn")
+        {
+            world.worldspawn = entity.properties;
+            break;
+        }
+    }
+
+    world.spawn_points = collect_spawn_points(entities);
+    world.mesh = build_bsp_world_mesh(bytes);
+    return world;
+}
+
+std::optional<std::string> extract_json_string(std::string_view text, std::string_view key)
+{
+    const std::string needle = "\"" + std::string(key) + "\"";
+    const std::size_t key_pos = text.find(needle);
+    if (key_pos == std::string_view::npos)
+    {
+        return std::nullopt;
+    }
+
+    const std::size_t colon = text.find(':', key_pos + needle.size());
+    if (colon == std::string_view::npos)
+    {
+        return std::nullopt;
+    }
+
+    std::size_t cursor = colon + 1;
+    skip_whitespace(text, cursor);
+    if (cursor >= text.size() || text[cursor] != '"')
+    {
+        return std::nullopt;
+    }
+
+    return parse_quoted(text, cursor);
+}
+
+std::optional<Vec3> extract_json_position(std::string_view text, std::size_t search_begin = 0)
+{
+    const std::size_t position = text.find("\"position\"", search_begin);
+    if (position == std::string_view::npos)
+    {
+        return std::nullopt;
+    }
+
+    const std::size_t object_begin = text.find('{', position);
+    const std::size_t object_end = text.find('}', object_begin);
+    if (object_begin == std::string_view::npos || object_end == std::string_view::npos)
+    {
+        return std::nullopt;
+    }
+
+    const auto find_component = [&](std::string_view component) -> std::optional<float> {
+        const std::string needle = "\"" + std::string(component) + "\"";
+        const std::size_t key = text.find(needle, object_begin);
+        if (key == std::string_view::npos || key > object_end)
+        {
+            return std::nullopt;
+        }
+
+        const std::size_t colon = text.find(':', key + needle.size());
+        if (colon == std::string_view::npos || colon > object_end)
+        {
+            return std::nullopt;
+        }
+
+        std::size_t cursor = colon + 1;
+        skip_whitespace(text, cursor);
+        const std::size_t value_begin = cursor;
+        while (cursor < object_end && (std::isdigit(static_cast<unsigned char>(text[cursor])) != 0 || text[cursor] == '-' ||
+                                         text[cursor] == '+' || text[cursor] == '.'))
+        {
+            ++cursor;
+        }
+
+        return parse_float(text.substr(value_begin, cursor - value_begin));
+    };
+
+    const std::optional<float> x = find_component("x");
+    const std::optional<float> y = find_component("y");
+    const std::optional<float> z = find_component("z");
+    if (!x || !y || !z)
+    {
+        return std::nullopt;
+    }
+
+    return Vec3{*x, *y, *z};
+}
+
+std::size_t count_level_entities(std::string_view text)
+{
+    std::size_t count = 0;
+    std::size_t cursor = 0;
+    while ((cursor = text.find("\"type\"", cursor)) != std::string_view::npos)
+    {
+        ++count;
+        cursor += 6;
+    }
+    return count;
+}
+
+LoadedWorld load_openstrike_level(std::string name, std::filesystem::path relative_path, std::filesystem::path resolved_path)
+{
+    const std::string text = read_text_file(resolved_path);
+
+    LoadedWorld world;
+    world.name = extract_json_string(text, "level_name").value_or(std::move(name));
+    world.relative_path = std::move(relative_path);
+    world.resolved_path = std::move(resolved_path);
+    world.kind = WorldAssetKind::OpenStrikeLevel;
+    world.asset_version = 1;
+    world.byte_size = text.size();
+    world.entity_count = count_level_entities(text);
+
+    const std::size_t player_entity = text.find("\"name\": \"player\"");
+    if (const std::optional<Vec3> origin = extract_json_position(text, player_entity == std::string_view::npos ? 0 : player_entity))
+    {
+        world.spawn_points.push_back(WorldSpawnPoint{
+            .class_name = "openstrike_spawn",
+            .origin = *origin,
+        });
+    }
+
+    return world;
+}
+
+std::optional<LoadedWorld> try_load_candidate(
+    const ContentFileSystem& filesystem, std::string_view requested_name, const std::filesystem::path& relative_path)
+{
+    const std::optional<std::filesystem::path> resolved = filesystem.resolve(relative_path, "GAME");
+    if (!resolved)
+    {
+        return std::nullopt;
+    }
+
+    const std::string relative = relative_path.generic_string();
+    if (has_suffix(relative, ".bsp"))
+    {
+        return load_source_bsp(canonical_map_name(requested_name), relative_path, *resolved);
+    }
+
+    if (has_suffix(relative, ".level.json"))
+    {
+        return load_openstrike_level(canonical_map_name(requested_name), relative_path, *resolved);
+    }
+
+    return std::nullopt;
+}
+
+void add_maps_from_root(
+    std::set<std::string>& maps, const std::filesystem::path& root, const std::filesystem::path& relative_dir, std::string_view suffix)
+{
+    std::error_code error;
+    const std::filesystem::path map_root = root / relative_dir;
+    if (!std::filesystem::is_directory(map_root, error))
+    {
+        return;
+    }
+
+    for (std::filesystem::recursive_directory_iterator it(map_root, error), end; it != end && !error; it.increment(error))
+    {
+        if (!it->is_regular_file(error))
+        {
+            continue;
+        }
+
+        std::string filename = it->path().filename().generic_string();
+        if (!has_suffix(filename, suffix))
+        {
+            continue;
+        }
+
+        std::filesystem::path relative = std::filesystem::relative(it->path(), map_root, error);
+        if (error)
+        {
+            error.clear();
+            continue;
+        }
+
+        std::string name = relative.generic_string();
+        name = remove_suffix(std::move(name), suffix);
+        maps.insert(name);
+    }
+}
+
+bool contains_case_insensitive(std::string_view value, std::string_view filter)
+{
+    if (filter.empty() || filter == "*")
+    {
+        return true;
+    }
+
+    return lower_copy(value).find(lower_copy(filter)) != std::string::npos;
+}
+}
+
+bool WorldManager::load_map(std::string_view map_name, ContentFileSystem& filesystem)
+{
+    const std::string canonical = canonical_map_name(map_name);
+    if (canonical.empty())
+    {
+        log_warning("map load failed: no map specified");
+        return false;
+    }
+
+    for (const std::filesystem::path& candidate : map_candidates(map_name))
+    {
+        try
+        {
+            std::optional<LoadedWorld> loaded = try_load_candidate(filesystem, canonical, candidate);
+            if (!loaded)
+            {
+                continue;
+            }
+
+            current_world_ = std::move(*loaded);
+            ++generation_;
+
+            log_info("loaded {} world '{}' from '{}' entities={} spawns={} render_tris={} collision_tris={} bytes={}",
+                to_string(current_world_->kind),
+                current_world_->name,
+                current_world_->resolved_path.string(),
+                current_world_->entity_count,
+                current_world_->spawn_points.size(),
+                current_world_->mesh.indices.size() / 3,
+                current_world_->mesh.collision_triangles.size(),
+                current_world_->byte_size);
+            return true;
+        }
+        catch (const std::exception& error)
+        {
+            log_warning("map load failed for '{}': {}", candidate.generic_string(), error.what());
+            return false;
+        }
+    }
+
+    log_warning("map load failed: '{}' not found under GAME search paths", canonical);
+    return false;
+}
+
+void WorldManager::unload()
+{
+    if (current_world_)
+    {
+        log_info("unloaded world '{}'", current_world_->name);
+    }
+
+    current_world_.reset();
+    ++generation_;
+}
+
+const LoadedWorld* WorldManager::current_world() const
+{
+    return current_world_ ? &*current_world_ : nullptr;
+}
+
+std::uint64_t WorldManager::generation() const
+{
+    return generation_;
+}
+
+std::vector<std::string> WorldManager::list_maps(const ContentFileSystem& filesystem, std::string_view filter) const
+{
+    std::set<std::string> unique_maps;
+    for (const SearchPath& path : filesystem.search_paths("GAME"))
+    {
+        add_maps_from_root(unique_maps, path.root, "maps", ".bsp");
+        add_maps_from_root(unique_maps, path.root, "assets/levels", ".level.json");
+    }
+
+    std::vector<std::string> maps;
+    for (const std::string& map : unique_maps)
+    {
+        if (contains_case_insensitive(map, filter))
+        {
+            maps.push_back(map);
+        }
+    }
+
+    return maps;
+}
+
+std::optional<float> find_floor_z(const LoadedWorld& world, Vec3 origin, float max_drop)
+{
+    std::optional<float> best_z;
+    const float min_z = origin.z - std::max(0.0F, max_drop);
+    constexpr float kEpsilon = 0.0001F;
+    constexpr float kWalkableNormalZ = 0.35F;
+
+    for (const WorldTriangle& triangle : world.mesh.collision_triangles)
+    {
+        if (std::fabs(triangle.normal.z) < kWalkableNormalZ)
+        {
+            continue;
+        }
+
+        const Vec3 a = triangle.points[0];
+        const Vec3 b = triangle.points[1];
+        const Vec3 c = triangle.points[2];
+        const float denominator = ((b.y - c.y) * (a.x - c.x)) + ((c.x - b.x) * (a.y - c.y));
+        if (std::fabs(denominator) <= kEpsilon)
+        {
+            continue;
+        }
+
+        const float weight_a = (((b.y - c.y) * (origin.x - c.x)) + ((c.x - b.x) * (origin.y - c.y))) / denominator;
+        const float weight_b = (((c.y - a.y) * (origin.x - c.x)) + ((a.x - c.x) * (origin.y - c.y))) / denominator;
+        const float weight_c = 1.0F - weight_a - weight_b;
+        if (weight_a < -kEpsilon || weight_b < -kEpsilon || weight_c < -kEpsilon)
+        {
+            continue;
+        }
+
+        const float z = (weight_a * a.z) + (weight_b * b.z) + (weight_c * c.z);
+        if (z > origin.z + 0.5F || z < min_z)
+        {
+            continue;
+        }
+
+        if (!best_z || z > *best_z)
+        {
+            best_z = z;
+        }
+    }
+
+    return best_z;
+}
+
+std::string_view to_string(WorldAssetKind kind)
+{
+    switch (kind)
+    {
+    case WorldAssetKind::SourceBsp:
+        return "source-bsp";
+    case WorldAssetKind::OpenStrikeLevel:
+        return "openstrike-level";
+    }
+
+    return "unknown";
+}
+}

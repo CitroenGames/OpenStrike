@@ -2,6 +2,8 @@
 
 #include "openstrike/core/math.hpp"
 
+#include <optional>
+
 namespace openstrike
 {
 struct InputCommand
@@ -30,5 +32,5 @@ struct MovementTuning
 };
 
 void simulate_player_move(PlayerState& player, const InputCommand& input, const MovementTuning& tuning);
+void simulate_player_move(PlayerState& player, const InputCommand& input, const MovementTuning& tuning, std::optional<float> ground_z);
 }
-
