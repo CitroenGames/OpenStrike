@@ -6,6 +6,7 @@
 #include "openstrike/engine/engine_context.hpp"
 #include "openstrike/engine/fixed_timestep.hpp"
 #include "openstrike/engine/runtime_config.hpp"
+#include "openstrike/engine/sdl_input.hpp"
 #include "openstrike/game/fps_controller.hpp"
 #include "openstrike/game/game_simulation.hpp"
 #include "openstrike/game/movement.hpp"
@@ -1452,6 +1453,55 @@ void test_ground_movement_accelerates_and_friction_slows()
     REQUIRE(player.velocity.length_2d() < speed_before_friction);
 }
 
+void test_walk_and_duck_limit_movement_speed()
+{
+    openstrike::MovementTuning tuning;
+
+    openstrike::PlayerState walking_player;
+    openstrike::InputCommand walk_forward;
+    walk_forward.move_x = 1.0F;
+    walk_forward.walk = true;
+
+    for (int tick = 0; tick < 64; ++tick)
+    {
+        openstrike::simulate_player_move(walking_player, walk_forward, tuning);
+    }
+
+    REQUIRE(walking_player.velocity.length_2d() <= (tuning.max_ground_speed * tuning.walk_speed_modifier) + 0.01F);
+
+    openstrike::PlayerState ducking_player;
+    openstrike::InputCommand duck_forward;
+    duck_forward.move_x = 1.0F;
+    duck_forward.duck = true;
+
+    for (int tick = 0; tick < 64; ++tick)
+    {
+        openstrike::simulate_player_move(ducking_player, duck_forward, tuning);
+    }
+
+    REQUIRE(ducking_player.ducked);
+    REQUIRE(ducking_player.velocity.length_2d() <= (tuning.max_ground_speed * tuning.duck_speed_modifier) + 0.01F);
+}
+
+void test_air_movement_uses_source_air_speed_cap()
+{
+    openstrike::PlayerState player;
+    player.origin.z = 128.0F;
+    player.on_ground = false;
+
+    openstrike::MovementTuning tuning;
+    openstrike::InputCommand strafe;
+    strafe.move_x = 1.0F;
+
+    for (int tick = 0; tick < 64; ++tick)
+    {
+        openstrike::simulate_player_move(player, strafe, tuning, std::nullopt);
+    }
+
+    REQUIRE(player.velocity.x > 0.0F);
+    REQUIRE(player.velocity.length_2d() <= tuning.air_speed_cap + 0.01F);
+}
+
 void test_jump_returns_to_ground()
 {
     openstrike::PlayerState player;
@@ -1470,6 +1520,59 @@ void test_jump_returns_to_ground()
 
     REQUIRE(player.on_ground);
     REQUIRE(player.origin.z == 0.0F);
+}
+
+void test_jump_requires_release_unless_autobunny_is_enabled()
+{
+    openstrike::PlayerState player;
+    openstrike::MovementTuning tuning;
+    openstrike::InputCommand jump;
+    jump.jump = true;
+
+    openstrike::simulate_player_move(player, jump, tuning);
+    REQUIRE(!player.on_ground);
+
+    for (int tick = 0; tick < 256 && !player.on_ground; ++tick)
+    {
+        openstrike::simulate_player_move(player, jump, tuning);
+    }
+
+    REQUIRE(player.on_ground);
+    openstrike::simulate_player_move(player, jump, tuning);
+    REQUIRE(player.on_ground);
+    REQUIRE(player.velocity.z == 0.0F);
+
+    jump.jump = false;
+    openstrike::simulate_player_move(player, jump, tuning);
+    jump.jump = true;
+    openstrike::simulate_player_move(player, jump, tuning);
+    REQUIRE(!player.on_ground);
+}
+
+void test_stamina_penalty_recovers_over_time()
+{
+    openstrike::PlayerState player;
+    openstrike::MovementTuning tuning;
+    openstrike::InputCommand jump;
+    jump.jump = true;
+
+    openstrike::simulate_player_move(player, jump, tuning);
+    REQUIRE(player.stamina > 0.0F);
+
+    for (int tick = 0; tick < 256 && !player.on_ground; ++tick)
+    {
+        openstrike::simulate_player_move(player, {}, tuning);
+    }
+
+    const float stamina_after_landing = player.stamina;
+    REQUIRE(stamina_after_landing > 0.0F);
+
+    for (int tick = 0; tick < 64; ++tick)
+    {
+        openstrike::simulate_player_move(player, {}, tuning);
+    }
+
+    REQUIRE(player.stamina < stamina_after_landing);
 }
 
 void test_fps_controller_builds_view_relative_move_command()
@@ -1494,6 +1597,57 @@ void test_fps_controller_builds_view_relative_move_command()
     REQUIRE(command.move_y < 0.0F);
     REQUIRE(std::fabs(command.move_x + command.move_y) < 0.001F);
     REQUIRE(std::fabs(diagonal_move.length_2d() - 1.0F) < 0.001F);
+}
+
+void test_fps_controller_maps_walk_duck_and_duck_eye_height()
+{
+    openstrike::InputState raw_input;
+    raw_input.sprint = true;
+    raw_input.duck = true;
+
+    const openstrike::FpsInputSample sample = openstrike::sample_fps_input(raw_input);
+    REQUIRE(sample.walk);
+    REQUIRE(sample.duck);
+
+    const openstrike::InputCommand command = openstrike::build_fps_move_command({}, sample);
+    REQUIRE(command.walk);
+    REQUIRE(command.duck);
+
+    openstrike::PlayerState player;
+    player.duck_amount = 0.5F;
+    const openstrike::FpsControllerSettings settings;
+    const openstrike::Vec3 eye = openstrike::fps_eye_origin(player, settings);
+    REQUIRE(std::fabs(eye.z - 46.0F) < 0.001F);
+}
+
+void test_sdl_gameplay_input_adapter_maps_source_style_buttons()
+{
+    openstrike::InputState input;
+
+    REQUIRE(openstrike::apply_sdl_gameplay_key(input, SDLK_W, true));
+    REQUIRE(input.move_forward);
+    REQUIRE(openstrike::apply_sdl_gameplay_key(input, SDLK_W, false));
+    REQUIRE(!input.move_forward);
+
+    REQUIRE(openstrike::apply_sdl_gameplay_key(input, SDLK_LSHIFT, true));
+    REQUIRE(input.sprint);
+    REQUIRE(openstrike::apply_sdl_gameplay_key(input, SDLK_LSHIFT, false));
+    REQUIRE(!input.sprint);
+
+    REQUIRE(openstrike::apply_sdl_gameplay_key(input, SDLK_C, true));
+    REQUIRE(input.duck);
+    REQUIRE(openstrike::apply_sdl_gameplay_key(input, SDLK_C, false));
+    REQUIRE(!input.duck);
+
+    SDL_Event event{};
+    input.mouse_captured = true;
+    event.type = SDL_EVENT_MOUSE_MOTION;
+    event.motion.xrel = 3.0F;
+    event.motion.yrel = -2.0F;
+
+    REQUIRE(openstrike::handle_sdl_gameplay_input_event(input, event));
+    REQUIRE(input.mouse_delta.x == 3.0F);
+    REQUIRE(input.mouse_delta.y == -2.0F);
 }
 
 void test_fps_controller_consumes_mouse_and_clamps_pitch()
@@ -1585,8 +1739,14 @@ int main()
         test_game_simulation_updates_hud_for_loaded_world();
         test_engine_startup_quit_command();
         test_ground_movement_accelerates_and_friction_slows();
+        test_walk_and_duck_limit_movement_speed();
+        test_air_movement_uses_source_air_speed_cap();
         test_jump_returns_to_ground();
+        test_jump_requires_release_unless_autobunny_is_enabled();
+        test_stamina_penalty_recovers_over_time();
         test_fps_controller_builds_view_relative_move_command();
+        test_fps_controller_maps_walk_duck_and_duck_eye_height();
+        test_sdl_gameplay_input_adapter_maps_source_style_buttons();
         test_fps_controller_consumes_mouse_and_clamps_pitch();
         test_physics_world_blocks_character_against_static_mesh();
     }

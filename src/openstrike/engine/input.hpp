@@ -11,6 +11,7 @@ struct InputState
     bool move_left = false;
     bool move_right = false;
     bool jump = false;
+    bool duck = false;
     bool sprint = false;
     bool mouse_captured = false;
     Vec2 mouse_delta;
@@ -29,6 +30,7 @@ struct InputState
         move_left = false;
         move_right = false;
         jump = false;
+        duck = false;
         sprint = false;
     }
 };

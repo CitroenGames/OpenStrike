@@ -38,6 +38,7 @@ sources = {
     src/openstrike/engine/engine.cpp
     src/openstrike/engine/fixed_timestep.cpp
     src/openstrike/engine/runtime_config.cpp
+    src/openstrike/engine/sdl_input.cpp
     src/openstrike/game/fps_controller.cpp
     src/openstrike/game/game_simulation.cpp
     src/openstrike/game/movement.cpp

@@ -2,6 +2,7 @@
 
 #include "openstrike/core/log.hpp"
 #include "openstrike/engine/engine_context.hpp"
+#include "openstrike/engine/sdl_input.hpp"
 
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
@@ -18,33 +19,6 @@ namespace openstrike
 namespace
 {
 constexpr const char* kWindowTitle = "OpenStrike";
-
-bool set_gameplay_key(InputState& input, SDL_Keycode key, bool pressed)
-{
-    switch (key)
-    {
-    case SDLK_W:
-        input.move_forward = pressed;
-        return true;
-    case SDLK_S:
-        input.move_back = pressed;
-        return true;
-    case SDLK_A:
-        input.move_left = pressed;
-        return true;
-    case SDLK_D:
-        input.move_right = pressed;
-        return true;
-    case SDLK_SPACE:
-        input.jump = pressed;
-        return true;
-    case SDLK_LSHIFT:
-        input.sprint = pressed;
-        return true;
-    default:
-        return false;
-    }
-}
 
 MTLClearColor frame_clear_color(std::uint64_t frame_index)
 {
@@ -263,19 +237,12 @@ struct MetalRenderer::Impl
                 return;
             }
 
-            if (engine_context != nullptr && (event.type == SDL_EVENT_KEY_DOWN || event.type == SDL_EVENT_KEY_UP))
+            if (engine_context != nullptr)
             {
-                if (set_gameplay_key(engine_context->input, event.key.key, event.type == SDL_EVENT_KEY_DOWN))
+                if (handle_sdl_gameplay_input_event(engine_context->input, event))
                 {
                     continue;
                 }
-            }
-
-            if (engine_context != nullptr && engine_context->input.mouse_captured && event.type == SDL_EVENT_MOUSE_MOTION)
-            {
-                engine_context->input.mouse_delta.x += event.motion.xrel;
-                engine_context->input.mouse_delta.y += event.motion.yrel;
-                continue;
             }
         }
 

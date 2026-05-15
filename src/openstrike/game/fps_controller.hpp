@@ -13,6 +13,7 @@ struct FpsControllerSettings
     float min_pitch_degrees = -89.0F;
     float max_pitch_degrees = 89.0F;
     float eye_height = 64.0F;
+    float duck_eye_height = 28.0F;
 };
 
 struct FpsViewState
@@ -28,6 +29,8 @@ struct FpsInputSample
     bool move_left = false;
     bool move_right = false;
     bool jump = false;
+    bool duck = false;
+    bool walk = false;
     Vec2 mouse_delta;
 };
 

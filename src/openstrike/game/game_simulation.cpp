@@ -40,6 +40,7 @@ void GameSimulation::on_fixed_update(const SimulationStep&, EngineContext& engin
         {
             const PhysicsCharacterState resolved =
                 physics_.move_character_to(desired_player.origin, desired_player.velocity, movement_.tick_interval_seconds);
+            local_player_ = desired_player;
             local_player_.origin = resolved.origin;
             local_player_.velocity = resolved.velocity;
             local_player_.on_ground = resolved.on_ground;

@@ -2,6 +2,7 @@
 
 #include "openstrike/core/log.hpp"
 #include "openstrike/engine/engine_context.hpp"
+#include "openstrike/engine/sdl_input.hpp"
 #include "openstrike/material/material_system.hpp"
 #include "openstrike/renderer/rml_dx12_render_interface.hpp"
 #include "openstrike/renderer/world_material_shader.hpp"
@@ -20,6 +21,9 @@
 #endif
 #include <Windows.h>
 #include <d3d12.h>
+#if defined(_DEBUG)
+#include <d3d12sdklayers.h>
+#endif
 #include <d3dcompiler.h>
 #include <dxgi1_6.h>
 #include <wrl/client.h>
@@ -184,6 +188,43 @@ bool succeeded_with_device(ID3D12Device* device, HRESULT result, const char* ope
     return false;
 }
 
+#if defined(_DEBUG)
+bool enable_dx12_validation_layer()
+{
+    ComPtr<ID3D12Debug> debug_controller;
+    const HRESULT result = D3D12GetDebugInterface(IID_PPV_ARGS(&debug_controller));
+    if (FAILED(result))
+    {
+        log_warning("{}; DX12 validation layer disabled", hresult_message("D3D12GetDebugInterface", result));
+        return false;
+    }
+
+    debug_controller->EnableDebugLayer();
+
+    ComPtr<ID3D12Debug1> debug_controller1;
+    if (SUCCEEDED(debug_controller.As(&debug_controller1)))
+    {
+        debug_controller1->SetEnableSynchronizedCommandQueueValidation(TRUE);
+    }
+
+    log_info("DX12 validation layer enabled");
+    return true;
+}
+
+void configure_dx12_validation_messages(ID3D12Device* device)
+{
+    ComPtr<ID3D12InfoQueue> info_queue;
+    if (device == nullptr || FAILED(device->QueryInterface(IID_PPV_ARGS(&info_queue))))
+    {
+        return;
+    }
+
+    info_queue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_CORRUPTION, TRUE);
+    info_queue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_ERROR, TRUE);
+    info_queue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_WARNING, FALSE);
+}
+#endif
+
 bool wait_for_fence_event(HANDLE event, const char* operation)
 {
     const DWORD wait_result = WaitForSingleObject(event, INFINITE);
@@ -197,6 +238,12 @@ bool wait_for_fence_event(HANDLE event, const char* operation)
         wait_result,
         GetLastError());
     return false;
+}
+
+D3D12_CPU_DESCRIPTOR_HANDLE offset_descriptor(D3D12_CPU_DESCRIPTOR_HANDLE handle, std::uint32_t index, std::uint32_t descriptor_size)
+{
+    handle.ptr += static_cast<SIZE_T>(index) * descriptor_size;
+    return handle;
 }
 
 D3D12_HEAP_PROPERTIES heap_properties(D3D12_HEAP_TYPE type)
@@ -969,32 +1016,6 @@ bool gameplay_ui_visible(const RmlConsoleController* console, const MainMenuCont
     return (console != nullptr && console->visible()) || (main_menu != nullptr && main_menu->visible());
 }
 
-bool set_gameplay_key(InputState& input, SDL_Keycode key, bool pressed)
-{
-    switch (key)
-    {
-    case SDLK_W:
-        input.move_forward = pressed;
-        return true;
-    case SDLK_S:
-        input.move_back = pressed;
-        return true;
-    case SDLK_A:
-        input.move_left = pressed;
-        return true;
-    case SDLK_D:
-        input.move_right = pressed;
-        return true;
-    case SDLK_SPACE:
-        input.jump = pressed;
-        return true;
-    case SDLK_LSHIFT:
-        input.sprint = pressed;
-        return true;
-    default:
-        return false;
-    }
-}
 }
 
 struct Dx12Renderer::WorldGpuResources
@@ -1128,8 +1149,7 @@ void Dx12Renderer::render(const FrameContext& context)
     const float pulse = static_cast<float>((context.frame_index % 120) / 120.0);
     const std::array<float, 4> clear_color{0.03F, 0.05F + (0.05F * pulse), 0.09F + (0.15F * pulse), 1.0F};
 
-    D3D12_CPU_DESCRIPTOR_HANDLE rtv_handle = rtv_heap_->GetCPUDescriptorHandleForHeapStart();
-    rtv_handle.ptr += static_cast<SIZE_T>(frame) * rtv_descriptor_size_;
+    D3D12_CPU_DESCRIPTOR_HANDLE rtv_handle = offset_descriptor(rtv_heap_->GetCPUDescriptorHandleForHeapStart(), frame, rtv_descriptor_size_);
     D3D12_CPU_DESCRIPTOR_HANDLE dsv_handle = dsv_heap_->GetCPUDescriptorHandleForHeapStart();
     command_list_->OMSetRenderTargets(1, &rtv_handle, FALSE, &dsv_handle);
     command_list_->ClearRenderTargetView(rtv_handle, clear_color.data(), 0, nullptr);
@@ -1374,16 +1394,15 @@ bool Dx12Renderer::create_window(const RuntimeConfig&)
 bool Dx12Renderer::create_device_objects(const RuntimeConfig&)
 {
 #if defined(_DEBUG)
-    ComPtr<ID3D12Debug> debug_controller;
-    if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debug_controller))))
-    {
-        debug_controller->EnableDebugLayer();
-    }
+    const bool dx12_validation_enabled = enable_dx12_validation_layer();
 #endif
 
     UINT factory_flags = 0;
 #if defined(_DEBUG)
-    factory_flags = DXGI_CREATE_FACTORY_DEBUG;
+    if (dx12_validation_enabled)
+    {
+        factory_flags |= DXGI_CREATE_FACTORY_DEBUG;
+    }
 #endif
 
     ComPtr<IDXGIFactory6> factory;
@@ -1410,6 +1429,12 @@ bool Dx12Renderer::create_device_objects(const RuntimeConfig&)
         return false;
     }
     set_debug_name(device_.Get(), "OpenStrike D3D12 Device");
+#if defined(_DEBUG)
+    if (dx12_validation_enabled)
+    {
+        configure_dx12_validation_messages(device_.Get());
+    }
+#endif
 
     D3D12_COMMAND_QUEUE_DESC queue_desc{};
     queue_desc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
@@ -2183,7 +2208,10 @@ bool Dx12Renderer::record_skybox(ID3D12GraphicsCommandList* command_list, const 
     scissor.bottom = static_cast<LONG>(height_);
 
     const std::array<float, 16> constants = skybox_to_clip_matrix(&engine_context_->camera, width_, height_);
+    D3D12_CPU_DESCRIPTOR_HANDLE rtv_handle = offset_descriptor(rtv_heap_->GetCPUDescriptorHandleForHeapStart(), frame_index_, rtv_descriptor_size_);
+    D3D12_CPU_DESCRIPTOR_HANDLE dsv_handle = dsv_heap_->GetCPUDescriptorHandleForHeapStart();
     ID3D12DescriptorHeap* descriptor_heaps[] = {skybox_gpu_->srv_heap.Get()};
+    command_list->OMSetRenderTargets(1, &rtv_handle, FALSE, &dsv_handle);
     command_list->SetDescriptorHeaps(1, descriptor_heaps);
     command_list->SetPipelineState(skybox_pipeline_state_.Get());
     command_list->SetGraphicsRootSignature(skybox_root_signature_.Get());
@@ -2389,7 +2417,10 @@ bool Dx12Renderer::record_world(ID3D12GraphicsCommandList* command_list) const
     scissor.bottom = static_cast<LONG>(height_);
 
     const std::array<float, kWorldShaderFloatCount> constants = world_shader_constants(world->mesh, &engine_context_->camera, width_, height_);
+    D3D12_CPU_DESCRIPTOR_HANDLE rtv_handle = offset_descriptor(rtv_heap_->GetCPUDescriptorHandleForHeapStart(), frame_index_, rtv_descriptor_size_);
+    D3D12_CPU_DESCRIPTOR_HANDLE dsv_handle = dsv_heap_->GetCPUDescriptorHandleForHeapStart();
     ID3D12DescriptorHeap* descriptor_heaps[] = {world_gpu_->srv_heap.Get()};
+    command_list->OMSetRenderTargets(1, &rtv_handle, FALSE, &dsv_handle);
     command_list->SetDescriptorHeaps(1, descriptor_heaps);
     command_list->SetPipelineState(world_pipeline_state_.Get());
     command_list->SetGraphicsRootSignature(world_root_signature_.Get());
@@ -2492,19 +2523,12 @@ void Dx12Renderer::pump_messages()
         }
 
         const bool ui_visible = gameplay_ui_visible(rml_console_controller_.get(), main_menu_controller_.get());
-        if (engine_context_ != nullptr && !ui_visible && (event.type == SDL_EVENT_KEY_DOWN || event.type == SDL_EVENT_KEY_UP))
+        if (engine_context_ != nullptr && !ui_visible)
         {
-            if (set_gameplay_key(engine_context_->input, event.key.key, event.type == SDL_EVENT_KEY_DOWN))
+            if (handle_sdl_gameplay_input_event(engine_context_->input, event))
             {
                 continue;
             }
-        }
-
-        if (engine_context_ != nullptr && !ui_visible && engine_context_->input.mouse_captured && event.type == SDL_EVENT_MOUSE_MOTION)
-        {
-            engine_context_->input.mouse_delta.x += event.motion.xrel;
-            engine_context_->input.mouse_delta.y += event.motion.yrel;
-            continue;
         }
 
         if (rml_context_ != nullptr)

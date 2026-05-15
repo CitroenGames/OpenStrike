@@ -23,6 +23,8 @@ FpsInputSample sample_fps_input(InputState& input)
         .move_left = input.move_left,
         .move_right = input.move_right,
         .jump = input.jump,
+        .duck = input.duck,
+        .walk = input.sprint,
         .mouse_delta = input.consume_mouse_delta(),
     };
 }
@@ -48,6 +50,8 @@ InputCommand build_fps_move_command(const FpsViewState& view, const FpsInputSamp
         .move_x = wish_direction.x,
         .move_y = wish_direction.y,
         .jump = input.jump,
+        .duck = input.duck,
+        .walk = input.walk,
     };
 }
 
@@ -65,6 +69,8 @@ Vec3 fps_right_2d(float yaw_degrees)
 
 Vec3 fps_eye_origin(const PlayerState& player, const FpsControllerSettings& settings)
 {
-    return player.origin + Vec3{0.0F, 0.0F, settings.eye_height};
+    const float duck_fraction = std::clamp(player.duck_amount, 0.0F, 1.0F);
+    const float eye_height = settings.eye_height + ((settings.duck_eye_height - settings.eye_height) * duck_fraction);
+    return player.origin + Vec3{0.0F, 0.0F, eye_height};
 }
 }
