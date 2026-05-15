@@ -44,11 +44,11 @@ runtime_library = MultiThreadedDebug
 optimization = Disabled
 debug_info = ProgramDatabase
 generate_debug_info = true
-outdir = ../../build/bin/x64/Debug
+outdir = ../../bin/x64/Debug
 intdir = ../../build/obj/x64/Debug/freetype
 if(posix)
 {
-    outdir = ../../build/bin/posix/Debug
+    outdir = ../../bin/posix/Debug
     intdir = ../../build/obj/posix/Debug/freetype
 }
 
@@ -57,10 +57,10 @@ runtime_library = MultiThreaded
 optimization = MaxSpeed
 debug_info = ProgramDatabase
 generate_debug_info = true
-outdir = ../../build/bin/x64/Release
+outdir = ../../bin/x64/Release
 intdir = ../../build/obj/x64/Release/freetype
 if(posix)
 {
-    outdir = ../../build/bin/posix/Release
+    outdir = ../../bin/posix/Release
     intdir = ../../build/obj/posix/Release/freetype
 }

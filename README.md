@@ -33,7 +33,7 @@ sighmake --build . --config Debug --parallel 8
 Run tests:
 
 ```powershell
-.\build\bin\x64\Debug\OpenStrikeTests.exe
+.\bin\x64\Debug\OpenStrikeTests.exe
 ```
 
 Linux/macOS generation uses Sighmake's Makefile generator:
@@ -41,7 +41,7 @@ Linux/macOS generation uses Sighmake's Makefile generator:
 ```bash
 sighmake openstrike.buildscript -g makefile
 sighmake --build . --config Debug --parallel 8
-./build/bin/posix/Debug/OpenStrikeTests
+./bin/posix/Debug/OpenStrikeTests
 ```
 
 On Linux/macOS, SDL3 is resolved through `find_package(SDL3 REQUIRED)` in `thirdparty/SDL3-3.4.4/sdl3.buildscript`, so install the SDL3 development package or provide it through the system package search path before generating.
@@ -49,9 +49,9 @@ On Linux/macOS, SDL3 is resolved through `find_package(SDL3 REQUIRED)` in `third
 ## Run
 
 ```powershell
-.\build\bin\x64\Debug\OpenStrike.exe --frames=120
-.\build\bin\x64\Debug\OpenStrike.exe --dedicated --frames=120
-.\build\bin\x64\Debug\OpenStrike.exe --editor --frames=1
+.\bin\x64\Debug\OpenStrike.exe --frames=120
+.\bin\x64\Debug\OpenStrike.exe --dedicated --frames=120
+.\bin\x64\Debug\OpenStrike.exe --editor --frames=1
 ```
 
 Important runtime flags:
@@ -66,7 +66,7 @@ Important runtime flags:
 - `--no-vsync`: present without vertical sync when DXGI tearing support is available.
 - `--frames=N`: stop after `N` rendered frames. Use `0` for an unlimited loop.
 - `--tickrate=N`: fixed simulation rate, default `64`.
-- `--content-root=PATH`: content root used by future asset systems.
+- `--content-root=PATH`: content root used by asset systems. If omitted, OpenStrike checks `OPENSTRIKE_CONTENT_ROOT`, the current directory, and then `./content`.
 - `--quiet`: only warning and error logs.
 
 ## Direction

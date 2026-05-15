@@ -9,7 +9,7 @@ runtime_library = MultiThreadedDebug
 optimization = Disabled
 debug_info = ProgramDatabase
 generate_debug_info = true
-outdir = ../../build/lib/x64/Debug
+outdir = ../../bin/x64/Debug
 intdir = ../../build/obj/miniaudio/x64/Debug
 
 [config:Release|x64]
@@ -17,5 +17,5 @@ runtime_library = MultiThreaded
 optimization = MaxSpeed
 debug_info = ProgramDatabase
 generate_debug_info = true
-outdir = ../../build/lib/x64/Release
+outdir = ../../bin/x64/Release
 intdir = ../../build/obj/miniaudio/x64/Release

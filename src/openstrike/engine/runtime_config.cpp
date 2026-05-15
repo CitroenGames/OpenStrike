@@ -2,7 +2,9 @@
 
 #include <charconv>
 #include <algorithm>
+#include <cstdlib>
 #include <filesystem>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <system_error>
@@ -59,8 +61,44 @@ RendererBackend parse_renderer_backend(const std::string& value)
     throw std::invalid_argument("invalid renderer backend '" + value + "'");
 }
 
+std::optional<std::filesystem::path> environment_path(const char* name)
+{
+#if defined(_WIN32)
+    char* value = nullptr;
+    std::size_t value_size = 0;
+    if (_dupenv_s(&value, &value_size, name) != 0 || value == nullptr)
+    {
+        return std::nullopt;
+    }
+
+    std::string result(value);
+    std::free(value);
+    if (result.empty())
+    {
+        return std::nullopt;
+    }
+
+    return result;
+#else
+    if (const char* value = std::getenv(name))
+    {
+        if (*value != '\0')
+        {
+            return value;
+        }
+    }
+
+    return std::nullopt;
+#endif
+}
+
 std::filesystem::path default_content_root()
 {
+    if (const auto env_content_root = environment_path("OPENSTRIKE_CONTENT_ROOT"))
+    {
+        return *env_content_root;
+    }
+
     std::error_code error;
     const std::filesystem::path current = std::filesystem::current_path(error);
     if (!error)
@@ -76,14 +114,6 @@ std::filesystem::path default_content_root()
             return current / "content";
         }
     }
-
-#if defined(_WIN32)
-    const std::filesystem::path local_content = "I:/content";
-    if (std::filesystem::is_directory(local_content, error))
-    {
-        return local_content;
-    }
-#endif
 
     return "content";
 }

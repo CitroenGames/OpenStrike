@@ -20,21 +20,19 @@ runtime_library = MultiThreadedDebug
 optimization = Disabled
 debug_info = ProgramDatabase
 generate_debug_info = true
-outdir = ../../build/bin/x64/Debug
+outdir = ../../bin/x64/Debug
 intdir = ../../build/obj/x64/Debug/SteamAudio
 if(Windows)
 {
     postbuild = """
-    if not exist bin\x64\Debug\. mkdir bin\x64\Debug\.
-    copy /y ..\thirdparty\steamaudio\lib\windows-x64\phonon.dll bin\x64\Debug\phonon.dll
-    if not exist I:\content\. mkdir I:\content\.
-    copy /y ..\thirdparty\steamaudio\lib\windows-x64\phonon.dll I:\content\phonon.dll
+    if not exist ..\bin\x64\Debug\. mkdir ..\bin\x64\Debug\.
+    copy /y ..\thirdparty\steamaudio\lib\windows-x64\phonon.dll ..\bin\x64\Debug\phonon.dll
     """
     postbuild_message = Copying phonon.dll for Debug runtime targets
 }
 if(posix)
 {
-    outdir = ../../build/bin/posix/Debug
+    outdir = ../../bin/posix/Debug
     intdir = ../../build/obj/posix/Debug/SteamAudio
 }
 
@@ -43,20 +41,18 @@ runtime_library = MultiThreaded
 optimization = MaxSpeed
 debug_info = ProgramDatabase
 generate_debug_info = true
-outdir = ../../build/bin/x64/Release
+outdir = ../../bin/x64/Release
 intdir = ../../build/obj/x64/Release/SteamAudio
 if(Windows)
 {
     postbuild = """
-    if not exist bin\x64\Release\. mkdir bin\x64\Release\.
-    copy /y ..\thirdparty\steamaudio\lib\windows-x64\phonon.dll bin\x64\Release\phonon.dll
-    if not exist I:\content\. mkdir I:\content\.
-    copy /y ..\thirdparty\steamaudio\lib\windows-x64\phonon.dll I:\content\phonon.dll
+    if not exist ..\bin\x64\Release\. mkdir ..\bin\x64\Release\.
+    copy /y ..\thirdparty\steamaudio\lib\windows-x64\phonon.dll ..\bin\x64\Release\phonon.dll
     """
     postbuild_message = Copying phonon.dll for Release runtime targets
 }
 if(posix)
 {
-    outdir = ../../build/bin/posix/Release
+    outdir = ../../bin/posix/Release
     intdir = ../../build/obj/posix/Release/SteamAudio
 }

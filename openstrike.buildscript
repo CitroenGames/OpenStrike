@@ -86,11 +86,11 @@ runtime_library = MultiThreadedDebug
 optimization = Disabled
 debug_info = ProgramDatabase
 generate_debug_info = true
-outdir = build/bin/x64/Debug
+outdir = bin/x64/Debug
 intdir = build/obj/x64/Debug/OpenStrikeCore
 if(posix)
 {
-    outdir = build/bin/posix/Debug
+    outdir = bin/posix/Debug
     intdir = build/obj/posix/Debug/OpenStrikeCore
 }
 
@@ -101,11 +101,11 @@ debug_info = ProgramDatabase
 generate_debug_info = true
 function_level_linking = true
 intrinsic_functions = true
-outdir = build/bin/x64/Release
+outdir = bin/x64/Release
 intdir = build/obj/x64/Release/OpenStrikeCore
 if(posix)
 {
-    outdir = build/bin/posix/Release
+    outdir = bin/posix/Release
     intdir = build/obj/posix/Release/OpenStrikeCore
 }
 
@@ -127,12 +127,12 @@ runtime_library = MultiThreadedDebug
 optimization = Disabled
 debug_info = ProgramDatabase
 generate_debug_info = true
-outdir = I:\content
+outdir = bin/x64/Debug
 intdir = build/obj/x64/Debug/OpenStrike
-postbuild = copy /Y ..\thirdparty\SDL3-3.4.4\lib\x64\SDL3.dll I:\content\SDL3.dll
+postbuild = copy /Y ..\thirdparty\SDL3-3.4.4\lib\x64\SDL3.dll ..\bin\x64\Debug\SDL3.dll
 if(posix)
 {
-    outdir = build/bin/posix/Debug
+    outdir = bin/posix/Debug
     intdir = build/obj/posix/Debug/OpenStrike
 }
 
@@ -143,12 +143,12 @@ debug_info = ProgramDatabase
 generate_debug_info = true
 function_level_linking = true
 intrinsic_functions = true
-outdir = I:\content
+outdir = bin/x64/Release
 intdir = build/obj/x64/Release/OpenStrike
-postbuild = copy /Y ..\thirdparty\SDL3-3.4.4\lib\x64\SDL3.dll I:\content\SDL3.dll
+postbuild = copy /Y ..\thirdparty\SDL3-3.4.4\lib\x64\SDL3.dll ..\bin\x64\Release\SDL3.dll
 if(posix)
 {
-    outdir = build/bin/posix/Release
+    outdir = bin/posix/Release
     intdir = build/obj/posix/Release/OpenStrike
 }
 
@@ -170,11 +170,11 @@ runtime_library = MultiThreadedDebug
 optimization = Disabled
 debug_info = ProgramDatabase
 generate_debug_info = true
-outdir = build/bin/x64/Debug
+outdir = bin/x64/Debug
 intdir = build/obj/x64/Debug/OpenStrikeTests
 if(posix)
 {
-    outdir = build/bin/posix/Debug
+    outdir = bin/posix/Debug
     intdir = build/obj/posix/Debug/OpenStrikeTests
 }
 
@@ -185,10 +185,10 @@ debug_info = ProgramDatabase
 generate_debug_info = true
 function_level_linking = true
 intrinsic_functions = true
-outdir = build/bin/x64/Release
+outdir = bin/x64/Release
 intdir = build/obj/x64/Release/OpenStrikeTests
 if(posix)
 {
-    outdir = build/bin/posix/Release
+    outdir = bin/posix/Release
     intdir = build/obj/posix/Release/OpenStrikeTests
 }

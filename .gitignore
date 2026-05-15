@@ -1,4 +1,5 @@
 build/
+bin/
 .sighmake_cache
 .vs/
 out/
