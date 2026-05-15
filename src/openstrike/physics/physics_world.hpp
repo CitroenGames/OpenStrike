@@ -10,11 +10,13 @@ struct LoadedWorld;
 
 struct PhysicsCharacterConfig
 {
+    // Source-facing distances are in Source units. The Jolt backend converts them to meters internally.
     float radius = 16.0F;
     float height = 72.0F;
     float max_step_height = 18.0F;
     float max_slope_degrees = 45.573F;
     float max_teleport_distance = 24.0F;
+    // Jolt contact tolerance, in meters, matching the VPhysics-Jolt convention.
     float character_padding = 0.02F;
 };
 

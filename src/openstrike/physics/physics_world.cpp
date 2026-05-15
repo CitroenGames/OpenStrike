@@ -44,6 +44,9 @@ constexpr JPH::BroadPhaseLayer Moving(1);
 constexpr JPH::uint Count = 2;
 }
 
+constexpr float kSourceUnitsToMeters = 0.0254F;
+constexpr float kMetersToSourceUnits = 1.0F / kSourceUnitsToMeters;
+
 class ObjectLayerPairFilter final : public JPH::ObjectLayerPairFilter
 {
 public:
@@ -152,24 +155,41 @@ void initialize_jolt()
     });
 }
 
-JPH::Vec3 to_jolt(Vec3 value)
+float to_jolt_distance(float value)
 {
-    return JPH::Vec3(value.x, value.y, value.z);
+    return value * kSourceUnitsToMeters;
+}
+
+float from_jolt_distance(float value)
+{
+    return value * kMetersToSourceUnits;
+}
+
+JPH::Vec3 to_jolt_distance(Vec3 value)
+{
+    return JPH::Vec3(to_jolt_distance(value.x), to_jolt_distance(value.y), to_jolt_distance(value.z));
 }
 
 JPH::RVec3 to_jolt_position(Vec3 value)
 {
-    return JPH::RVec3(value.x, value.y, value.z);
+    return JPH::RVec3(to_jolt_distance(value.x), to_jolt_distance(value.y), to_jolt_distance(value.z));
 }
 
-Vec3 from_jolt(JPH::Vec3Arg value)
+JPH::Float3 to_jolt_distance_float3(Vec3 value)
 {
-    return {value.GetX(), value.GetY(), value.GetZ()};
+    return JPH::Float3(to_jolt_distance(value.x), to_jolt_distance(value.y), to_jolt_distance(value.z));
+}
+
+Vec3 from_jolt_distance(JPH::Vec3Arg value)
+{
+    return {from_jolt_distance(value.GetX()), from_jolt_distance(value.GetY()), from_jolt_distance(value.GetZ())};
 }
 
 Vec3 from_jolt_position(JPH::RVec3Arg value)
 {
-    return {static_cast<float>(value.GetX()), static_cast<float>(value.GetY()), static_cast<float>(value.GetZ())};
+    return {from_jolt_distance(static_cast<float>(value.GetX())),
+        from_jolt_distance(static_cast<float>(value.GetY())),
+        from_jolt_distance(static_cast<float>(value.GetZ()))};
 }
 
 float length_squared(Vec3 value)
@@ -179,7 +199,7 @@ float length_squared(Vec3 value)
 
 JPH::Triangle make_triangle(Vec3 a, Vec3 b, Vec3 c)
 {
-    return JPH::Triangle(JPH::Float3(a.x, a.y, a.z), JPH::Float3(b.x, b.y, b.z), JPH::Float3(c.x, c.y, c.z));
+    return JPH::Triangle(to_jolt_distance_float3(a), to_jolt_distance_float3(b), to_jolt_distance_float3(c));
 }
 }
 
@@ -190,7 +210,7 @@ public:
         : job_system_(JPH::cMaxPhysicsJobs, JPH::cMaxPhysicsBarriers, 0)
     {
         system_.Init(4096, 0, 8192, 4096, broad_phase_layers_, object_vs_broad_phase_filter_, object_layer_pair_filter_);
-        system_.SetGravity(JPH::Vec3(0.0F, 0.0F, -800.0F));
+        system_.SetGravity(to_jolt_distance(Vec3{0.0F, 0.0F, -800.0F}));
     }
 
     ~Impl()
@@ -270,10 +290,12 @@ public:
         const float radius = std::max(1.0F, config.radius);
         const float height = std::max(radius * 2.0F, config.height);
         const float half_cylinder_height = std::max(0.0F, (height - (radius * 2.0F)) * 0.5F);
+        const float jolt_radius = to_jolt_distance(radius);
+        const float jolt_half_cylinder_height = to_jolt_distance(half_cylinder_height);
 
-        JPH::Ref<JPH::Shape> capsule = new JPH::CapsuleShape(half_cylinder_height, radius);
+        JPH::Ref<JPH::Shape> capsule = new JPH::CapsuleShape(jolt_half_cylinder_height, jolt_radius);
         JPH::ShapeSettings::ShapeResult shape_result =
-            JPH::RotatedTranslatedShapeSettings(JPH::Vec3(0.0F, 0.0F, half_cylinder_height + radius),
+            JPH::RotatedTranslatedShapeSettings(JPH::Vec3(0.0F, 0.0F, jolt_half_cylinder_height + jolt_radius),
                 JPH::Quat::sRotation(JPH::Vec3::sAxisX(), JPH::DegreesToRadians(90.0F)),
                 capsule)
                 .Create();
@@ -286,17 +308,17 @@ public:
         JPH::CharacterVirtualSettings settings;
         settings.mShape = shape_result.Get();
         settings.mUp = JPH::Vec3::sAxisZ();
-        settings.mSupportingVolume = JPH::Plane(JPH::Vec3::sAxisZ(), -(height * 0.25F));
+        settings.mSupportingVolume = JPH::Plane(JPH::Vec3::sAxisZ(), -to_jolt_distance(height * 0.25F));
         settings.mMaxSlopeAngle = JPH::DegreesToRadians(config.max_slope_degrees);
         settings.mEnhancedInternalEdgeRemoval = true;
         settings.mCharacterPadding = std::max(0.0F, config.character_padding);
         settings.mBackFaceMode = JPH::EBackFaceMode::CollideWithBackFaces;
 
         character_ = new JPH::CharacterVirtual(&settings, to_jolt_position(origin), JPH::Quat::sIdentity(), 0, &system_);
-        character_->SetLinearVelocity(to_jolt(velocity));
+        character_->SetLinearVelocity(to_jolt_distance(velocity));
 
-        character_update_.mStickToFloorStepDown = JPH::Vec3(0.0F, 0.0F, -std::max(0.0F, config.max_step_height));
-        character_update_.mWalkStairsStepUp = JPH::Vec3(0.0F, 0.0F, std::max(0.0F, config.max_step_height));
+        character_update_.mStickToFloorStepDown = to_jolt_distance(Vec3{0.0F, 0.0F, -std::max(0.0F, config.max_step_height)});
+        character_update_.mWalkStairsStepUp = to_jolt_distance(Vec3{0.0F, 0.0F, std::max(0.0F, config.max_step_height)});
         character_update_.mWalkStairsStepDownExtra = character_update_.mStickToFloorStepDown;
         character_update_.mWalkStairsMinStepForward = 0.02F;
         character_update_.mWalkStairsStepForwardTest = 1.0F;
@@ -323,7 +345,7 @@ public:
 
         PhysicsCharacterState state;
         state.origin = from_jolt_position(character_->GetPosition());
-        state.velocity = from_jolt(character_->GetLinearVelocity());
+        state.velocity = from_jolt_distance(character_->GetLinearVelocity());
         state.on_ground = character_->GetGroundState() == JPH::CharacterBase::EGroundState::OnGround;
         return state;
     }
@@ -343,13 +365,13 @@ public:
         if (length_squared(delta) > character_config_.max_teleport_distance * character_config_.max_teleport_distance)
         {
             character_->SetPosition(to_jolt_position(target_origin));
-            character_->SetLinearVelocity(to_jolt(target_velocity));
+            character_->SetLinearVelocity(to_jolt_distance(target_velocity));
             refresh_character_contacts();
             return character_state();
         }
 
         const Vec3 controller_velocity = delta * (1.0F / dt);
-        character_->SetLinearVelocity(to_jolt(controller_velocity));
+        character_->SetLinearVelocity(to_jolt_distance(controller_velocity));
 
         character_->ExtendedUpdate(dt,
             system_.GetGravity(),
@@ -364,7 +386,7 @@ public:
         if (state.on_ground && state.velocity.z < 0.0F)
         {
             state.velocity.z = 0.0F;
-            character_->SetLinearVelocity(to_jolt(state.velocity));
+            character_->SetLinearVelocity(to_jolt_distance(state.velocity));
         }
 
         return state;
