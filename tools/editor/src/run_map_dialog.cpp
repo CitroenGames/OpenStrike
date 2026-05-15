@@ -3,12 +3,15 @@
 #include "file_dialog.hpp"
 
 #include <imgui.h>
+#include <cstdint>
 #include <filesystem>
 #include <utility>
 #include <vector>
 
 #ifdef _WIN32
 #include <windows.h>
+#elif defined(__APPLE__)
+#include <mach-o/dyld.h>
 #endif
 
 namespace fs = std::filesystem;
@@ -405,9 +408,32 @@ void RunMapDialog::BrowseForExe(std::string& target)
 // ---------------------------------------------------------------------------
 std::string RunMapDialog::GetConfigFilePath() const
 {
+#ifdef _WIN32
     // Store config next to the editor executable
-    char exePath[MAX_PATH];
-    GetModuleFileNameA(nullptr, exePath, MAX_PATH);
-    fs::path p(exePath);
-    return (p.parent_path() / "compile_config.ini").string();
+    char exePath[MAX_PATH] = {};
+    const DWORD size = GetModuleFileNameA(nullptr, exePath, MAX_PATH);
+    if (size > 0)
+    {
+        fs::path p(exePath);
+        return (p.parent_path() / "compile_config.ini").string();
+    }
+#elif defined(__APPLE__)
+    std::uint32_t size = 0;
+    (void)_NSGetExecutablePath(nullptr, &size);
+    if (size > 0)
+    {
+        std::vector<char> buffer(size + 1, '\0');
+        if (_NSGetExecutablePath(buffer.data(), &size) == 0)
+        {
+            std::error_code error;
+            fs::path p = fs::weakly_canonical(buffer.data(), error);
+            if (error)
+                p = fs::path(buffer.data());
+            return (p.parent_path() / "compile_config.ini").string();
+        }
+    }
+#endif
+
+    std::error_code error;
+    return (fs::current_path(error) / "compile_config.ini").string();
 }

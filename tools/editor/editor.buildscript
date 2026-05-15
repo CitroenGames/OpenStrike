@@ -21,6 +21,10 @@ if(Windows)
 {
     libs = opengl32.lib, comdlg32.lib, shell32.lib, dwmapi.lib, ole32.lib
 }
+if(macOS)
+{
+    ldflags = -framework OpenGL
+}
 
 [config:Debug|x64]
 runtime_library = MultiThreadedDebug

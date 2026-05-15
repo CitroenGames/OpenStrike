@@ -64,12 +64,13 @@ Important runtime flags:
 
 - `--dedicated`: run the server module without client/editor behavior.
 - `--editor`: run editor mode on top of the normal runtime spine.
-- `--renderer=dx12|null`: choose the renderer backend. Client/editor default to custom DX12 on Windows.
-- On Linux/macOS, client/editor currently fall back to the null renderer until a native backend is added.
+- `--renderer=dx12|metal|null`: choose the renderer backend. Client/editor default to custom DX12 on Windows and Metal on macOS.
+- On Linux, client/editor currently fall back to the null renderer until a native backend is added.
 - `--dx12`: shorthand for `--renderer=dx12`.
+- `--metal`: shorthand for `--renderer=metal`.
 - `--null-renderer`: run without a graphics backend.
-- `--width=N --height=N`: configure the DX12 window size.
-- `--no-vsync`: present without vertical sync when DXGI tearing support is available.
+- `--width=N --height=N`: configure the renderer window size.
+- `--no-vsync`: present without vertical sync when the active backend supports it.
 - `--frames=N`: stop after `N` rendered frames. Use `0` for an unlimited loop.
 - `--tickrate=N`: fixed simulation rate, default `64`.
 - `--content-root=PATH`: content root used by asset systems. If omitted, OpenStrike checks `OPENSTRIKE_CONTENT_ROOT`, the current directory, and then `./content`.

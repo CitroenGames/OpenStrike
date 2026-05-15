@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstddef>
+
 #include <SDL3/SDL_opengl.h>
 
 // ---- GL constants ----
@@ -103,7 +105,7 @@ typedef void   (APIENTRY *PFNGLBINDVERTEXARRAYPROC_)(GLuint);
 typedef void   (APIENTRY *PFNGLGENBUFFERSPROC_)(GLsizei, GLuint*);
 typedef void   (APIENTRY *PFNGLDELETEBUFFERSPROC_)(GLsizei, const GLuint*);
 typedef void   (APIENTRY *PFNGLBINDBUFFERPROC_)(GLenum, GLuint);
-typedef void   (APIENTRY *PFNGLBUFFERDATAPROC_)(GLenum, ptrdiff_t, const void*, GLenum);
+typedef void   (APIENTRY *PFNGLBUFFERDATAPROC_)(GLenum, std::ptrdiff_t, const void*, GLenum);
 typedef void   (APIENTRY *PFNGLENABLEVERTEXATTRIBARRAYPROC_)(GLuint);
 typedef void   (APIENTRY *PFNGLDISABLEVERTEXATTRIBARRAYPROC_)(GLuint);
 typedef void   (APIENTRY *PFNGLVERTEXATTRIBPOINTERPROC_)(GLuint, GLint, GLenum, GLboolean, GLsizei, const void*);

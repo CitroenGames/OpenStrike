@@ -515,6 +515,12 @@ void test_renderer_aliases()
         const openstrike::RuntimeConfig config = openstrike::RuntimeConfig::from_command_line(command_line);
         REQUIRE(config.renderer_backend == openstrike::RendererBackend::Null);
     }
+
+    {
+        openstrike::CommandLine command_line({"--metal"});
+        const openstrike::RuntimeConfig config = openstrike::RuntimeConfig::from_command_line(command_line);
+        REQUIRE(config.renderer_backend == openstrike::RendererBackend::Metal);
+    }
 }
 
 void test_fixed_step_accumulates_ticks()

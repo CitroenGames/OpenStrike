@@ -8,6 +8,11 @@
 #include <stdexcept>
 #include <string>
 #include <system_error>
+#include <vector>
+
+#if defined(__APPLE__)
+#include <mach-o/dyld.h>
+#endif
 
 namespace openstrike
 {
@@ -58,6 +63,11 @@ RendererBackend parse_renderer_backend(const std::string& value)
         return RendererBackend::D3D12;
     }
 
+    if (value == "metal")
+    {
+        return RendererBackend::Metal;
+    }
+
     throw std::invalid_argument("invalid renderer backend '" + value + "'");
 }
 
@@ -92,6 +102,42 @@ std::optional<std::filesystem::path> environment_path(const char* name)
 #endif
 }
 
+bool has_content_marker(const std::filesystem::path& root)
+{
+    std::error_code error;
+    return std::filesystem::is_regular_file(root / "assets/ui/mainmenu.rml", error) ||
+           std::filesystem::is_regular_file(root / "csgo/resource/ui/mainmenu.rml", error);
+}
+
+std::optional<std::filesystem::path> executable_directory()
+{
+#if defined(__APPLE__)
+    std::uint32_t size = 0;
+    (void)_NSGetExecutablePath(nullptr, &size);
+    if (size == 0)
+    {
+        return std::nullopt;
+    }
+
+    std::vector<char> buffer(size + 1, '\0');
+    if (_NSGetExecutablePath(buffer.data(), &size) != 0)
+    {
+        return std::nullopt;
+    }
+
+    std::error_code error;
+    std::filesystem::path executable = std::filesystem::weakly_canonical(buffer.data(), error);
+    if (error)
+    {
+        executable = std::filesystem::path(buffer.data());
+    }
+
+    return executable.parent_path();
+#else
+    return std::nullopt;
+#endif
+}
+
 std::filesystem::path default_content_root()
 {
     if (const auto env_content_root = environment_path("OPENSTRIKE_CONTENT_ROOT"))
@@ -103,15 +149,27 @@ std::filesystem::path default_content_root()
     const std::filesystem::path current = std::filesystem::current_path(error);
     if (!error)
     {
-        if (std::filesystem::is_regular_file(current / "assets/ui/mainmenu.rml", error) ||
-            std::filesystem::is_regular_file(current / "csgo/resource/ui/mainmenu.rml", error))
+        if (has_content_marker(current))
         {
             return current;
         }
 
-        if (std::filesystem::is_regular_file(current / "content/assets/ui/mainmenu.rml", error))
+        if (has_content_marker(current / "content"))
         {
             return current / "content";
+        }
+    }
+
+    if (const auto executable_root = executable_directory())
+    {
+        if (has_content_marker(*executable_root))
+        {
+            return *executable_root;
+        }
+
+        if (has_content_marker(*executable_root / "content"))
+        {
+            return *executable_root / "content";
         }
     }
 
@@ -152,6 +210,11 @@ RuntimeConfig RuntimeConfig::from_command_line(const CommandLine& command_line)
     if (command_line.has_flag("dx12") || command_line.has_flag("d3d12"))
     {
         config.renderer_backend = RendererBackend::D3D12;
+    }
+
+    if (command_line.has_flag("metal"))
+    {
+        config.renderer_backend = RendererBackend::Metal;
     }
 
     if (command_line.has_flag("null-renderer"))
@@ -279,6 +342,8 @@ std::string_view to_string(RendererBackend backend)
         return "null";
     case RendererBackend::D3D12:
         return "dx12";
+    case RendererBackend::Metal:
+        return "metal";
     }
 
     return "unknown";

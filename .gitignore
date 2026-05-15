@@ -16,3 +16,4 @@ out/
 *.dll
 *.lib
 *.log
+.DS_Store

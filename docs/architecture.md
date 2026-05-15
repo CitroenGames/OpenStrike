@@ -42,7 +42,7 @@ The first gameplay slice is small but real: `GameSimulation` owns a player state
 
 ## Rendering
 
-`IRenderer` is the rendering seam. Client and editor modes use the custom D3D12 backend on Windows by default. Linux and macOS builds compile the same runtime spine but currently fall back to `NullRenderer` until native backends are added. `NullRenderer` also remains for dedicated server mode, tests, and explicit `--renderer=null` runs. Renderer implementations must not own game simulation.
+`IRenderer` is the rendering seam. Client and editor modes use the custom D3D12 backend on Windows by default and a native Metal backend on macOS. Linux builds compile the same runtime spine but currently fall back to `NullRenderer` until a native backend is added. `NullRenderer` also remains for dedicated server mode, tests, and explicit `--renderer=null` runs. Renderer implementations must not own game simulation.
 
 ## Migration Rules
 

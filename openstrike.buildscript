@@ -1,7 +1,7 @@
 [solution]
 name = OpenStrike
 configurations = Debug, Release
-platforms = x64
+platforms = x64, macOS
 
 folder(thirdparty)
 {
@@ -50,6 +50,7 @@ sources = {
     src/openstrike/network/network_system.cpp
     src/openstrike/physics/physics_world.cpp
     src/openstrike/renderer/dx12_renderer.cpp [windows]
+    src/openstrike/renderer/metal_renderer.mm [macOS]
     src/openstrike/renderer/null_renderer.cpp
     src/openstrike/renderer/renderer_factory.cpp
     src/openstrike/renderer/rml_dx12_render_interface.cpp [windows]
@@ -87,6 +88,11 @@ if(Linux)
 {
     public_libs = pthread
 }
+if(macOS)
+{
+    objcflags = -fobjc-arc
+    public_libs = -framework Metal, -framework QuartzCore, -framework Cocoa
+}
 
 [config:Debug|x64]
 runtime_library = MultiThreadedDebug
@@ -95,11 +101,14 @@ debug_info = ProgramDatabase
 generate_debug_info = true
 outdir = bin/x64/Debug
 intdir = build/obj/x64/Debug/OpenStrikeCore
-if(posix)
-{
-    outdir = bin/posix/Debug
-    intdir = build/obj/posix/Debug/OpenStrikeCore
-}
+
+[config:Debug|macOS]
+runtime_library = MultiThreadedDebug
+optimization = Disabled
+debug_info = ProgramDatabase
+generate_debug_info = true
+outdir = bin/posix/Debug
+intdir = build/obj/posix/Debug/OpenStrikeCore
 
 [config:Release|x64]
 runtime_library = MultiThreaded
@@ -110,11 +119,16 @@ function_level_linking = true
 intrinsic_functions = true
 outdir = bin/x64/Release
 intdir = build/obj/x64/Release/OpenStrikeCore
-if(posix)
-{
-    outdir = bin/posix/Release
-    intdir = build/obj/posix/Release/OpenStrikeCore
-}
+
+[config:Release|macOS]
+runtime_library = MultiThreaded
+optimization = MaxSpeed
+debug_info = ProgramDatabase
+generate_debug_info = true
+function_level_linking = true
+intrinsic_functions = true
+outdir = bin/posix/Release
+intdir = build/obj/posix/Release/OpenStrikeCore
 
 [project:OpenStrike]
 type = exe
@@ -128,6 +142,10 @@ rtti = true
 defines = NOMINMAX, WIN32_LEAN_AND_MEAN
 subsystem = Console
 target_link_libraries(PRIVATE OpenStrikeCore RmlUi freetype SDL3)
+if(macOS)
+{
+    ldflags = -Wl,-rpath,@loader_path -Wl,-rpath,@loader_path/../../../thirdparty/steamaudio/lib/osx
+}
 
 [config:Debug|x64]
 runtime_library = MultiThreadedDebug
@@ -137,11 +155,16 @@ generate_debug_info = true
 outdir = bin/x64/Debug
 intdir = build/obj/x64/Debug/OpenStrike
 postbuild = copy /Y ..\thirdparty\SDL3-3.4.4\lib\x64\SDL3.dll ..\bin\x64\Debug\SDL3.dll
-if(posix)
-{
-    outdir = bin/posix/Debug
-    intdir = build/obj/posix/Debug/OpenStrike
-}
+
+[config:Debug|macOS]
+runtime_library = MultiThreadedDebug
+optimization = Disabled
+debug_info = ProgramDatabase
+generate_debug_info = true
+outdir = bin/posix/Debug
+intdir = build/obj/posix/Debug/OpenStrike
+postbuild = cp -f ../thirdparty/steamaudio/lib/osx/libphonon.dylib ../bin/posix/Debug/libphonon.dylib
+postbuild_message = Copying libphonon.dylib for Debug runtime targets
 
 [config:Release|x64]
 runtime_library = MultiThreaded
@@ -153,11 +176,18 @@ intrinsic_functions = true
 outdir = bin/x64/Release
 intdir = build/obj/x64/Release/OpenStrike
 postbuild = copy /Y ..\thirdparty\SDL3-3.4.4\lib\x64\SDL3.dll ..\bin\x64\Release\SDL3.dll
-if(posix)
-{
-    outdir = bin/posix/Release
-    intdir = build/obj/posix/Release/OpenStrike
-}
+
+[config:Release|macOS]
+runtime_library = MultiThreaded
+optimization = MaxSpeed
+debug_info = ProgramDatabase
+generate_debug_info = true
+function_level_linking = true
+intrinsic_functions = true
+outdir = bin/posix/Release
+intdir = build/obj/posix/Release/OpenStrike
+postbuild = cp -f ../thirdparty/steamaudio/lib/osx/libphonon.dylib ../bin/posix/Release/libphonon.dylib
+postbuild_message = Copying libphonon.dylib for Release runtime targets
 
 [project:OpenStrikeTests]
 type = exe
@@ -171,6 +201,10 @@ rtti = true
 defines = NOMINMAX, WIN32_LEAN_AND_MEAN
 subsystem = Console
 target_link_libraries(PRIVATE OpenStrikeCore)
+if(macOS)
+{
+    ldflags = -Wl,-rpath,@loader_path -Wl,-rpath,@loader_path/../../../thirdparty/steamaudio/lib/osx
+}
 
 [config:Debug|x64]
 runtime_library = MultiThreadedDebug
@@ -179,11 +213,16 @@ debug_info = ProgramDatabase
 generate_debug_info = true
 outdir = bin/x64/Debug
 intdir = build/obj/x64/Debug/OpenStrikeTests
-if(posix)
-{
-    outdir = bin/posix/Debug
-    intdir = build/obj/posix/Debug/OpenStrikeTests
-}
+
+[config:Debug|macOS]
+runtime_library = MultiThreadedDebug
+optimization = Disabled
+debug_info = ProgramDatabase
+generate_debug_info = true
+outdir = bin/posix/Debug
+intdir = build/obj/posix/Debug/OpenStrikeTests
+postbuild = cp -f ../thirdparty/steamaudio/lib/osx/libphonon.dylib ../bin/posix/Debug/libphonon.dylib
+postbuild_message = Copying libphonon.dylib for Debug test runtime
 
 [config:Release|x64]
 runtime_library = MultiThreaded
@@ -194,8 +233,15 @@ function_level_linking = true
 intrinsic_functions = true
 outdir = bin/x64/Release
 intdir = build/obj/x64/Release/OpenStrikeTests
-if(posix)
-{
-    outdir = bin/posix/Release
-    intdir = build/obj/posix/Release/OpenStrikeTests
-}
+
+[config:Release|macOS]
+runtime_library = MultiThreaded
+optimization = MaxSpeed
+debug_info = ProgramDatabase
+generate_debug_info = true
+function_level_linking = true
+intrinsic_functions = true
+outdir = bin/posix/Release
+intdir = build/obj/posix/Release/OpenStrikeTests
+postbuild = cp -f ../thirdparty/steamaudio/lib/osx/libphonon.dylib ../bin/posix/Release/libphonon.dylib
+postbuild_message = Copying libphonon.dylib for Release test runtime

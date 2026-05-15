@@ -21,7 +21,8 @@ enum class RendererBackend
 {
     Auto,
     Null,
-    D3D12
+    D3D12,
+    Metal
 };
 
 struct RuntimeConfig

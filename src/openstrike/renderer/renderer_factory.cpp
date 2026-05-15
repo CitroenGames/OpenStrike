@@ -6,6 +6,10 @@
 #include "openstrike/renderer/dx12_renderer.hpp"
 #endif
 
+#if defined(__APPLE__)
+#include "openstrike/renderer/metal_renderer.hpp"
+#endif
+
 namespace openstrike
 {
 std::unique_ptr<IRenderer> create_renderer(const RuntimeConfig& config)
@@ -22,7 +26,13 @@ std::unique_ptr<IRenderer> create_renderer(const RuntimeConfig& config)
     }
 #endif
 
+#if defined(__APPLE__)
+    if (config.renderer_backend == RendererBackend::Auto || config.renderer_backend == RendererBackend::Metal)
+    {
+        return std::make_unique<MetalRenderer>();
+    }
+#endif
+
     return std::make_unique<NullRenderer>();
 }
 }
-
