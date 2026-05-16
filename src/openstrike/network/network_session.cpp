@@ -11,6 +11,8 @@ std::span<const unsigned char> as_payload(const std::vector<unsigned char>& byte
 {
     return std::span<const unsigned char>(bytes.data(), bytes.size());
 }
+
+constexpr std::size_t kMaxPendingClientChannelDatagrams = 32;
 }
 
 bool NetworkServer::start(std::uint16_t port)
@@ -85,8 +87,43 @@ void NetworkServer::poll(std::uint64_t tick)
             peer = &find_or_add_peer(packet.sender, tick);
             peer->last_received_sequence = packet.header.sequence;
             peer->last_received_tick = tick;
+            peer->signon_state = NetSignonState::Connected;
             const std::vector<unsigned char> payload = make_connect_accept_payload(peer->connection_id);
             send_packet(*peer, NetworkMessageType::ConnectAccept, as_payload(payload), tick);
+            const std::uint32_t player_count = static_cast<std::uint32_t>(clients_.size());
+            peer->channel.queue_message(make_signon_state_message(NetSignonStateMessage{
+                .state = NetSignonState::Connected,
+                .spawn_count = 1,
+                .num_server_players = player_count,
+            }));
+            peer->channel.queue_message(make_server_info_message(NetServerInfoMessage{
+                .server_count = 1,
+                .dedicated = true,
+                .max_clients = 64,
+                .max_classes = 1,
+                .player_slot = static_cast<std::int32_t>(peer->connection_id),
+            }));
+            peer->channel.queue_message(make_signon_state_message(NetSignonStateMessage{
+                .state = NetSignonState::New,
+                .spawn_count = 1,
+                .num_server_players = player_count,
+            }));
+            peer->channel.queue_message(make_signon_state_message(NetSignonStateMessage{
+                .state = NetSignonState::Prespawn,
+                .spawn_count = 1,
+                .num_server_players = player_count,
+            }));
+            peer->channel.queue_message(make_signon_state_message(NetSignonStateMessage{
+                .state = NetSignonState::Spawn,
+                .spawn_count = 1,
+                .num_server_players = player_count,
+            }));
+            peer->channel.queue_message(make_signon_state_message(NetSignonStateMessage{
+                .state = NetSignonState::Full,
+                .spawn_count = 1,
+                .num_server_players = player_count,
+            }));
+            send_channel(*peer, tick);
             continue;
         }
 
@@ -138,6 +175,27 @@ void NetworkServer::poll(std::uint64_t tick)
                 .payload = std::move(packet.payload),
             });
             break;
+        case NetworkMessageType::Channel:
+        {
+            NetChannelProcessResult channel_result = peer->channel.process_datagram(packet.payload);
+            if (!channel_result.accepted)
+            {
+                ++stats_.packets_dropped;
+                push_event(NetworkEvent{
+                    .type = NetworkEventType::PacketDropped,
+                    .remote = peer->address,
+                });
+                break;
+            }
+            const bool should_reply =
+                channel_result.needs_ack || !channel_result.messages.empty() || peer->channel.has_pending_reliable_data();
+            handle_channel_messages(*peer, std::move(channel_result.messages), tick);
+            if (should_reply)
+            {
+                send_channel(*peer, tick);
+            }
+            break;
+        }
         default:
             break;
         }
@@ -152,16 +210,16 @@ bool NetworkServer::send_text(const NetworkAddress& address, std::string_view te
         return false;
     }
 
-    const std::vector<unsigned char> payload = make_text_payload(text);
-    return send_packet(*peer, NetworkMessageType::Text, as_payload(payload), tick);
+    peer->channel.queue_message(make_string_command_message(text));
+    return send_channel(*peer, tick);
 }
 
 void NetworkServer::broadcast_text(std::string_view text, std::uint64_t tick)
 {
-    const std::vector<unsigned char> payload = make_text_payload(text);
     for (NetworkPeer& peer : clients_)
     {
-        send_packet(peer, NetworkMessageType::Text, as_payload(payload), tick);
+        peer.channel.queue_message(make_string_command_message(text));
+        send_channel(peer, tick);
     }
 }
 
@@ -173,14 +231,44 @@ bool NetworkServer::send_snapshot(const NetworkAddress& address, std::span<const
         return false;
     }
 
-    return send_packet(*peer, NetworkMessageType::Snapshot, payload, tick);
+    peer->channel.queue_message(make_packet_entities_message(NetPacketEntitiesMessage{
+        .max_entries = 2048,
+        .updated_entries = 1,
+        .entity_data = std::vector<unsigned char>(payload.begin(), payload.end()),
+    }));
+    return send_channel(*peer, tick);
 }
 
 void NetworkServer::broadcast_snapshot(std::span<const unsigned char> payload, std::uint64_t tick)
 {
     for (NetworkPeer& peer : clients_)
     {
-        send_packet(peer, NetworkMessageType::Snapshot, payload, tick);
+        peer.channel.queue_message(make_packet_entities_message(NetPacketEntitiesMessage{
+            .max_entries = 2048,
+            .updated_entries = 1,
+            .entity_data = std::vector<unsigned char>(payload.begin(), payload.end()),
+        }));
+        send_channel(peer, tick);
+    }
+}
+
+bool NetworkServer::send_message(const NetworkAddress& address, NetMessage message, std::uint64_t tick)
+{
+    NetworkPeer* peer = find_peer(address);
+    if (peer == nullptr)
+    {
+        return false;
+    }
+    peer->channel.queue_message(std::move(message));
+    return send_channel(*peer, tick);
+}
+
+void NetworkServer::broadcast_message(NetMessage message, std::uint64_t tick)
+{
+    for (NetworkPeer& peer : clients_)
+    {
+        peer.channel.queue_message(message);
+        send_channel(peer, tick);
     }
 }
 
@@ -228,6 +316,7 @@ NetworkPeer& NetworkServer::find_or_add_peer(const NetworkAddress& address, std:
     peer.address = address;
     peer.connection_id = next_connection_id_++;
     peer.last_received_tick = tick;
+    peer.channel.set_name("server:" + address.to_string());
     clients_.push_back(peer);
     NetworkPeer& stored = clients_.back();
     push_event(NetworkEvent{
@@ -261,6 +350,108 @@ bool NetworkServer::send_packet(NetworkPeer& peer, NetworkMessageType type, std:
     return true;
 }
 
+bool NetworkServer::send_channel(NetworkPeer& peer, std::uint64_t tick, bool force)
+{
+    bool sent_any = false;
+    const std::vector<std::vector<unsigned char>> datagrams = peer.channel.transmit(static_cast<double>(tick), force);
+    for (const std::vector<unsigned char>& datagram : datagrams)
+    {
+        sent_any = send_packet(peer, NetworkMessageType::Channel, datagram, tick) || sent_any;
+    }
+    return sent_any;
+}
+
+void NetworkServer::handle_channel_messages(NetworkPeer& peer, std::vector<NetMessage> messages, std::uint64_t tick)
+{
+    for (const NetMessage& message : messages)
+    {
+        if (message.kind == NetMessageKind::StringCommand)
+        {
+            if (const std::optional<std::string> text = read_string_command_message(message))
+            {
+                push_event(NetworkEvent{
+                    .type = NetworkEventType::TextReceived,
+                    .remote = peer.address,
+                    .connection_id = peer.connection_id,
+                    .tick = tick,
+                    .text = *text,
+                });
+            }
+            continue;
+        }
+        if (message.kind == NetMessageKind::Move)
+        {
+            if (const std::optional<UserCommandBatch> batch = read_move_message(message))
+            {
+                push_event(NetworkEvent{
+                    .type = NetworkEventType::UserCommandBatchReceived,
+                    .remote = peer.address,
+                    .connection_id = peer.connection_id,
+                    .tick = tick,
+                    .payload = message.payload,
+                    .user_commands = batch->commands,
+                    .num_backup_commands = batch->num_backup_commands,
+                    .num_new_commands = batch->num_new_commands,
+                });
+            }
+            else
+            {
+                push_event(NetworkEvent{
+                    .type = NetworkEventType::UserCommandReceived,
+                    .remote = peer.address,
+                    .connection_id = peer.connection_id,
+                    .tick = tick,
+                    .payload = message.payload,
+                });
+            }
+            continue;
+        }
+        if (message.kind == NetMessageKind::PacketEntities)
+        {
+            if (const std::optional<NetPacketEntitiesMessage> packet = read_packet_entities_message(message))
+            {
+                push_event(NetworkEvent{
+                    .type = NetworkEventType::SnapshotReceived,
+                    .remote = peer.address,
+                    .connection_id = peer.connection_id,
+                    .tick = tick,
+                    .payload = packet->entity_data,
+                });
+            }
+            continue;
+        }
+        if (message.kind == NetMessageKind::SignonState)
+        {
+            if (const std::optional<NetSignonStateMessage> signon = read_signon_state_message(message))
+            {
+                peer.signon_state = signon->state;
+                push_event(NetworkEvent{
+                    .type = NetworkEventType::SignonStateChanged,
+                    .remote = peer.address,
+                    .connection_id = peer.connection_id,
+                    .tick = tick,
+                    .signon_state = signon->state,
+                    .text = std::string(to_string(signon->state)),
+                });
+            }
+            continue;
+        }
+        if (message.kind == NetMessageKind::ServerInfo)
+        {
+            if (const std::optional<NetServerInfoMessage> info = read_server_info_message(message))
+            {
+                push_event(NetworkEvent{
+                    .type = NetworkEventType::ServerInfoReceived,
+                    .remote = peer.address,
+                    .connection_id = peer.connection_id,
+                    .tick = tick,
+                    .text = info->map_name,
+                });
+            }
+        }
+    }
+}
+
 void NetworkServer::push_event(NetworkEvent event)
 {
     events_.push_back(std::move(event));
@@ -286,6 +477,10 @@ bool NetworkClient::connect(const NetworkAddress& address, std::uint64_t tick)
 
     remote_ = address;
     state_ = NetworkConnectionState::Connecting;
+    signon_state_ = NetSignonState::Challenge;
+    channel_.reset();
+    channel_.set_name("client:" + address.to_string());
+    pending_channel_datagrams_.clear();
     const std::vector<unsigned char> payload = make_connect_payload("OpenStrike");
     return send_packet(NetworkMessageType::Connect, as_payload(payload), tick);
 }
@@ -310,6 +505,9 @@ void NetworkClient::disconnect(std::uint64_t tick)
     connection_id_ = 0;
     next_sequence_ = 1;
     last_received_sequence_ = 0;
+    signon_state_ = NetSignonState::None;
+    channel_.reset();
+    pending_channel_datagrams_.clear();
 }
 
 void NetworkClient::poll(std::uint64_t tick)
@@ -355,11 +553,36 @@ void NetworkClient::poll(std::uint64_t tick)
             {
                 connection_id_ = *accepted_id;
                 state_ = NetworkConnectionState::Connected;
+                signon_state_ = NetSignonState::Connected;
                 push_event(NetworkEvent{
                     .type = NetworkEventType::ConnectedToServer,
                     .remote = remote_,
                     .connection_id = connection_id_,
                 });
+                push_event(NetworkEvent{
+                    .type = NetworkEventType::SignonStateChanged,
+                    .remote = remote_,
+                    .connection_id = connection_id_,
+                    .tick = tick,
+                    .signon_state = signon_state_,
+                    .text = std::string(to_string(signon_state_)),
+                });
+                channel_.queue_message(make_client_info_message(NetClientInfoMessage{
+                    .server_count = 1,
+                    .friends_id = connection_id_,
+                    .friends_name = "OpenStrike",
+                }));
+                channel_.queue_message(make_signon_state_message(NetSignonStateMessage{
+                    .state = NetSignonState::Connected,
+                    .spawn_count = 1,
+                    .num_server_players = 0,
+                }));
+                send_channel(tick);
+                std::vector<std::vector<unsigned char>> pending = std::exchange(pending_channel_datagrams_, {});
+                for (const std::vector<unsigned char>& channel_payload : pending)
+                {
+                    process_channel_datagram(channel_payload, tick);
+                }
             }
             break;
         case NetworkMessageType::Disconnect:
@@ -387,6 +610,24 @@ void NetworkClient::poll(std::uint64_t tick)
                 .payload = std::move(packet.payload),
             });
             break;
+        case NetworkMessageType::Channel:
+        {
+            if (state_ != NetworkConnectionState::Connected)
+            {
+                if (state_ == NetworkConnectionState::Connecting &&
+                    pending_channel_datagrams_.size() < kMaxPendingClientChannelDatagrams)
+                {
+                    pending_channel_datagrams_.push_back(std::move(packet.payload));
+                }
+                else
+                {
+                    ++stats_.packets_dropped;
+                }
+                break;
+            }
+            process_channel_datagram(packet.payload, tick);
+            break;
+        }
         default:
             break;
         }
@@ -400,8 +641,8 @@ bool NetworkClient::send_text(std::string_view text, std::uint64_t tick)
         return false;
     }
 
-    const std::vector<unsigned char> payload = make_text_payload(text);
-    return send_packet(NetworkMessageType::Text, as_payload(payload), tick);
+    channel_.queue_message(make_string_command_message(text));
+    return send_channel(tick);
 }
 
 bool NetworkClient::send_user_command(std::span<const unsigned char> payload, std::uint64_t tick)
@@ -414,9 +655,36 @@ bool NetworkClient::send_user_command(std::span<const unsigned char> payload, st
     return send_packet(NetworkMessageType::UserCommand, payload, tick);
 }
 
+bool NetworkClient::send_user_commands(const UserCommandBatch& batch, std::uint64_t tick)
+{
+    if (state_ != NetworkConnectionState::Connected)
+    {
+        return false;
+    }
+
+    channel_.queue_message(make_move_message(batch));
+    return send_channel(tick);
+}
+
+bool NetworkClient::send_message(NetMessage message, std::uint64_t tick)
+{
+    if (state_ != NetworkConnectionState::Connected)
+    {
+        return false;
+    }
+
+    channel_.queue_message(std::move(message));
+    return send_channel(tick);
+}
+
 NetworkConnectionState NetworkClient::state() const
 {
     return state_;
+}
+
+NetSignonState NetworkClient::signon_state() const
+{
+    return signon_state_;
 }
 
 bool NetworkClient::is_connected() const
@@ -477,6 +745,125 @@ bool NetworkClient::send_packet(NetworkMessageType type, std::span<const unsigne
     return true;
 }
 
+bool NetworkClient::send_channel(std::uint64_t tick, bool force)
+{
+    bool sent_any = false;
+    const std::vector<std::vector<unsigned char>> datagrams = channel_.transmit(static_cast<double>(tick), force);
+    for (const std::vector<unsigned char>& datagram : datagrams)
+    {
+        sent_any = send_packet(NetworkMessageType::Channel, datagram, tick) || sent_any;
+    }
+    return sent_any;
+}
+
+void NetworkClient::process_channel_datagram(std::span<const unsigned char> payload, std::uint64_t tick)
+{
+    NetChannelProcessResult channel_result = channel_.process_datagram(payload);
+    if (!channel_result.accepted)
+    {
+        ++stats_.packets_dropped;
+        push_event(NetworkEvent{
+            .type = NetworkEventType::PacketDropped,
+            .remote = remote_,
+        });
+        return;
+    }
+
+    const bool should_reply =
+        channel_result.needs_ack || !channel_result.messages.empty() || channel_.has_pending_reliable_data();
+    handle_channel_messages(std::move(channel_result.messages), tick);
+    if (should_reply)
+    {
+        send_channel(tick);
+    }
+}
+
+void NetworkClient::handle_channel_messages(std::vector<NetMessage> messages, std::uint64_t tick)
+{
+    for (const NetMessage& message : messages)
+    {
+        if (message.kind == NetMessageKind::StringCommand)
+        {
+            if (const std::optional<std::string> text = read_string_command_message(message))
+            {
+                push_event(NetworkEvent{
+                    .type = NetworkEventType::TextReceived,
+                    .remote = remote_,
+                    .connection_id = connection_id_,
+                    .tick = tick,
+                    .text = *text,
+                });
+            }
+            continue;
+        }
+        if (message.kind == NetMessageKind::PacketEntities)
+        {
+            if (const std::optional<NetPacketEntitiesMessage> packet = read_packet_entities_message(message))
+            {
+                push_event(NetworkEvent{
+                    .type = NetworkEventType::SnapshotReceived,
+                    .remote = remote_,
+                    .connection_id = connection_id_,
+                    .tick = tick,
+                    .payload = packet->entity_data,
+                });
+            }
+            continue;
+        }
+        if (message.kind == NetMessageKind::SignonState)
+        {
+            if (const std::optional<NetSignonStateMessage> signon = read_signon_state_message(message))
+            {
+                signon_state_ = signon->state;
+                push_event(NetworkEvent{
+                    .type = NetworkEventType::SignonStateChanged,
+                    .remote = remote_,
+                    .connection_id = connection_id_,
+                    .tick = tick,
+                    .signon_state = signon_state_,
+                    .text = std::string(to_string(signon_state_)),
+                });
+            }
+            continue;
+        }
+        if (message.kind == NetMessageKind::ServerInfo)
+        {
+            if (const std::optional<NetServerInfoMessage> info = read_server_info_message(message))
+            {
+                push_event(NetworkEvent{
+                    .type = NetworkEventType::ServerInfoReceived,
+                    .remote = remote_,
+                    .connection_id = connection_id_,
+                    .tick = tick,
+                    .text = info->map_name,
+                });
+            }
+            continue;
+        }
+        if (message.kind == NetMessageKind::Disconnect)
+        {
+            disconnect(tick);
+            continue;
+        }
+        if (message.kind == NetMessageKind::Move)
+        {
+            if (const std::optional<UserCommandBatch> batch = read_move_message(message))
+            {
+                push_event(NetworkEvent{
+                    .type = NetworkEventType::UserCommandBatchReceived,
+                    .remote = remote_,
+                    .connection_id = connection_id_,
+                    .tick = tick,
+                    .payload = message.payload,
+                    .user_commands = batch->commands,
+                    .num_backup_commands = batch->num_backup_commands,
+                    .num_new_commands = batch->num_new_commands,
+                });
+            }
+        }
+    }
+}
+
 void NetworkClient::push_event(NetworkEvent event)
 {
     events_.push_back(std::move(event));
@@ -516,8 +903,14 @@ std::string_view to_string(NetworkEventType type)
         return "text_received";
     case NetworkEventType::UserCommandReceived:
         return "user_command_received";
+    case NetworkEventType::UserCommandBatchReceived:
+        return "user_command_batch_received";
     case NetworkEventType::SnapshotReceived:
         return "snapshot_received";
+    case NetworkEventType::SignonStateChanged:
+        return "signon_state_changed";
+    case NetworkEventType::ServerInfoReceived:
+        return "server_info_received";
     case NetworkEventType::PacketDropped:
         return "packet_dropped";
     case NetworkEventType::SocketError:

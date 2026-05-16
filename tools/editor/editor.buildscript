@@ -33,7 +33,7 @@ debug_info = ProgramDatabase
 generate_debug_info = true
 outdir = ../../bin/x64/Debug
 intdir = ../../build/obj/x64/Debug/OpenStrikeEditor
-postbuild = copy /Y ..\thirdparty\SDL3-3.4.4\lib\x64\SDL3.dll ..\bin\x64\Debug\SDL3.dll
+postbuild = if not exist ..\bin\x64\Debug\SDL3.dll copy /Y ..\thirdparty\SDL3-3.4.4\lib\x64\SDL3.dll ..\bin\x64\Debug\SDL3.dll
 if(posix)
 {
     outdir = ../../bin/posix/Debug
@@ -49,7 +49,7 @@ function_level_linking = true
 intrinsic_functions = true
 outdir = ../../bin/x64/Release
 intdir = ../../build/obj/x64/Release/OpenStrikeEditor
-postbuild = copy /Y ..\thirdparty\SDL3-3.4.4\lib\x64\SDL3.dll ..\bin\x64\Release\SDL3.dll
+postbuild = if not exist ..\bin\x64\Release\SDL3.dll copy /Y ..\thirdparty\SDL3-3.4.4\lib\x64\SDL3.dll ..\bin\x64\Release\SDL3.dll
 if(posix)
 {
     outdir = ../../bin/posix/Release

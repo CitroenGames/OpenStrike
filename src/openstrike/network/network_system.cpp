@@ -50,6 +50,16 @@ bool NetworkSystem::send_client_user_command(std::span<const unsigned char> payl
     return client_.send_user_command(payload, tick);
 }
 
+bool NetworkSystem::send_client_user_commands(const UserCommandBatch& batch, std::uint64_t tick)
+{
+    return client_.send_user_commands(batch, tick);
+}
+
+bool NetworkSystem::send_client_message(NetMessage message, std::uint64_t tick)
+{
+    return client_.send_message(std::move(message), tick);
+}
+
 bool NetworkSystem::send_server_snapshot(const NetworkAddress& address, std::span<const unsigned char> payload, std::uint64_t tick)
 {
     return server_.send_snapshot(address, payload, tick);
@@ -58,6 +68,16 @@ bool NetworkSystem::send_server_snapshot(const NetworkAddress& address, std::spa
 void NetworkSystem::broadcast_server_snapshot(std::span<const unsigned char> payload, std::uint64_t tick)
 {
     server_.broadcast_snapshot(payload, tick);
+}
+
+bool NetworkSystem::send_server_message(const NetworkAddress& address, NetMessage message, std::uint64_t tick)
+{
+    return server_.send_message(address, std::move(message), tick);
+}
+
+void NetworkSystem::broadcast_server_message(NetMessage message, std::uint64_t tick)
+{
+    server_.broadcast_message(std::move(message), tick);
 }
 
 NetworkServer& NetworkSystem::server()

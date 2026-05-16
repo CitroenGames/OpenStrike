@@ -4,6 +4,8 @@
 #include "openstrike/core/log.hpp"
 #include "openstrike/source/source_asset_store.hpp"
 #include "openstrike/source/source_model.hpp"
+#include "openstrike/world/source_displacements.hpp"
+#include "openstrike/world/source_static_props.hpp"
 
 #include <algorithm>
 #include <array>
@@ -45,7 +47,6 @@ constexpr std::size_t kModelsLump = 14;
 constexpr std::size_t kLeafBrushesLump = 17;
 constexpr std::size_t kBrushesLump = 18;
 constexpr std::size_t kBrushSidesLump = 19;
-constexpr std::size_t kGameLump = 35;
 constexpr std::size_t kPakFileLump = 40;
 constexpr std::size_t kTexDataStringDataLump = 43;
 constexpr std::size_t kTexDataStringTableLump = 44;
@@ -1208,245 +1209,6 @@ std::unordered_map<std::string, std::vector<unsigned char>> read_bsp_pakfile_ass
     return assets;
 }
 
-struct GameLumpData
-{
-    std::span<const unsigned char> bytes;
-    std::uint16_t version = 0;
-};
-
-std::uint32_t fourcc(std::string_view text)
-{
-    if (text.size() != 4)
-    {
-        return 0;
-    }
-
-    return static_cast<std::uint32_t>(static_cast<unsigned char>(text[0])) |
-           (static_cast<std::uint32_t>(static_cast<unsigned char>(text[1])) << 8U) |
-           (static_cast<std::uint32_t>(static_cast<unsigned char>(text[2])) << 16U) |
-           (static_cast<std::uint32_t>(static_cast<unsigned char>(text[3])) << 24U);
-}
-
-bool is_static_prop_game_lump_id(std::uint32_t id)
-{
-    return id == fourcc("sprp") || id == fourcc("prps");
-}
-
-std::optional<GameLumpData> find_static_prop_game_lump(const std::vector<unsigned char>& bytes)
-{
-    const BspLump game_lump = read_lump(bytes, kGameLump);
-    if (game_lump.length == 0)
-    {
-        return std::nullopt;
-    }
-
-    validate_lump_range(bytes, game_lump, "game");
-    std::span<const unsigned char> data(bytes.data() + game_lump.offset, game_lump.length);
-    if (data.size() < 4)
-    {
-        return std::nullopt;
-    }
-
-    const std::int32_t count = read_s32_le(data, 0);
-    if (count <= 0 || count > 4096)
-    {
-        return std::nullopt;
-    }
-
-    std::size_t cursor = 4;
-    for (std::int32_t index = 0; index < count; ++index)
-    {
-        if (cursor + 16 > data.size())
-        {
-            break;
-        }
-
-        const std::uint32_t id = read_u32_le(data, cursor);
-        const std::uint16_t flags = read_u16_le(data, cursor + 4);
-        const std::uint16_t version = read_u16_le(data, cursor + 6);
-        const std::uint32_t file_offset = read_u32_le(data, cursor + 8);
-        const std::uint32_t file_length = read_u32_le(data, cursor + 12);
-        cursor += 16;
-        if (!is_static_prop_game_lump_id(id))
-        {
-            continue;
-        }
-
-        if ((flags & 0x0001U) != 0)
-        {
-            log_warning("static prop game lump is compressed; skipping static props");
-            return std::nullopt;
-        }
-
-        const std::uint64_t begin = file_offset;
-        const std::uint64_t end = begin + file_length;
-        if (end > bytes.size() || end < begin)
-        {
-            log_warning("static prop game lump points outside the BSP file");
-            return std::nullopt;
-        }
-
-        return GameLumpData{
-            .bytes = std::span<const unsigned char>(bytes.data() + begin, file_length),
-            .version = version,
-        };
-    }
-
-    return std::nullopt;
-}
-
-std::string read_fixed_string(std::span<const unsigned char> bytes, std::size_t offset, std::size_t length)
-{
-    if (offset + length > bytes.size())
-    {
-        throw std::runtime_error("unexpected end of static prop lump");
-    }
-
-    const char* begin = reinterpret_cast<const char*>(bytes.data() + offset);
-    const char* end = begin + length;
-    const char* zero = std::find(begin, end, '\0');
-    std::string value(begin, zero);
-    normalize_slashes(value);
-    return value;
-}
-
-std::size_t static_prop_record_size(std::uint16_t version)
-{
-    switch (version)
-    {
-    case 4:
-        return 56;
-    case 5:
-        return 60;
-    case 6:
-        return 64;
-    case 7:
-    case 8:
-        return 68;
-    case 9:
-        return 72;
-    default:
-        return version >= 10 ? 76 : 0;
-    }
-}
-
-Vec3 read_vec3(std::span<const unsigned char> bytes, std::size_t offset)
-{
-    return Vec3{
-        read_f32_le(bytes, offset),
-        read_f32_le(bytes, offset + 4),
-        read_f32_le(bytes, offset + 8),
-    };
-}
-
-WorldProp read_static_prop_record(
-    std::span<const unsigned char> record,
-    std::uint16_t version,
-    const std::vector<std::string>& dictionary)
-{
-    WorldProp prop;
-    prop.kind = WorldPropKind::StaticProp;
-    prop.class_name = "static_prop";
-    prop.origin = read_vec3(record, 0);
-    prop.angles = read_vec3(record, 12);
-    const std::uint16_t prop_type = read_u16_le(record, 24);
-    if (prop_type < dictionary.size())
-    {
-        prop.model_path = dictionary[prop_type];
-    }
-    prop.solid = record[30];
-    prop.flags = record[31];
-    prop.skin = read_s32_le(record, 32);
-    prop.lighting_origin = read_vec3(record, 44);
-    if (version >= 7 && record.size() >= 68)
-    {
-        prop.color[0] = static_cast<float>(record[64]) / 255.0F;
-        prop.color[1] = static_cast<float>(record[65]) / 255.0F;
-        prop.color[2] = static_cast<float>(record[66]) / 255.0F;
-        prop.color[3] = static_cast<float>(record[67]) / 255.0F;
-    }
-    if (version >= 10 && record.size() >= 76)
-    {
-        prop.flags_ex = read_u32_le(record, 72);
-    }
-    return prop;
-}
-
-std::vector<WorldProp> read_static_props(const std::vector<unsigned char>& bytes)
-{
-    const std::optional<GameLumpData> lump = find_static_prop_game_lump(bytes);
-    if (!lump)
-    {
-        return {};
-    }
-
-    std::vector<WorldProp> props;
-    try
-    {
-        std::size_t cursor = 0;
-        const auto read_count = [&](std::string_view label) -> std::int32_t {
-            if (cursor + 4 > lump->bytes.size())
-            {
-                throw std::runtime_error("static prop " + std::string(label) + " count is truncated");
-            }
-            const std::int32_t count = read_s32_le(lump->bytes, cursor);
-            cursor += 4;
-            if (count < 0 || count > 1'000'000)
-            {
-                throw std::runtime_error("static prop " + std::string(label) + " count is invalid");
-            }
-            return count;
-        };
-
-        const std::int32_t dictionary_count = read_count("dictionary");
-        std::vector<std::string> dictionary;
-        dictionary.reserve(static_cast<std::size_t>(dictionary_count));
-        for (std::int32_t index = 0; index < dictionary_count; ++index)
-        {
-            dictionary.push_back(read_fixed_string(lump->bytes, cursor, 128));
-            cursor += 128;
-        }
-
-        const std::int32_t leaf_count = read_count("leaf");
-        const std::uint64_t leaf_bytes = static_cast<std::uint64_t>(leaf_count) * 2U;
-        if (cursor + leaf_bytes > lump->bytes.size())
-        {
-            throw std::runtime_error("static prop leaf list is truncated");
-        }
-        cursor += static_cast<std::size_t>(leaf_bytes);
-
-        const std::int32_t prop_count = read_count("instance");
-        const std::size_t record_size = static_prop_record_size(lump->version);
-        if (record_size == 0)
-        {
-            log_warning("unsupported static prop game lump version {}", lump->version);
-            return {};
-        }
-
-        props.reserve(static_cast<std::size_t>(prop_count));
-        for (std::int32_t index = 0; index < prop_count; ++index)
-        {
-            if (cursor + record_size > lump->bytes.size())
-            {
-                throw std::runtime_error("static prop instance list is truncated");
-            }
-            WorldProp prop = read_static_prop_record(lump->bytes.subspan(cursor, record_size), lump->version, dictionary);
-            cursor += record_size;
-            if (!prop.model_path.empty())
-            {
-                props.push_back(std::move(prop));
-            }
-        }
-    }
-    catch (const std::exception& error)
-    {
-        log_warning("failed to parse static props: {}", error.what());
-        props.clear();
-    }
-
-    return props;
-}
-
 BspLightmapData read_bsp_lightmap_data(const std::vector<unsigned char>& bytes)
 {
     BspLightmapData data;
@@ -1858,6 +1620,16 @@ WorldMeshVertex make_world_vertex(
     return vertex;
 }
 
+Vec2 vec2_bilerp(Vec2 c0, Vec2 c1, Vec2 c2, Vec2 c3, float row, float column)
+{
+    return {
+        (c0.x * (1.0F - row) * (1.0F - column)) + (c1.x * row * (1.0F - column)) + (c2.x * row * column) +
+            (c3.x * (1.0F - row) * column),
+        (c0.y * (1.0F - row) * (1.0F - column)) + (c1.y * row * (1.0F - column)) + (c2.y * row * column) +
+            (c3.y * (1.0F - row) * column),
+    };
+}
+
 std::uint32_t material_index_for_texinfo(
     WorldMesh& mesh,
     std::vector<RenderMeshChunk>& chunks,
@@ -2153,6 +1925,100 @@ void append_collision_triangle(
     triangle.surface_flags = surface_flags;
     triangle.contents = contents;
     mesh.collision_triangles.push_back(triangle);
+}
+
+void append_displacement_surface(
+    WorldMesh& mesh,
+    RenderMeshChunk* render_chunk,
+    const SourceDisplacementSurface& surface,
+    const BspTexInfo& texinfo,
+    const WorldMaterial* material,
+    const BspFace& face,
+    const FaceLightmapPlacement* placement,
+    const WorldLightmapAtlas& atlas,
+    std::uint32_t surface_flags,
+    bool collide_surface)
+{
+    for (const SourceDisplacementVertex& vertex : surface.vertices)
+    {
+        include_bounds(mesh, vertex.position);
+    }
+
+    if (render_chunk != nullptr && material != nullptr)
+    {
+        std::array<Vec2, 4> corner_texcoords{};
+        std::array<Vec2, 4> corner_lightmap_texcoords{};
+        for (std::size_t index = 0; index < surface.corners.size(); ++index)
+        {
+            corner_texcoords[index] = texture_coordinate(surface.corners[index], texinfo, *material);
+            if (placement != nullptr && placement->valid && atlas.has_baked_samples)
+            {
+                corner_lightmap_texcoords[index] = lightmap_coordinate(surface.corners[index], texinfo, face, *placement, atlas);
+            }
+        }
+
+        const std::uint32_t first_vertex = static_cast<std::uint32_t>(render_chunk->vertices.size());
+        render_chunk->vertices.reserve(render_chunk->vertices.size() + surface.vertices.size());
+        for (const SourceDisplacementVertex& source_vertex : surface.vertices)
+        {
+            WorldMeshVertex vertex;
+            vertex.position = source_vertex.position;
+            vertex.normal = source_vertex.normal;
+            vertex.texcoord = vec2_bilerp(corner_texcoords[0],
+                corner_texcoords[1],
+                corner_texcoords[2],
+                corner_texcoords[3],
+                source_vertex.row_fraction,
+                source_vertex.column_fraction);
+            if (placement != nullptr && placement->valid && atlas.has_baked_samples)
+            {
+                vertex.lightmap_texcoord = vec2_bilerp(corner_lightmap_texcoords[0],
+                    corner_lightmap_texcoords[1],
+                    corner_lightmap_texcoords[2],
+                    corner_lightmap_texcoords[3],
+                    source_vertex.row_fraction,
+                    source_vertex.column_fraction);
+                vertex.lightmap_weight = 1.0F;
+            }
+            render_chunk->vertices.push_back(vertex);
+        }
+
+        render_chunk->indices.reserve(render_chunk->indices.size() + surface.indices.size());
+        for (const std::uint32_t source_index : surface.indices)
+        {
+            if (source_index < surface.vertices.size())
+            {
+                render_chunk->indices.push_back(first_vertex + source_index);
+            }
+        }
+    }
+
+    if (!collide_surface)
+    {
+        return;
+    }
+
+    const std::uint32_t contents = surface.contents != 0 ? surface.contents : kContentsSolid;
+    for (std::size_t index = 0; index + 2 < surface.indices.size(); index += 3)
+    {
+        const std::uint32_t ia = surface.indices[index + 0];
+        const std::uint32_t ib = surface.indices[index + 1];
+        const std::uint32_t ic = surface.indices[index + 2];
+        if (ia >= surface.vertices.size() || ib >= surface.vertices.size() || ic >= surface.vertices.size())
+        {
+            continue;
+        }
+
+        const Vec3 a = surface.vertices[ia].position;
+        const Vec3 b = surface.vertices[ib].position;
+        const Vec3 c = surface.vertices[ic].position;
+        const Vec3 area = cross(b - a, c - a);
+        if (length(area) <= 0.001F)
+        {
+            continue;
+        }
+        append_collision_triangle(mesh, a, b, c, normalize(area), surface_flags, contents);
+    }
 }
 
 std::size_t append_bsp_brush_collision(
@@ -2620,6 +2486,7 @@ WorldMesh build_bsp_world_mesh(const std::vector<unsigned char>& bytes)
     const std::vector<BspTexInfo> texinfo = read_bsp_texinfo(bytes);
     const BspLightmapData lightmap_data = read_bsp_lightmap_data(bytes);
     const std::vector<BspFace> faces = read_bsp_faces(bytes, lightmap_data.prefer_hdr_faces);
+    const std::vector<SourceBspDisplacement> displacements = read_source_bsp_displacements(bytes);
     BspLightmapBuildResult lightmaps = build_lightmap_atlas(faces, texinfo, lightmap_data);
     const bool has_brush_collision_lumps =
         read_lump(bytes, kPlanesLump).length > 0 && read_lump(bytes, kBrushesLump).length > 0 && read_lump(bytes, kBrushSidesLump).length > 0;
@@ -2649,6 +2516,41 @@ WorldMesh build_bsp_world_mesh(const std::vector<unsigned char>& bytes)
         std::optional<std::vector<Vec3>> polygon = polygon_for_face(face, vertices, edges, surfedges);
         if (!polygon || polygon->size() < 3)
         {
+            ++skipped_faces;
+            continue;
+        }
+
+        if (const SourceBspDisplacement* displacement = source_displacement_by_index(displacements, face.dispinfo))
+        {
+            if (polygon->size() == 4)
+            {
+                if (std::optional<SourceDisplacementSurface> surface = build_source_displacement_surface(*displacement, *polygon))
+                {
+                    const BspTexInfo fallback_texinfo{};
+                    const BspTexInfo& resolved_texinfo = face_texinfo != nullptr ? *face_texinfo : fallback_texinfo;
+                    RenderMeshChunk* render_chunk = nullptr;
+                    const WorldMaterial* material = nullptr;
+                    if (render_surface)
+                    {
+                        const std::uint32_t material_index = material_index_for_texinfo(mesh, render_chunks, texdata_to_material, face_texinfo, texdata);
+                        render_chunk = &render_chunks[material_index];
+                        material = &mesh.materials[material_index];
+                    }
+                    const FaceLightmapPlacement* placement =
+                        face_index < lightmaps.placements.size() && lightmaps.placements[face_index].valid ? &lightmaps.placements[face_index] : nullptr;
+                    append_displacement_surface(mesh,
+                        render_chunk,
+                        *surface,
+                        resolved_texinfo,
+                        material,
+                        face,
+                        placement,
+                        mesh.lightmap_atlas,
+                        surface_flags,
+                        collide_surface);
+                    continue;
+                }
+            }
             ++skipped_faces;
             continue;
         }
@@ -2771,7 +2673,7 @@ LoadedWorld load_source_bsp(
     world.spawn_points = collect_spawn_points(entities);
     world.lights = collect_lights(entities);
     world.embedded_assets = read_bsp_pakfile_assets(bytes);
-    world.props = read_static_props(bytes);
+    world.props = read_source_static_props(bytes);
     std::vector<WorldProp> entity_props = collect_entity_props(entities);
     world.props.insert(world.props.end(), std::make_move_iterator(entity_props.begin()), std::make_move_iterator(entity_props.end()));
     SourceAssetStore source_assets(filesystem, &world.embedded_assets);

@@ -14,9 +14,15 @@
 #include "openstrike/game/team_system.hpp"
 #include "openstrike/material/material_system.hpp"
 #include "openstrike/nav/navigation.hpp"
+#include "openstrike/network/network_channel.hpp"
+#include "openstrike/network/network_messages.hpp"
+#include "openstrike/network/network_prediction.hpp"
 #include "openstrike/network/network_protocol.hpp"
+#include "openstrike/network/network_replication.hpp"
 #include "openstrike/network/network_session.hpp"
+#include "openstrike/network/network_socket.hpp"
 #include "openstrike/network/network_stream.hpp"
+#include "openstrike/network/user_command.hpp"
 #include "openstrike/physics/physics_world.hpp"
 #include "openstrike/renderer/null_renderer.hpp"
 #include "openstrike/renderer/world_material_shader.hpp"
@@ -41,6 +47,7 @@
 #include <optional>
 #include <string>
 #include <thread>
+#include <variant>
 #include <vector>
 
 namespace
@@ -406,15 +413,24 @@ void write_static_prop_bsp(const std::filesystem::path& path, const std::string&
     write_vec3_le(static_prop_data, record + 0, {100.0F, 200.0F, 64.0F});
     write_vec3_le(static_prop_data, record + 12, {0.0F, 90.0F, 0.0F});
     write_u16_le(static_prop_data, record + 24, 0);
+    write_u16_le(static_prop_data, record + 26, 0);
+    write_u16_le(static_prop_data, record + 28, 1);
     static_prop_data[record + 30] = solid;
     static_prop_data[record + 31] = 0;
     write_u32_le(static_prop_data, record + 32, 2);
+    write_f32_le(static_prop_data, record + 36, 128.0F);
+    write_f32_le(static_prop_data, record + 40, 1024.0F);
     write_vec3_le(static_prop_data, record + 44, {100.0F, 200.0F, 80.0F});
-    write_f32_le(static_prop_data, record + 56, 1.0F);
+    write_f32_le(static_prop_data, record + 56, 1.25F);
+    static_prop_data[record + 60] = 1;
+    static_prop_data[record + 61] = 3;
+    static_prop_data[record + 62] = 2;
+    static_prop_data[record + 63] = 4;
     static_prop_data[record + 64] = 64;
     static_prop_data[record + 65] = 128;
     static_prop_data[record + 66] = 255;
     static_prop_data[record + 67] = 200;
+    static_prop_data[record + 68] = 1;
     write_u32_le(static_prop_data, record + 72, 4);
 
     const std::size_t game_lump_offset = bytes.size();
@@ -458,7 +474,8 @@ void write_square_bsp(
     const std::filesystem::path& path,
     const std::string& entities,
     std::uint32_t surface_flags = 0,
-    TestLightmapMode lightmap_mode = TestLightmapMode::None)
+    TestLightmapMode lightmap_mode = TestLightmapMode::None,
+    bool with_displacement = false)
 {
     constexpr std::size_t lump_count = 64;
     constexpr std::size_t header_size = 8 + (lump_count * 16) + 4;
@@ -547,7 +564,7 @@ void write_square_bsp(
     write_u32_le(faces, 4, 0);
     write_s16_le(faces, 8, 4);
     write_s16_le(faces, 10, 0);
-    write_s16_le(faces, 12, -1);
+    write_s16_le(faces, 12, with_displacement ? 0 : -1);
     std::fill(faces.begin() + 16, faces.begin() + 20, static_cast<unsigned char>(0xFF));
     if (lightmap_mode != TestLightmapMode::None)
     {
@@ -560,6 +577,50 @@ void write_square_bsp(
     }
     write_f32_le(faces, 24, 128.0F * 128.0F);
     append_lump(7, faces);
+
+    if (with_displacement)
+    {
+        constexpr std::uint32_t displacement_power = 2;
+        constexpr std::uint32_t displacement_grid_size = (1U << displacement_power) + 1U;
+        constexpr std::uint32_t displacement_vertex_count = displacement_grid_size * displacement_grid_size;
+        constexpr std::uint32_t displacement_triangle_count = (1U << displacement_power) * (1U << displacement_power) * 2U;
+
+        std::vector<unsigned char> dispinfo(176, 0);
+        write_vec3_le(dispinfo, 0, points[0]);
+        write_s32_le(dispinfo, 12, 0);
+        write_s32_le(dispinfo, 16, 0);
+        write_s32_le(dispinfo, 20, static_cast<std::int32_t>(displacement_power));
+        write_s32_le(dispinfo, 24, 0);
+        write_f32_le(dispinfo, 28, 45.0F);
+        write_u32_le(dispinfo, 32, 0x00000001U);
+        write_u16_le(dispinfo, 36, 0);
+        for (std::size_t word = 0; word < 10; ++word)
+        {
+            write_u32_le(dispinfo, 136 + (word * 4), 0xFFFFFFFFU);
+        }
+        append_lump(26, dispinfo);
+
+        std::vector<unsigned char> dispverts(displacement_vertex_count * 20U, 0);
+        for (std::uint32_t row = 0; row < displacement_grid_size; ++row)
+        {
+            for (std::uint32_t column = 0; column < displacement_grid_size; ++column)
+            {
+                const std::uint32_t index = (row * displacement_grid_size) + column;
+                const std::size_t offset = static_cast<std::size_t>(index) * 20U;
+                write_vec3_le(dispverts, offset, {0.0F, 0.0F, 1.0F});
+                write_f32_le(dispverts, offset + 12, row == 2 && column == 2 ? 16.0F : 0.0F);
+                write_f32_le(dispverts, offset + 16, static_cast<float>(index) / static_cast<float>(displacement_vertex_count - 1U));
+            }
+        }
+        append_lump(33, dispverts);
+
+        std::vector<unsigned char> disptris(displacement_triangle_count * 2U, 0);
+        for (std::uint32_t index = 0; index < displacement_triangle_count; ++index)
+        {
+            write_u16_le(disptris, static_cast<std::size_t>(index) * 2U, 1U);
+        }
+        append_lump(48, disptris);
+    }
 
     if (lightmap_mode != TestLightmapMode::None)
     {
@@ -1285,6 +1346,387 @@ void test_network_stream_and_protocol_roundtrip()
     REQUIRE(!openstrike::decode_network_packet(corrupt).has_value());
 }
 
+void test_network_user_command_delta_batch_and_input_roundtrip()
+{
+    openstrike::UserCommand base;
+    base.command_number = 10;
+    base.tick_count = 100;
+    base.viewangles = {0.0F, 90.0F, 0.0F};
+    base.forwardmove = 0.25F;
+    base.random_seed = 12345;
+
+    openstrike::UserCommand command = base;
+    command.command_number = 11;
+    command.tick_count = 101;
+    command.viewangles = {-4.0F, 100.0F, 0.0F};
+    command.aimdirection = {1.0F, 0.0F, 0.0F};
+    command.forwardmove = 1.0F;
+    command.sidemove = -0.5F;
+    command.buttons = openstrike::UserCommandButtonForward | openstrike::UserCommandButtonJump | openstrike::UserCommandButtonSpeed;
+    command.weaponselect = 2;
+    command.random_seed = 12346;
+    command.mousedx = 12;
+    command.mousedy = -5;
+
+    const std::vector<unsigned char> delta = openstrike::encode_user_command_delta(command, &base);
+    const std::optional<openstrike::UserCommand> decoded = openstrike::decode_user_command_delta(delta, &base);
+    REQUIRE(decoded.has_value());
+    REQUIRE(decoded->command_number == command.command_number);
+    REQUIRE(decoded->tick_count == command.tick_count);
+    REQUIRE(decoded->viewangles.y == command.viewangles.y);
+    REQUIRE(decoded->aimdirection.x == command.aimdirection.x);
+    REQUIRE(decoded->forwardmove == command.forwardmove);
+    REQUIRE(decoded->sidemove == command.sidemove);
+    REQUIRE(decoded->buttons == command.buttons);
+    REQUIRE(decoded->weaponselect == command.weaponselect);
+    REQUIRE(decoded->random_seed == command.random_seed);
+    REQUIRE(decoded->mousedx == command.mousedx);
+    REQUIRE(decoded->mousedy == command.mousedy);
+
+    std::vector<unsigned char> corrupt = delta;
+    corrupt.back() ^= 0x5AU;
+    REQUIRE(!openstrike::decode_user_command_delta(corrupt, &base).has_value());
+
+    openstrike::UserCommandBatch batch;
+    batch.num_backup_commands = 1;
+    batch.num_new_commands = 1;
+    batch.commands = {base, command};
+    const std::vector<unsigned char> batch_bytes = openstrike::encode_user_command_batch(batch);
+    const std::optional<openstrike::UserCommandBatch> decoded_batch = openstrike::decode_user_command_batch(batch_bytes);
+    REQUIRE(decoded_batch.has_value());
+    REQUIRE(decoded_batch->num_backup_commands == 1);
+    REQUIRE(decoded_batch->num_new_commands == 1);
+    REQUIRE(decoded_batch->commands.size() == 2);
+    REQUIRE(decoded_batch->commands[1].command_number == command.command_number);
+    REQUIRE(decoded_batch->commands[1].buttons == command.buttons);
+
+    const openstrike::InputCommand movement = openstrike::movement_input_from_user_command(command);
+    REQUIRE(movement.jump);
+    REQUIRE(movement.walk);
+    REQUIRE(movement.move_y == command.forwardmove);
+    REQUIRE(movement.move_x == command.sidemove);
+}
+
+void test_network_messages_round_trip_source_families()
+{
+    openstrike::UserCommand command;
+    command.command_number = 7;
+    command.tick_count = 64;
+    command.forwardmove = 1.0F;
+    command.buttons = openstrike::UserCommandButtonForward;
+
+    openstrike::UserCommandBatch batch;
+    batch.num_new_commands = 1;
+    batch.commands.push_back(command);
+
+    openstrike::NetStringTableMessage table;
+    table.table_id = 1;
+    table.name = "userinfo";
+    table.max_entries = 64;
+    table.revision = 2;
+    table.entries.push_back(openstrike::NetStringTableEntry{.index = 3, .value = "player", .user_data = {1, 2, 3, 4}});
+
+    const std::vector<unsigned char> entity_payload{0x10U, 0x20U, 0x30U, 0x40U};
+    std::vector<openstrike::NetMessage> messages;
+    messages.push_back(openstrike::make_signon_state_message(openstrike::NetSignonStateMessage{
+        .state = openstrike::NetSignonState::Full,
+        .spawn_count = 2,
+        .num_server_players = 1,
+        .map_name = "de_dust2",
+    }));
+    messages.push_back(openstrike::make_server_info_message(openstrike::NetServerInfoMessage{
+        .server_count = 2,
+        .dedicated = true,
+        .max_clients = 32,
+        .max_classes = 128,
+        .player_slot = 4,
+        .map_name = "de_dust2",
+    }));
+    messages.push_back(openstrike::make_create_string_table_message(table));
+    table.revision = 3;
+    messages.push_back(openstrike::make_update_string_table_message(table));
+    messages.push_back(openstrike::make_move_message(batch));
+    messages.push_back(openstrike::make_packet_entities_message(openstrike::NetPacketEntitiesMessage{
+        .max_entries = 2048,
+        .updated_entries = 1,
+        .is_delta = true,
+        .delta_from = 63,
+        .entity_data = entity_payload,
+    }));
+
+    const std::vector<unsigned char> encoded = openstrike::encode_net_messages(messages);
+    const std::optional<std::vector<openstrike::NetMessage>> decoded = openstrike::decode_net_messages(encoded);
+    REQUIRE(decoded.has_value());
+    REQUIRE(decoded->size() == messages.size());
+
+    const std::optional<openstrike::NetSignonStateMessage> signon = openstrike::read_signon_state_message((*decoded)[0]);
+    REQUIRE(signon.has_value());
+    REQUIRE(signon->state == openstrike::NetSignonState::Full);
+    REQUIRE(signon->map_name == "de_dust2");
+
+    const std::optional<openstrike::NetServerInfoMessage> server_info = openstrike::read_server_info_message((*decoded)[1]);
+    REQUIRE(server_info.has_value());
+    REQUIRE(server_info->max_clients == 32);
+    REQUIRE(server_info->map_name == "de_dust2");
+
+    const std::optional<openstrike::NetStringTableMessage> created_table = openstrike::read_string_table_message((*decoded)[2]);
+    REQUIRE(created_table.has_value());
+    REQUIRE(created_table->name == "userinfo");
+    REQUIRE(created_table->entries.size() == 1);
+    REQUIRE(created_table->entries[0].user_data == std::vector<unsigned char>({1, 2, 3, 4}));
+
+    const std::optional<openstrike::UserCommandBatch> decoded_move = openstrike::read_move_message((*decoded)[4]);
+    REQUIRE(decoded_move.has_value());
+    REQUIRE(decoded_move->commands.size() == 1);
+    REQUIRE(decoded_move->commands[0].command_number == 7);
+
+    const std::optional<openstrike::NetPacketEntitiesMessage> entities = openstrike::read_packet_entities_message((*decoded)[5]);
+    REQUIRE(entities.has_value());
+    REQUIRE(entities->is_delta);
+    REQUIRE(entities->delta_from == 63);
+    REQUIRE(entities->entity_data == entity_payload);
+}
+
+void test_network_channel_reliable_fragmentation_and_ack()
+{
+    openstrike::NetChannel sender("sender");
+    openstrike::NetChannel receiver("receiver");
+    openstrike::NetChannelConfig config;
+    config.max_routable_payload_bytes = 96;
+    config.fragment_payload_bytes = 64;
+    sender.set_config(config);
+    receiver.set_config(config);
+
+    const std::string command(512, 'x');
+    sender.queue_message(openstrike::make_string_command_message(command));
+    const std::vector<std::vector<unsigned char>> datagrams = sender.transmit(0.0, true);
+    REQUIRE(datagrams.size() > 1);
+    REQUIRE(sender.has_pending_reliable_data());
+
+    std::vector<openstrike::NetMessage> received_messages;
+    for (const std::vector<unsigned char>& datagram : datagrams)
+    {
+        openstrike::NetChannelProcessResult result = receiver.process_datagram(datagram);
+        REQUIRE(result.accepted);
+        received_messages.insert(received_messages.end(), result.messages.begin(), result.messages.end());
+    }
+
+    REQUIRE(received_messages.size() == 1);
+    const std::optional<std::string> decoded_command = openstrike::read_string_command_message(received_messages.front());
+    REQUIRE(decoded_command.has_value());
+    REQUIRE(*decoded_command == command);
+
+    const std::vector<std::vector<unsigned char>> ack_datagrams = receiver.transmit(1.0, true);
+    REQUIRE(!ack_datagrams.empty());
+    for (const std::vector<unsigned char>& datagram : ack_datagrams)
+    {
+        const openstrike::NetChannelProcessResult result = sender.process_datagram(datagram);
+        REQUIRE(result.accepted);
+    }
+    REQUIRE(!sender.has_pending_reliable_data());
+}
+
+void test_network_channel_reassembles_reordered_fragments()
+{
+    openstrike::NetChannel sender("sender");
+    openstrike::NetChannel receiver("receiver");
+    openstrike::NetChannelConfig config;
+    config.max_routable_payload_bytes = 96;
+    config.fragment_payload_bytes = 64;
+    sender.set_config(config);
+    receiver.set_config(config);
+
+    const std::string command(512, 'r');
+    sender.queue_message(openstrike::make_string_command_message(command));
+    const std::vector<std::vector<unsigned char>> datagrams = sender.transmit(0.0, true);
+    REQUIRE(datagrams.size() > 1);
+
+    std::vector<openstrike::NetMessage> received_messages;
+    for (auto it = datagrams.rbegin(); it != datagrams.rend(); ++it)
+    {
+        openstrike::NetChannelProcessResult result = receiver.process_datagram(*it);
+        REQUIRE(result.accepted);
+        received_messages.insert(received_messages.end(), result.messages.begin(), result.messages.end());
+    }
+
+    REQUIRE(received_messages.size() == 1);
+    const std::optional<std::string> decoded_command = openstrike::read_string_command_message(received_messages.front());
+    REQUIRE(decoded_command.has_value());
+    REQUIRE(*decoded_command == command);
+}
+
+void test_network_channel_reliable_retransmit_repairs_lost_ack()
+{
+    openstrike::NetChannel sender("sender");
+    openstrike::NetChannel receiver("receiver");
+
+    sender.queue_message(openstrike::make_string_command_message("first"));
+    const std::vector<std::vector<unsigned char>> first_datagrams = sender.transmit(0.0, true);
+    REQUIRE(first_datagrams.size() == 1);
+
+    openstrike::NetChannelProcessResult first_result = receiver.process_datagram(first_datagrams.front());
+    REQUIRE(first_result.accepted);
+    REQUIRE(first_result.messages.size() == 1);
+    const std::optional<std::string> first_command = openstrike::read_string_command_message(first_result.messages.front());
+    REQUIRE(first_command.has_value());
+    REQUIRE(*first_command == "first");
+
+    sender.queue_message(openstrike::make_string_command_message("second"));
+    const std::vector<std::vector<unsigned char>> retransmit_datagrams = sender.transmit(1.0, true);
+    REQUIRE(retransmit_datagrams.size() == 1);
+    openstrike::NetChannelProcessResult duplicate_result = receiver.process_datagram(retransmit_datagrams.front());
+    REQUIRE(duplicate_result.accepted);
+    REQUIRE(duplicate_result.needs_ack);
+    REQUIRE(duplicate_result.messages.empty());
+
+    const std::vector<std::vector<unsigned char>> ack_datagrams = receiver.transmit(2.0, true);
+    REQUIRE(!ack_datagrams.empty());
+    for (const std::vector<unsigned char>& datagram : ack_datagrams)
+    {
+        REQUIRE(sender.process_datagram(datagram).accepted);
+    }
+    REQUIRE(sender.has_pending_reliable_data());
+
+    const std::vector<std::vector<unsigned char>> second_datagrams = sender.transmit(3.0, true);
+    REQUIRE(second_datagrams.size() == 1);
+    openstrike::NetChannelProcessResult second_result = receiver.process_datagram(second_datagrams.front());
+    REQUIRE(second_result.accepted);
+    REQUIRE(second_result.messages.size() == 1);
+    const std::optional<std::string> second_command = openstrike::read_string_command_message(second_result.messages.front());
+    REQUIRE(second_command.has_value());
+    REQUIRE(*second_command == "second");
+}
+
+void test_network_channel_rejects_excessive_fragment_count()
+{
+    openstrike::NetworkByteWriter writer;
+    writer.write_u32(0x4E414843U);
+    writer.write_u16(1);
+    writer.write_u32(1);
+    writer.write_u32(0);
+    writer.write_u32(0);
+    writer.write_u32(0);
+    writer.write_u8(openstrike::NetChannelPacketSplit);
+    writer.write_u8(0);
+    writer.write_u16(1);
+    writer.write_u16(65535);
+    writer.write_u16(0);
+    writer.write_u32(1);
+    writer.write_u32(0);
+
+    openstrike::NetChannel receiver("receiver");
+    const openstrike::NetChannelProcessResult result = receiver.process_datagram(writer.take_bytes());
+    REQUIRE(!result.accepted);
+    REQUIRE(receiver.stats().packets_dropped == 1);
+}
+
+void test_network_snapshot_delta_round_trip_and_apply()
+{
+    openstrike::NetworkClassRegistry registry;
+    REQUIRE(registry.register_class(openstrike::NetworkClassDefinition{
+        .class_id = 1,
+        .class_name = "player",
+        .fields = {
+            {"health", openstrike::NetworkFieldType::Int32},
+            {"origin", openstrike::NetworkFieldType::Vec3},
+            {"weapon", openstrike::NetworkFieldType::String},
+        },
+    }));
+    REQUIRE(!registry.register_class(openstrike::NetworkClassDefinition{.class_id = 1, .class_name = "duplicate"}));
+    REQUIRE(registry.find(1) != nullptr);
+    REQUIRE(registry.crc() != 0);
+
+    openstrike::NetworkSnapshot from;
+    from.tick = 10;
+    from.entities.push_back(openstrike::NetworkEntityState{
+        .entity_id = 1,
+        .class_id = 1,
+        .serial = 100,
+        .fields = {std::int32_t{100}, openstrike::Vec3{1.0F, 2.0F, 3.0F}, std::string("ak47")},
+    });
+    from.entities.push_back(openstrike::NetworkEntityState{
+        .entity_id = 2,
+        .class_id = 1,
+        .serial = 200,
+        .fields = {std::int32_t{50}, openstrike::Vec3{4.0F, 5.0F, 6.0F}, std::string("m4a1")},
+    });
+
+    openstrike::NetworkSnapshot to;
+    to.tick = 11;
+    to.entities.push_back(openstrike::NetworkEntityState{
+        .entity_id = 1,
+        .class_id = 1,
+        .serial = 100,
+        .fields = {std::int32_t{87}, openstrike::Vec3{8.0F, 2.0F, 3.0F}, std::string("ak47")},
+    });
+    to.entities.push_back(openstrike::NetworkEntityState{
+        .entity_id = 3,
+        .class_id = 1,
+        .serial = 300,
+        .fields = {std::int32_t{100}, openstrike::Vec3{9.0F, 9.0F, 9.0F}, std::string("awp")},
+    });
+
+    const std::vector<unsigned char> snapshot_bytes = openstrike::encode_network_snapshot(from);
+    const std::optional<openstrike::NetworkSnapshot> decoded_snapshot = openstrike::decode_network_snapshot(snapshot_bytes);
+    REQUIRE(decoded_snapshot.has_value());
+    REQUIRE(decoded_snapshot->tick == from.tick);
+    REQUIRE(decoded_snapshot->entities.size() == 2);
+    REQUIRE(std::get<std::int32_t>(decoded_snapshot->entities[0].fields[0]) == 100);
+
+    const openstrike::NetworkSnapshotDelta delta = openstrike::make_network_snapshot_delta(from, to);
+    REQUIRE(delta.from_tick == 10);
+    REQUIRE(delta.to_tick == 11);
+    REQUIRE(delta.changed_entities.size() == 2);
+    REQUIRE(delta.removed_entities.size() == 1);
+    REQUIRE(delta.removed_entities[0] == 2);
+
+    const std::vector<unsigned char> delta_bytes = openstrike::encode_network_snapshot_delta(delta);
+    const std::optional<openstrike::NetworkSnapshotDelta> decoded_delta = openstrike::decode_network_snapshot_delta(delta_bytes);
+    REQUIRE(decoded_delta.has_value());
+    const std::optional<openstrike::NetworkSnapshot> applied = openstrike::apply_network_snapshot_delta(from, *decoded_delta);
+    REQUIRE(applied.has_value());
+    REQUIRE(applied->tick == to.tick);
+    REQUIRE(applied->entities.size() == 2);
+    REQUIRE(applied->entities[0].entity_id == 1);
+    REQUIRE(std::get<std::int32_t>(applied->entities[0].fields[0]) == 87);
+    const openstrike::Vec3 origin = std::get<openstrike::Vec3>(applied->entities[0].fields[1]);
+    REQUIRE(origin.x == 8.0F);
+    REQUIRE(applied->entities[1].entity_id == 3);
+}
+
+void test_network_prediction_reconciles_and_replays_user_commands()
+{
+    openstrike::PlayerState start;
+    start.on_ground = true;
+
+    openstrike::ClientPredictionBuffer prediction;
+    prediction.reset(start);
+
+    openstrike::MovementTuning tuning;
+    openstrike::UserCommand first;
+    first.command_number = 1;
+    first.tick_count = 1;
+    first.forwardmove = 1.0F;
+    openstrike::UserCommand second = first;
+    second.command_number = 2;
+    second.tick_count = 2;
+    second.sidemove = 1.0F;
+
+    const openstrike::PlayerState predicted_after_first = prediction.predict(first, tuning);
+    REQUIRE(predicted_after_first.on_ground);
+    const openstrike::PlayerState predicted_after_second = prediction.predict(second, tuning);
+    REQUIRE(prediction.history().size() == 2);
+
+    openstrike::PlayerState authoritative = prediction.history().front().after;
+    authoritative.origin.x += 8.0F;
+    const openstrike::PredictionReconcileResult reconciled = prediction.reconcile(1, authoritative, tuning, 0.001F);
+    REQUIRE(reconciled.corrected);
+    REQUIRE(reconciled.replayed_commands == 1);
+    REQUIRE(prediction.history().size() == 1);
+    REQUIRE(prediction.history().front().command.command_number == 2);
+    REQUIRE(prediction.current_state().origin.x != predicted_after_second.origin.x);
+}
+
 void connect_loopback_client(openstrike::NetworkServer& server, openstrike::NetworkClient& client)
 {
     REQUIRE(client.connect(openstrike::NetworkAddress::localhost(server.local_port()), 1));
@@ -1318,6 +1760,33 @@ void connect_loopback_client(openstrike::NetworkServer& server, openstrike::Netw
     REQUIRE(client_connected);
     REQUIRE(client.is_connected());
     REQUIRE(server.clients().size() == 1);
+
+    bool client_reached_full = client.signon_state() == openstrike::NetSignonState::Full;
+    for (int attempt = 0; attempt < 64 && !client_reached_full; ++attempt)
+    {
+        server.poll(static_cast<std::uint64_t>(80 + attempt));
+        (void)server.drain_events();
+        client.poll(static_cast<std::uint64_t>(80 + attempt));
+        for (const openstrike::NetworkEvent& event : client.drain_events())
+        {
+            if (event.type == openstrike::NetworkEventType::SignonStateChanged &&
+                event.signon_state == openstrike::NetSignonState::Full)
+            {
+                client_reached_full = true;
+            }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    REQUIRE(client_reached_full);
+
+    for (int attempt = 0; attempt < 8; ++attempt)
+    {
+        server.poll(static_cast<std::uint64_t>(160 + attempt));
+        (void)server.drain_events();
+        client.poll(static_cast<std::uint64_t>(160 + attempt));
+        (void)client.drain_events();
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
 }
 
 void test_network_udp_loopback_connects_and_exchanges_text()
@@ -1411,8 +1880,8 @@ void test_network_udp_loopback_server_sends_snapshot()
     const std::vector<unsigned char> snapshot{0x10U, 0x20U, 0x00U, 0xFFU, 0x5AU, 0xC3U};
     server.broadcast_snapshot(snapshot, 620);
 
-    bool client_received_snapshot = false;
-    for (int attempt = 0; attempt < 64 && !client_received_snapshot; ++attempt)
+    int snapshot_events = 0;
+    for (int attempt = 0; attempt < 64; ++attempt)
     {
         client.poll(static_cast<std::uint64_t>(620 + attempt));
         for (const openstrike::NetworkEvent& event : client.drain_events())
@@ -1420,15 +1889,213 @@ void test_network_udp_loopback_server_sends_snapshot()
             if (event.type == openstrike::NetworkEventType::SnapshotReceived && event.payload == snapshot && event.tick == 620)
             {
                 REQUIRE(event.connection_id == client.connection_id());
-                client_received_snapshot = true;
+                ++snapshot_events;
             }
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 
-    REQUIRE(client_received_snapshot);
+    REQUIRE(snapshot_events == 1);
 
     client.disconnect(700);
+    server.stop();
+}
+
+void test_network_client_defers_channel_signon_until_connect_accept()
+{
+    openstrike::UdpSocket fake_server;
+    REQUIRE(fake_server.open(0));
+
+    openstrike::NetworkClient client;
+    REQUIRE(client.connect(openstrike::NetworkAddress::localhost(fake_server.local_port()), 1));
+    const openstrike::NetworkAddress client_address = openstrike::NetworkAddress::localhost(client.local_port());
+
+    for (int attempt = 0; attempt < 16; ++attempt)
+    {
+        if (fake_server.receive())
+        {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    openstrike::NetChannel server_channel("fake-server");
+    server_channel.queue_message(openstrike::make_signon_state_message(openstrike::NetSignonStateMessage{
+        .state = openstrike::NetSignonState::Full,
+        .spawn_count = 1,
+        .num_server_players = 1,
+    }));
+    const std::vector<std::vector<unsigned char>> channel_datagrams = server_channel.transmit(2.0, true);
+    REQUIRE(channel_datagrams.size() == 1);
+
+    const std::vector<unsigned char> channel_packet = openstrike::encode_network_packet(
+        openstrike::NetworkMessageType::Channel,
+        2,
+        0,
+        2,
+        channel_datagrams.front());
+    REQUIRE(fake_server.send_to(client_address, channel_packet));
+
+    bool saw_early_channel_packet = false;
+    bool saw_zero_connection_signon = false;
+    for (int attempt = 0; attempt < 16 && !saw_early_channel_packet; ++attempt)
+    {
+        client.poll(2);
+        saw_early_channel_packet = client.stats().packets_received > 0;
+        for (const openstrike::NetworkEvent& event : client.drain_events())
+        {
+            if (event.type == openstrike::NetworkEventType::SignonStateChanged && event.connection_id == 0)
+            {
+                saw_zero_connection_signon = true;
+            }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    REQUIRE(saw_early_channel_packet);
+    REQUIRE(!saw_zero_connection_signon);
+    REQUIRE(client.connection_id() == 0);
+    REQUIRE(client.signon_state() != openstrike::NetSignonState::Full);
+
+    const std::vector<unsigned char> accept_payload = openstrike::make_connect_accept_payload(42);
+    const std::vector<unsigned char> accept_packet = openstrike::encode_network_packet(
+        openstrike::NetworkMessageType::ConnectAccept,
+        1,
+        0,
+        3,
+        accept_payload);
+    REQUIRE(fake_server.send_to(client_address, accept_packet));
+
+    bool connected = false;
+    bool reached_full = false;
+    for (int attempt = 0; attempt < 16 && !reached_full; ++attempt)
+    {
+        client.poll(3);
+        for (const openstrike::NetworkEvent& event : client.drain_events())
+        {
+            if (event.connection_id == 0 &&
+                (event.type == openstrike::NetworkEventType::ConnectedToServer ||
+                    event.type == openstrike::NetworkEventType::SignonStateChanged))
+            {
+                saw_zero_connection_signon = true;
+            }
+            if (event.type == openstrike::NetworkEventType::ConnectedToServer && event.connection_id == 42)
+            {
+                connected = true;
+            }
+            if (event.type == openstrike::NetworkEventType::SignonStateChanged &&
+                event.connection_id == 42 &&
+                event.signon_state == openstrike::NetSignonState::Full)
+            {
+                reached_full = true;
+            }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    REQUIRE(connected);
+    REQUIRE(reached_full);
+    REQUIRE(!saw_zero_connection_signon);
+    REQUIRE(client.connection_id() == 42);
+    REQUIRE(client.signon_state() == openstrike::NetSignonState::Full);
+
+    client.disconnect(10);
+    fake_server.close();
+}
+
+void test_network_udp_loopback_signon_and_user_command_batch()
+{
+    openstrike::NetworkServer server;
+    REQUIRE(server.start(0));
+    (void)server.drain_events();
+
+    openstrike::NetworkClient client;
+    connect_loopback_client(server, client);
+
+    bool client_reached_full = client.signon_state() == openstrike::NetSignonState::Full;
+    for (int attempt = 0; attempt < 64 && !client_reached_full; ++attempt)
+    {
+        server.poll(static_cast<std::uint64_t>(720 + attempt));
+        (void)server.drain_events();
+        client.poll(static_cast<std::uint64_t>(720 + attempt));
+        for (const openstrike::NetworkEvent& event : client.drain_events())
+        {
+            if (event.type == openstrike::NetworkEventType::SignonStateChanged &&
+                event.signon_state == openstrike::NetSignonState::Full)
+            {
+                client_reached_full = true;
+            }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    REQUIRE(client_reached_full);
+    REQUIRE(client.signon_state() == openstrike::NetSignonState::Full);
+
+    openstrike::UserCommand backup;
+    backup.command_number = 20;
+    backup.tick_count = 120;
+    backup.forwardmove = 1.0F;
+    backup.buttons = openstrike::UserCommandButtonForward;
+
+    openstrike::UserCommand current = backup;
+    current.command_number = 21;
+    current.tick_count = 121;
+    current.forwardmove = 0.75F;
+    current.sidemove = -0.25F;
+    current.buttons = openstrike::UserCommandButtonForward | openstrike::UserCommandButtonJump;
+
+    openstrike::UserCommandBatch batch;
+    batch.num_backup_commands = 1;
+    batch.num_new_commands = 1;
+    batch.commands = {backup, current};
+    REQUIRE(client.send_user_commands(batch, 800));
+
+    bool server_received_batch = false;
+    for (int attempt = 0; attempt < 64 && !server_received_batch; ++attempt)
+    {
+        server.poll(static_cast<std::uint64_t>(800 + attempt));
+        for (const openstrike::NetworkEvent& event : server.drain_events())
+        {
+            if (event.type == openstrike::NetworkEventType::UserCommandBatchReceived)
+            {
+                REQUIRE(event.connection_id == server.clients().front().connection_id);
+                REQUIRE(event.num_backup_commands == 1);
+                REQUIRE(event.num_new_commands == 1);
+                REQUIRE(event.user_commands.size() == 2);
+                REQUIRE(event.user_commands[1].command_number == current.command_number);
+                REQUIRE(event.user_commands[1].buttons == current.buttons);
+                server_received_batch = true;
+            }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    REQUIRE(server_received_batch);
+
+    const std::vector<unsigned char> entity_payload{0xABU, 0xCDU, 0x01U, 0x02U};
+    server.broadcast_message(openstrike::make_packet_entities_message(openstrike::NetPacketEntitiesMessage{
+        .max_entries = 2048,
+        .updated_entries = 1,
+        .is_delta = true,
+        .delta_from = 799,
+        .entity_data = entity_payload,
+    }),
+        840);
+
+    bool client_received_channel_snapshot = false;
+    for (int attempt = 0; attempt < 64 && !client_received_channel_snapshot; ++attempt)
+    {
+        client.poll(static_cast<std::uint64_t>(840 + attempt));
+        for (const openstrike::NetworkEvent& event : client.drain_events())
+        {
+            if (event.type == openstrike::NetworkEventType::SnapshotReceived && event.payload == entity_payload)
+            {
+                client_received_channel_snapshot = true;
+            }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    REQUIRE(client_received_channel_snapshot);
+
+    client.disconnect(900);
     server.stop();
 }
 
@@ -2095,6 +2762,50 @@ void test_world_manager_builds_bsp_mesh_and_floor()
     std::filesystem::remove_all(root);
 }
 
+void test_world_manager_builds_source_displacement_mesh()
+{
+    const std::filesystem::path root = std::filesystem::current_path() / "build/test_source_displacement_content";
+    std::filesystem::remove_all(root);
+    std::filesystem::create_directories(root / "game/maps");
+
+    const std::string entities =
+        "{\n"
+        "\"classname\" \"worldspawn\"\n"
+        "}\n";
+    write_square_bsp(root / "game/maps/displacement_world.bsp", entities, 0, TestLightmapMode::None, true);
+
+    openstrike::ContentFileSystem filesystem;
+    filesystem.add_search_path(root / "game", "GAME");
+
+    openstrike::WorldManager world;
+    REQUIRE(world.load_map("displacement_world", filesystem));
+
+    const openstrike::LoadedWorld* loaded = world.current_world();
+    REQUIRE(loaded != nullptr);
+    REQUIRE(loaded->mesh.vertices.size() == 25);
+    REQUIRE(loaded->mesh.indices.size() == 96);
+    REQUIRE(loaded->mesh.collision_triangles.size() == 32);
+    REQUIRE(loaded->mesh.materials.size() == 1);
+    REQUIRE(loaded->mesh.batches.size() == 1);
+    REQUIRE(loaded->mesh.batches[0].index_count == 96);
+    REQUIRE(loaded->mesh.has_bounds);
+    REQUIRE(std::abs(loaded->mesh.bounds_min.z - 32.0F) < 0.001F);
+    REQUIRE(std::abs(loaded->mesh.bounds_max.z - 48.0F) < 0.001F);
+
+    REQUIRE(loaded->mesh.indices[0] == 0);
+    REQUIRE(loaded->mesh.indices[1] == 5);
+    REQUIRE(loaded->mesh.indices[2] == 6);
+    REQUIRE(loaded->mesh.indices[3] == 0);
+    REQUIRE(loaded->mesh.indices[4] == 6);
+    REQUIRE(loaded->mesh.indices[5] == 1);
+
+    const std::optional<float> displaced_floor_z = openstrike::find_floor_z(*loaded, {0.0F, 0.0F, 96.0F}, 128.0F);
+    REQUIRE(displaced_floor_z.has_value());
+    REQUIRE(std::abs(*displaced_floor_z - 48.0F) < 0.001F);
+
+    std::filesystem::remove_all(root);
+}
+
 void test_world_manager_builds_bsp_static_lightmap()
 {
     const std::filesystem::path root = std::filesystem::current_path() / "build/test_world_lightmap_content";
@@ -2271,7 +2982,17 @@ void test_world_manager_loads_static_props_and_renders_bounds()
     REQUIRE(loaded->props[0].model_path == "models/test/crate.mdl");
     REQUIRE(loaded->props[0].skin == 2);
     REQUIRE(loaded->props[0].solid == 6);
+    REQUIRE(loaded->props[0].first_leaf == 0);
+    REQUIRE(loaded->props[0].leaf_count == 1);
     REQUIRE(loaded->props[0].flags_ex == 4);
+    REQUIRE(std::abs(loaded->props[0].fade_min_dist - 128.0F) < 0.001F);
+    REQUIRE(std::abs(loaded->props[0].fade_max_dist - 1024.0F) < 0.001F);
+    REQUIRE(std::abs(loaded->props[0].forced_fade_scale - 1.25F) < 0.001F);
+    REQUIRE(loaded->props[0].min_cpu_level == 1);
+    REQUIRE(loaded->props[0].max_cpu_level == 3);
+    REQUIRE(loaded->props[0].min_gpu_level == 2);
+    REQUIRE(loaded->props[0].max_gpu_level == 4);
+    REQUIRE(loaded->props[0].disable_x360);
     REQUIRE(loaded->props[0].model_bounds_loaded);
     REQUIRE(loaded->props[0].model_material_loaded);
     REQUIRE(loaded->props[0].model_mesh_loaded);
@@ -3425,9 +4146,19 @@ int main()
         test_source_texture_loads_resource_vtf_metadata_and_legacy_formats();
         test_renderer_shader_files_are_dedicated();
         test_network_stream_and_protocol_roundtrip();
+        test_network_user_command_delta_batch_and_input_roundtrip();
+        test_network_messages_round_trip_source_families();
+        test_network_channel_reliable_fragmentation_and_ack();
+        test_network_channel_reassembles_reordered_fragments();
+        test_network_channel_reliable_retransmit_repairs_lost_ack();
+        test_network_channel_rejects_excessive_fragment_count();
+        test_network_snapshot_delta_round_trip_and_apply();
+        test_network_prediction_reconciles_and_replays_user_commands();
         test_network_udp_loopback_connects_and_exchanges_text();
         test_network_udp_loopback_client_sends_user_command();
         test_network_udp_loopback_server_sends_snapshot();
+        test_network_client_defers_channel_signon_until_connect_accept();
+        test_network_udp_loopback_signon_and_user_command_batch();
         test_team_id_helpers_match_counter_strike();
         test_team_manager_membership_and_scores();
         test_team_auto_assign_uses_smaller_team_then_lower_score();
@@ -3447,6 +4178,7 @@ int main()
         test_audio_source_soundlevel_gain_falls_with_distance();
         test_world_manager_loads_source_bsp();
         test_world_manager_builds_bsp_mesh_and_floor();
+        test_world_manager_builds_source_displacement_mesh();
         test_world_manager_builds_bsp_static_lightmap();
         test_world_manager_prefers_hdr_bsp_lightmap();
         test_world_manager_tracks_source_sky_surfaces();

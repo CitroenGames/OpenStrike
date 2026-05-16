@@ -48,11 +48,16 @@ sources = {
     src/openstrike/material/material_system.cpp
     src/openstrike/nav/navigation.cpp
     src/openstrike/network/network_address.cpp
+    src/openstrike/network/network_channel.cpp
+    src/openstrike/network/network_messages.cpp
+    src/openstrike/network/network_prediction.cpp
     src/openstrike/network/network_protocol.cpp
+    src/openstrike/network/network_replication.cpp
     src/openstrike/network/network_session.cpp
     src/openstrike/network/network_socket.cpp
     src/openstrike/network/network_stream.cpp
     src/openstrike/network/network_system.cpp
+    src/openstrike/network/user_command.cpp
     src/openstrike/physics/physics_world.cpp
     src/openstrike/renderer/dx12_renderer.cpp [windows]
     src/openstrike/renderer/metal_renderer.mm [macOS]
@@ -72,6 +77,8 @@ sources = {
     src/openstrike/ui/rml_hud_controller.cpp
     src/openstrike/ui/rml_loading_screen_controller.cpp
     src/openstrike/ui/rml_team_menu_controller.cpp
+    src/openstrike/world/source_displacements.cpp
+    src/openstrike/world/source_static_props.cpp
     src/openstrike/world/world.cpp
 }
 headers = src/openstrike/**/*.hpp
@@ -163,7 +170,7 @@ debug_info = ProgramDatabase
 generate_debug_info = true
 outdir = bin/x64/Debug
 intdir = build/obj/x64/Debug/OpenStrike
-postbuild = copy /Y ..\thirdparty\SDL3-3.4.4\lib\x64\SDL3.dll ..\bin\x64\Debug\SDL3.dll
+postbuild = if not exist ..\bin\x64\Debug\SDL3.dll copy /Y ..\thirdparty\SDL3-3.4.4\lib\x64\SDL3.dll ..\bin\x64\Debug\SDL3.dll
 
 [config:Debug|macOS]
 runtime_library = MultiThreadedDebug
@@ -184,7 +191,7 @@ function_level_linking = true
 intrinsic_functions = true
 outdir = bin/x64/Release
 intdir = build/obj/x64/Release/OpenStrike
-postbuild = copy /Y ..\thirdparty\SDL3-3.4.4\lib\x64\SDL3.dll ..\bin\x64\Release\SDL3.dll
+postbuild = if not exist ..\bin\x64\Release\SDL3.dll copy /Y ..\thirdparty\SDL3-3.4.4\lib\x64\SDL3.dll ..\bin\x64\Release\SDL3.dll
 
 [config:Release|macOS]
 runtime_library = MultiThreaded

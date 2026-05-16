@@ -25,7 +25,8 @@ enum class NetworkMessageType : std::uint8_t
     Pong = 5,
     Text = 6,
     UserCommand = 16,
-    Snapshot = 17
+    Snapshot = 17,
+    Channel = 18
 };
 
 struct NetworkPacketHeader
