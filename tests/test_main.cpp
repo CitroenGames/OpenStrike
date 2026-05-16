@@ -867,6 +867,12 @@ void test_world_manager_loads_source_bsp()
         "\"classname\" \"info_player_terrorist\"\n"
         "\"origin\" \"10 20 30\"\n"
         "\"angles\" \"0 90 0\"\n"
+        "}\n"
+        "{\n"
+        "\"classname\" \"light\"\n"
+        "\"origin\" \"128 64 32\"\n"
+        "\"_light\" \"255 128 64 400\"\n"
+        "\"_distance\" \"768\"\n"
         "}\n";
     write_minimal_bsp(root / "game/maps/test_world.bsp", entities);
 
@@ -882,13 +888,21 @@ void test_world_manager_loads_source_bsp()
     REQUIRE(loaded->name == "test_world");
     REQUIRE(loaded->asset_version == 21);
     REQUIRE(loaded->map_revision == 3);
-    REQUIRE(loaded->entity_count == 2);
+    REQUIRE(loaded->entity_count == 3);
     REQUIRE(loaded->worldspawn.at("mapversion") == "7");
     REQUIRE(loaded->worldspawn.at("skyname") == "sky_openstrike_test");
     REQUIRE(loaded->spawn_points.size() == 1);
     REQUIRE(loaded->spawn_points[0].origin.x == 10.0F);
     REQUIRE(loaded->spawn_points[0].origin.y == 20.0F);
     REQUIRE(loaded->spawn_points[0].origin.z == 30.0F);
+    REQUIRE(loaded->lights.size() == 1);
+    REQUIRE(loaded->lights[0].position.x == 128.0F);
+    REQUIRE(loaded->lights[0].position.y == 64.0F);
+    REQUIRE(loaded->lights[0].position.z == 32.0F);
+    REQUIRE(std::abs(loaded->lights[0].color[1] - (128.0F / 255.0F)) < 0.001F);
+    REQUIRE(std::abs(loaded->lights[0].color[2] - (64.0F / 255.0F)) < 0.001F);
+    REQUIRE(std::abs(loaded->lights[0].intensity - (400.0F / 255.0F)) < 0.001F);
+    REQUIRE(loaded->lights[0].radius == 768.0F);
 
     const std::vector<std::string> maps = world.list_maps(filesystem, "test");
     REQUIRE(std::find(maps.begin(), maps.end(), "test_world") != maps.end());

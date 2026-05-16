@@ -55,6 +55,20 @@ struct WorldProp
     bool model_mesh_loaded = false;
 };
 
+enum class WorldLightKind
+{
+    Point
+};
+
+struct WorldLight
+{
+    WorldLightKind kind = WorldLightKind::Point;
+    Vec3 position;
+    std::array<float, 3> color{1.0F, 1.0F, 1.0F};
+    float intensity = 1.0F;
+    float radius = 384.0F;
+};
+
 struct WorldMeshVertex
 {
     Vec3 position;
@@ -111,6 +125,7 @@ struct LoadedWorld
     std::unordered_map<std::string, std::vector<unsigned char>> embedded_assets;
     std::vector<WorldSpawnPoint> spawn_points;
     std::vector<WorldProp> props;
+    std::vector<WorldLight> lights;
     WorldMesh mesh;
 };
 

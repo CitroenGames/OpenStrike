@@ -50,6 +50,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <vector>
 
 using Microsoft::WRL::ComPtr;
@@ -64,9 +65,13 @@ constexpr DXGI_FORMAT kDepthFormat = DXGI_FORMAT_D32_FLOAT;
 constexpr float kPi = 3.14159265358979323846F;
 constexpr std::uint32_t kSkyboxFaceCount = 6;
 constexpr std::size_t kWorldTransformFloatCount = 16;
-constexpr std::size_t kWorldShaderFloatCount = 24;
+constexpr std::size_t kWorldShaderFloatCount = 28;
 constexpr std::uint32_t kSkyboxCommandListIndex = 0;
 constexpr std::uint32_t kWorldCommandListIndex = 1;
+constexpr std::uint32_t kForwardPlusTileSize = 16;
+constexpr std::uint32_t kForwardPlusDescriptorCount = 3;
+constexpr std::uint32_t kForwardPlusMaxLights = 1024;
+constexpr std::uint32_t kForwardPlusMaxLightsPerTile = 64;
 
 struct WorldDrawVertex
 {
@@ -92,6 +97,46 @@ struct TextureGpuResources
 {
     ComPtr<ID3D12Resource> resource;
     ComPtr<ID3D12Resource> upload_buffer;
+};
+
+struct ForwardPlusTileGpu
+{
+    std::uint32_t light_offset = 0;
+    std::uint32_t light_count = 0;
+    std::uint32_t padding0 = 0;
+    std::uint32_t padding1 = 0;
+};
+
+struct ForwardPlusLightGpu
+{
+    float position_radius[4]{};
+    float color_intensity[4]{};
+};
+
+struct ForwardPlusFrameGpuResources
+{
+    ComPtr<ID3D12Resource> tile_buffer;
+    ComPtr<ID3D12Resource> light_index_buffer;
+    ComPtr<ID3D12Resource> light_buffer;
+    std::uint32_t tile_capacity = 0;
+    std::uint32_t light_index_capacity = 0;
+    std::uint32_t light_capacity = 0;
+};
+
+struct ClipPoint
+{
+    float x = 0.0F;
+    float y = 0.0F;
+    float z = 0.0F;
+    float w = 1.0F;
+};
+
+struct ForwardPlusTileBounds
+{
+    std::uint32_t min_x = 0;
+    std::uint32_t max_x = 0;
+    std::uint32_t min_y = 0;
+    std::uint32_t max_y = 0;
 };
 
 std::optional<std::filesystem::path> resolve_shader_path(const EngineContext* engine_context, const char* relative_path)
@@ -359,6 +404,72 @@ bool upload_static_buffer_to_gpu(
     return true;
 }
 
+bool create_upload_buffer(
+    ID3D12Device* device,
+    std::uint64_t byte_count,
+    std::string_view debug_name,
+    ComPtr<ID3D12Resource>& resource)
+{
+    if (device == nullptr || byte_count == 0)
+    {
+        return false;
+    }
+
+    const auto upload_heap = heap_properties(D3D12_HEAP_TYPE_UPLOAD);
+    const auto desc = buffer_desc(byte_count);
+    if (!succeeded_with_device(device,
+            device->CreateCommittedResource(&upload_heap,
+                D3D12_HEAP_FLAG_NONE,
+                &desc,
+                D3D12_RESOURCE_STATE_GENERIC_READ,
+                nullptr,
+                IID_PPV_ARGS(&resource)),
+            "ID3D12Device::CreateCommittedResource forward+ upload buffer"))
+    {
+        return false;
+    }
+
+    set_debug_name(resource.Get(), debug_name);
+    return true;
+}
+
+bool upload_buffer_data(ID3D12Resource* resource, const void* data, std::uint64_t byte_count, const char* operation)
+{
+    if (resource == nullptr || data == nullptr || byte_count == 0)
+    {
+        return false;
+    }
+
+    void* mapped = nullptr;
+    D3D12_RANGE read_range{0, 0};
+    if (!succeeded(resource->Map(0, &read_range, &mapped), operation))
+    {
+        return false;
+    }
+    std::memcpy(mapped, data, static_cast<std::size_t>(byte_count));
+    D3D12_RANGE written_range{0, static_cast<SIZE_T>(byte_count)};
+    resource->Unmap(0, &written_range);
+    return true;
+}
+
+void create_structured_buffer_srv(
+    ID3D12Device* device,
+    ID3D12Resource* resource,
+    std::uint32_t element_count,
+    std::uint32_t element_stride,
+    D3D12_CPU_DESCRIPTOR_HANDLE handle)
+{
+    D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc{};
+    srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    srv_desc.Format = DXGI_FORMAT_UNKNOWN;
+    srv_desc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+    srv_desc.Buffer.FirstElement = 0;
+    srv_desc.Buffer.NumElements = std::max<std::uint32_t>(element_count, 1);
+    srv_desc.Buffer.StructureByteStride = element_stride;
+    srv_desc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
+    device->CreateShaderResourceView(resource, &srv_desc, handle);
+}
+
 DXGI_FORMAT dxgi_format_for_source(SourceTextureFormat format)
 {
     switch (format)
@@ -561,15 +672,28 @@ ComPtr<ID3DBlob> compile_shader_file(const std::filesystem::path& source_path, c
 
 ComPtr<ID3DBlob> load_shader_bytecode(const EngineContext* engine_context, const Dx12ShaderFile& shader_file)
 {
+    const std::optional<std::filesystem::path> source_path = resolve_shader_path(engine_context, shader_file.source_path);
     if (const std::optional<std::filesystem::path> compiled_path = resolve_shader_path(engine_context, shader_file.compiled_path))
     {
-        if (ComPtr<ID3DBlob> shader = read_shader_blob(*compiled_path, shader_file.debug_name))
+        bool compiled_is_current = true;
+        if (source_path)
         {
-            return shader;
+            std::error_code compiled_error;
+            std::error_code source_error;
+            const auto compiled_time = std::filesystem::last_write_time(*compiled_path, compiled_error);
+            const auto source_time = std::filesystem::last_write_time(*source_path, source_error);
+            compiled_is_current = !compiled_error && !source_error && compiled_time >= source_time;
+        }
+
+        if (compiled_is_current)
+        {
+            if (ComPtr<ID3DBlob> shader = read_shader_blob(*compiled_path, shader_file.debug_name))
+            {
+                return shader;
+            }
         }
     }
 
-    const std::optional<std::filesystem::path> source_path = resolve_shader_path(engine_context, shader_file.source_path);
     if (!source_path)
     {
         log_error("missing DX12 shader '{}' (expected '{}' or '{}')",
@@ -932,6 +1056,134 @@ std::array<float, 16> world_to_clip_matrix(const WorldMesh& mesh, const CameraSt
     return overview_world_to_clip_matrix(mesh, width, height);
 }
 
+ClipPoint transform_world_to_clip(Vec3 point, const std::array<float, 16>& matrix)
+{
+    return {
+        (point.x * matrix[0]) + (point.y * matrix[4]) + (point.z * matrix[8]) + matrix[12],
+        (point.x * matrix[1]) + (point.y * matrix[5]) + (point.z * matrix[9]) + matrix[13],
+        (point.x * matrix[2]) + (point.y * matrix[6]) + (point.z * matrix[10]) + matrix[14],
+        (point.x * matrix[3]) + (point.y * matrix[7]) + (point.z * matrix[11]) + matrix[15],
+    };
+}
+
+bool project_world_to_screen(
+    Vec3 point,
+    const std::array<float, 16>& matrix,
+    std::uint32_t width,
+    std::uint32_t height,
+    float& screen_x,
+    float& screen_y)
+{
+    const ClipPoint clip = transform_world_to_clip(point, matrix);
+    if (clip.w <= 0.001F)
+    {
+        return false;
+    }
+
+    const float ndc_x = clip.x / clip.w;
+    const float ndc_y = clip.y / clip.w;
+    screen_x = (ndc_x * 0.5F + 0.5F) * static_cast<float>(std::max<std::uint32_t>(width, 1));
+    screen_y = (0.5F - (ndc_y * 0.5F)) * static_cast<float>(std::max<std::uint32_t>(height, 1));
+    return std::isfinite(screen_x) && std::isfinite(screen_y);
+}
+
+ForwardPlusTileBounds full_screen_tile_bounds(std::uint32_t tile_count_x, std::uint32_t tile_count_y)
+{
+    return {
+        0,
+        tile_count_x > 0 ? tile_count_x - 1U : 0U,
+        0,
+        tile_count_y > 0 ? tile_count_y - 1U : 0U,
+    };
+}
+
+std::optional<ForwardPlusTileBounds> light_tile_bounds(
+    const WorldLight& light,
+    const std::array<float, 16>& matrix,
+    bool perspective_camera,
+    std::uint32_t width,
+    std::uint32_t height,
+    std::uint32_t tile_count_x,
+    std::uint32_t tile_count_y)
+{
+    if (width == 0 || height == 0 || tile_count_x == 0 || tile_count_y == 0 || light.radius <= 0.0F)
+    {
+        return std::nullopt;
+    }
+
+    const ClipPoint center_clip = transform_world_to_clip(light.position, matrix);
+    if (perspective_camera && center_clip.w <= -light.radius)
+    {
+        return std::nullopt;
+    }
+    if (perspective_camera && center_clip.w <= std::max(light.radius, 1.0F))
+    {
+        return full_screen_tile_bounds(tile_count_x, tile_count_y);
+    }
+
+    const std::array<Vec3, 7> samples{{
+        light.position,
+        {light.position.x - light.radius, light.position.y, light.position.z},
+        {light.position.x + light.radius, light.position.y, light.position.z},
+        {light.position.x, light.position.y - light.radius, light.position.z},
+        {light.position.x, light.position.y + light.radius, light.position.z},
+        {light.position.x, light.position.y, light.position.z - light.radius},
+        {light.position.x, light.position.y, light.position.z + light.radius},
+    }};
+
+    float min_x = std::numeric_limits<float>::max();
+    float min_y = std::numeric_limits<float>::max();
+    float max_x = -std::numeric_limits<float>::max();
+    float max_y = -std::numeric_limits<float>::max();
+    bool any_projected = false;
+    for (const Vec3 sample : samples)
+    {
+        float screen_x = 0.0F;
+        float screen_y = 0.0F;
+        if (!project_world_to_screen(sample, matrix, width, height, screen_x, screen_y))
+        {
+            continue;
+        }
+
+        any_projected = true;
+        min_x = std::min(min_x, screen_x);
+        min_y = std::min(min_y, screen_y);
+        max_x = std::max(max_x, screen_x);
+        max_y = std::max(max_y, screen_y);
+    }
+
+    if (!any_projected || max_x < 0.0F || max_y < 0.0F || min_x >= static_cast<float>(width) || min_y >= static_cast<float>(height))
+    {
+        return std::nullopt;
+    }
+
+    min_x = std::clamp(min_x, 0.0F, static_cast<float>(width - 1U));
+    max_x = std::clamp(max_x, 0.0F, static_cast<float>(width - 1U));
+    min_y = std::clamp(min_y, 0.0F, static_cast<float>(height - 1U));
+    max_y = std::clamp(max_y, 0.0F, static_cast<float>(height - 1U));
+
+    return ForwardPlusTileBounds{
+        static_cast<std::uint32_t>(std::floor(min_x / static_cast<float>(kForwardPlusTileSize))),
+        std::min(tile_count_x - 1U, static_cast<std::uint32_t>(std::floor(max_x / static_cast<float>(kForwardPlusTileSize)))),
+        static_cast<std::uint32_t>(std::floor(min_y / static_cast<float>(kForwardPlusTileSize))),
+        std::min(tile_count_y - 1U, static_cast<std::uint32_t>(std::floor(max_y / static_cast<float>(kForwardPlusTileSize)))),
+    };
+}
+
+ForwardPlusLightGpu forward_plus_light_gpu(const WorldLight& light)
+{
+    ForwardPlusLightGpu gpu{};
+    gpu.position_radius[0] = light.position.x;
+    gpu.position_radius[1] = light.position.y;
+    gpu.position_radius[2] = light.position.z;
+    gpu.position_radius[3] = std::max(light.radius, 1.0F);
+    gpu.color_intensity[0] = light.color[0];
+    gpu.color_intensity[1] = light.color[1];
+    gpu.color_intensity[2] = light.color[2];
+    gpu.color_intensity[3] = light.intensity;
+    return gpu;
+}
+
 std::array<float, kWorldShaderFloatCount> world_shader_constants(
     const WorldMesh& mesh,
     const CameraState* camera,
@@ -951,6 +1203,10 @@ std::array<float, kWorldShaderFloatCount> world_shader_constants(
     constants[kWorldTransformFloatCount + 5] = 0.96F;
     constants[kWorldTransformFloatCount + 6] = 0.88F;
     constants[kWorldTransformFloatCount + 7] = 0.78F;
+    constants[kWorldTransformFloatCount + 8] = static_cast<float>(kForwardPlusTileSize);
+    constants[kWorldTransformFloatCount + 9] = static_cast<float>((width + kForwardPlusTileSize - 1U) / kForwardPlusTileSize);
+    constants[kWorldTransformFloatCount + 10] = static_cast<float>((height + kForwardPlusTileSize - 1U) / kForwardPlusTileSize);
+    constants[kWorldTransformFloatCount + 11] = 0.0F;
     return constants;
 }
 
@@ -1030,10 +1286,13 @@ struct Dx12Renderer::WorldGpuResources
     std::vector<TextureGpuResources> textures;
     std::vector<MaterialGpuConstants> material_constants;
     std::vector<WorldDrawBatch> batches;
+    std::array<ForwardPlusFrameGpuResources, kFrameCount> forward_plus_frames;
     std::uint32_t srv_descriptor_size = 0;
+    std::uint32_t material_descriptor_count = 0;
     std::uint32_t index_count = 0;
     std::uint32_t loaded_texture_count = 0;
     std::uint32_t fallback_texture_count = 0;
+    std::uint32_t forward_plus_light_count = 0;
 };
 
 struct Dx12Renderer::SkyboxGpuResources
@@ -1167,7 +1426,11 @@ void Dx12Renderer::render(const FrameContext& context)
         skybox_gpu_generation_ = engine_context_ != nullptr ? engine_context_->world.generation() : 0;
     }
 
-    const bool world_ready = ensure_world_gpu_resources();
+    bool world_ready = ensure_world_gpu_resources();
+    if (world_ready && active_world != nullptr)
+    {
+        world_ready = upload_forward_plus_resources(*active_world);
+    }
 
     if (!succeeded_with_device(device_.Get(), command_list_->Close(), "ID3D12GraphicsCommandList::Close setup"))
     {
@@ -1659,7 +1922,14 @@ bool Dx12Renderer::create_world_pipeline()
     texture_range.RegisterSpace = 0;
     texture_range.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
 
-    std::array<D3D12_ROOT_PARAMETER, 3> root_parameters{};
+    D3D12_DESCRIPTOR_RANGE forward_plus_range{};
+    forward_plus_range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    forward_plus_range.NumDescriptors = kForwardPlusDescriptorCount;
+    forward_plus_range.BaseShaderRegister = 1;
+    forward_plus_range.RegisterSpace = 0;
+    forward_plus_range.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+    std::array<D3D12_ROOT_PARAMETER, 4> root_parameters{};
     root_parameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
     root_parameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
     root_parameters[0].Constants.ShaderRegister = 0;
@@ -1676,6 +1946,11 @@ bool Dx12Renderer::create_world_pipeline()
     root_parameters[2].Constants.ShaderRegister = 1;
     root_parameters[2].Constants.RegisterSpace = 0;
     root_parameters[2].Constants.Num32BitValues = static_cast<UINT>(sizeof(MaterialGpuConstants) / sizeof(std::uint32_t));
+
+    root_parameters[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    root_parameters[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    root_parameters[3].DescriptorTable.NumDescriptorRanges = 1;
+    root_parameters[3].DescriptorTable.pDescriptorRanges = &forward_plus_range;
 
     D3D12_STATIC_SAMPLER_DESC sampler{};
     sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
@@ -2300,7 +2575,7 @@ bool Dx12Renderer::ensure_world_gpu_resources()
 
         const std::uint32_t material_count = std::max<std::uint32_t>(static_cast<std::uint32_t>(world->mesh.materials.size()), 1U);
         D3D12_DESCRIPTOR_HEAP_DESC srv_heap_desc{};
-        srv_heap_desc.NumDescriptors = material_count;
+        srv_heap_desc.NumDescriptors = material_count + (kFrameCount * kForwardPlusDescriptorCount);
         srv_heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
         srv_heap_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
         if (!succeeded(device_->CreateDescriptorHeap(&srv_heap_desc, IID_PPV_ARGS(&gpu->srv_heap)), "ID3D12Device::CreateDescriptorHeap world SRV"))
@@ -2309,6 +2584,7 @@ bool Dx12Renderer::ensure_world_gpu_resources()
         }
         set_debug_name(gpu->srv_heap.Get(), std::format("OpenStrike World {} SRV Heap", world->name));
         gpu->srv_descriptor_size = device_->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+        gpu->material_descriptor_count = material_count;
         gpu->textures.reserve(material_count);
         gpu->material_constants.reserve(material_count);
 
@@ -2389,6 +2665,145 @@ bool Dx12Renderer::ensure_world_gpu_resources()
     return world_gpu_ != nullptr;
 }
 
+bool Dx12Renderer::upload_forward_plus_resources(const LoadedWorld& world)
+{
+    if (device_ == nullptr || world_gpu_ == nullptr)
+    {
+        return false;
+    }
+
+    const std::uint32_t tile_count_x = std::max<std::uint32_t>(1U, (width_ + kForwardPlusTileSize - 1U) / kForwardPlusTileSize);
+    const std::uint32_t tile_count_y = std::max<std::uint32_t>(1U, (height_ + kForwardPlusTileSize - 1U) / kForwardPlusTileSize);
+    const std::uint32_t tile_count = tile_count_x * tile_count_y;
+    const std::uint32_t real_light_count =
+        std::min<std::uint32_t>(static_cast<std::uint32_t>(world.lights.size()), kForwardPlusMaxLights);
+
+    std::vector<ForwardPlusLightGpu> lights;
+    lights.reserve(std::max<std::uint32_t>(real_light_count, 1U));
+    for (std::uint32_t index = 0; index < real_light_count; ++index)
+    {
+        lights.push_back(forward_plus_light_gpu(world.lights[index]));
+    }
+    if (lights.empty())
+    {
+        lights.push_back({});
+    }
+
+    std::vector<std::vector<std::uint32_t>> tile_light_lists(tile_count);
+    if (real_light_count > 0)
+    {
+        const CameraState* camera = engine_context_ != nullptr ? &engine_context_->camera : nullptr;
+        const std::array<float, 16> matrix = world_to_clip_matrix(world.mesh, camera, width_, height_);
+        const bool perspective_camera = camera != nullptr && camera->active;
+        for (std::uint32_t light_index = 0; light_index < real_light_count; ++light_index)
+        {
+            const std::optional<ForwardPlusTileBounds> bounds =
+                light_tile_bounds(world.lights[light_index], matrix, perspective_camera, width_, height_, tile_count_x, tile_count_y);
+            if (!bounds)
+            {
+                continue;
+            }
+
+            for (std::uint32_t tile_y = bounds->min_y; tile_y <= bounds->max_y; ++tile_y)
+            {
+                for (std::uint32_t tile_x = bounds->min_x; tile_x <= bounds->max_x; ++tile_x)
+                {
+                    tile_light_lists[(tile_y * tile_count_x) + tile_x].push_back(light_index);
+                }
+            }
+        }
+    }
+
+    std::vector<ForwardPlusTileGpu> tiles(tile_count);
+    std::vector<std::uint32_t> light_indices;
+    light_indices.reserve(static_cast<std::size_t>(tile_count) * std::min<std::uint32_t>(real_light_count, kForwardPlusMaxLightsPerTile));
+    for (std::uint32_t tile_index = 0; tile_index < tile_count; ++tile_index)
+    {
+        ForwardPlusTileGpu& tile = tiles[tile_index];
+        tile.light_offset = static_cast<std::uint32_t>(light_indices.size());
+        const std::vector<std::uint32_t>& source_indices = tile_light_lists[tile_index];
+        const std::uint32_t count = std::min<std::uint32_t>(static_cast<std::uint32_t>(source_indices.size()), kForwardPlusMaxLightsPerTile);
+        tile.light_count = count;
+        for (std::uint32_t index = 0; index < count; ++index)
+        {
+            light_indices.push_back(source_indices[index]);
+        }
+    }
+    if (light_indices.empty())
+    {
+        light_indices.push_back(0);
+    }
+
+    ForwardPlusFrameGpuResources& frame = world_gpu_->forward_plus_frames[frame_index_];
+    const std::uint32_t required_tile_capacity = std::max<std::uint32_t>(static_cast<std::uint32_t>(tiles.size()), 1U);
+    const std::uint32_t required_index_capacity = std::max<std::uint32_t>(static_cast<std::uint32_t>(light_indices.size()), 1U);
+    const std::uint32_t required_light_capacity = std::max<std::uint32_t>(static_cast<std::uint32_t>(lights.size()), 1U);
+
+    if (frame.tile_capacity < required_tile_capacity)
+    {
+        if (!create_upload_buffer(device_.Get(),
+                static_cast<std::uint64_t>(required_tile_capacity) * sizeof(ForwardPlusTileGpu),
+                std::format("OpenStrike Forward+ Tile Buffer Frame {}", frame_index_),
+                frame.tile_buffer))
+        {
+            return false;
+        }
+        frame.tile_capacity = required_tile_capacity;
+    }
+
+    if (frame.light_index_capacity < required_index_capacity)
+    {
+        if (!create_upload_buffer(device_.Get(),
+                static_cast<std::uint64_t>(required_index_capacity) * sizeof(std::uint32_t),
+                std::format("OpenStrike Forward+ Light Index Buffer Frame {}", frame_index_),
+                frame.light_index_buffer))
+        {
+            return false;
+        }
+        frame.light_index_capacity = required_index_capacity;
+    }
+
+    if (frame.light_capacity < required_light_capacity)
+    {
+        if (!create_upload_buffer(device_.Get(),
+                static_cast<std::uint64_t>(required_light_capacity) * sizeof(ForwardPlusLightGpu),
+                std::format("OpenStrike Forward+ Light Buffer Frame {}", frame_index_),
+                frame.light_buffer))
+        {
+            return false;
+        }
+        frame.light_capacity = required_light_capacity;
+    }
+
+    if (!upload_buffer_data(frame.tile_buffer.Get(),
+            tiles.data(),
+            static_cast<std::uint64_t>(tiles.size()) * sizeof(ForwardPlusTileGpu),
+            "ID3D12Resource::Map forward+ tiles") ||
+        !upload_buffer_data(frame.light_index_buffer.Get(),
+            light_indices.data(),
+            static_cast<std::uint64_t>(light_indices.size()) * sizeof(std::uint32_t),
+            "ID3D12Resource::Map forward+ light indices") ||
+        !upload_buffer_data(frame.light_buffer.Get(),
+            lights.data(),
+            static_cast<std::uint64_t>(lights.size()) * sizeof(ForwardPlusLightGpu),
+            "ID3D12Resource::Map forward+ lights"))
+    {
+        return false;
+    }
+
+    D3D12_CPU_DESCRIPTOR_HANDLE cpu_handle = world_gpu_->srv_heap->GetCPUDescriptorHandleForHeapStart();
+    cpu_handle.ptr += static_cast<UINT64>(world_gpu_->material_descriptor_count + (frame_index_ * kForwardPlusDescriptorCount)) *
+                      world_gpu_->srv_descriptor_size;
+    create_structured_buffer_srv(device_.Get(), frame.tile_buffer.Get(), frame.tile_capacity, sizeof(ForwardPlusTileGpu), cpu_handle);
+    cpu_handle.ptr += world_gpu_->srv_descriptor_size;
+    create_structured_buffer_srv(device_.Get(), frame.light_index_buffer.Get(), frame.light_index_capacity, sizeof(std::uint32_t), cpu_handle);
+    cpu_handle.ptr += world_gpu_->srv_descriptor_size;
+    create_structured_buffer_srv(device_.Get(), frame.light_buffer.Get(), frame.light_capacity, sizeof(ForwardPlusLightGpu), cpu_handle);
+
+    world_gpu_->forward_plus_light_count = real_light_count;
+    return true;
+}
+
 bool Dx12Renderer::record_world(ID3D12GraphicsCommandList* command_list) const
 {
     if (command_list == nullptr || engine_context_ == nullptr || world_gpu_ == nullptr || world_pipeline_state_ == nullptr || world_root_signature_ == nullptr)
@@ -2416,7 +2831,8 @@ bool Dx12Renderer::record_world(ID3D12GraphicsCommandList* command_list) const
     scissor.right = static_cast<LONG>(width_);
     scissor.bottom = static_cast<LONG>(height_);
 
-    const std::array<float, kWorldShaderFloatCount> constants = world_shader_constants(world->mesh, &engine_context_->camera, width_, height_);
+    std::array<float, kWorldShaderFloatCount> constants = world_shader_constants(world->mesh, &engine_context_->camera, width_, height_);
+    constants[kWorldTransformFloatCount + 11] = static_cast<float>(world_gpu_->forward_plus_light_count);
     D3D12_CPU_DESCRIPTOR_HANDLE rtv_handle = offset_descriptor(rtv_heap_->GetCPUDescriptorHandleForHeapStart(), frame_index_, rtv_descriptor_size_);
     D3D12_CPU_DESCRIPTOR_HANDLE dsv_handle = dsv_heap_->GetCPUDescriptorHandleForHeapStart();
     ID3D12DescriptorHeap* descriptor_heaps[] = {world_gpu_->srv_heap.Get()};
@@ -2431,6 +2847,10 @@ bool Dx12Renderer::record_world(ID3D12GraphicsCommandList* command_list) const
     command_list->IASetVertexBuffers(0, 1, &world_gpu_->vertex_view);
     command_list->IASetIndexBuffer(&world_gpu_->index_view);
     const D3D12_GPU_DESCRIPTOR_HANDLE gpu_start = world_gpu_->srv_heap->GetGPUDescriptorHandleForHeapStart();
+    D3D12_GPU_DESCRIPTOR_HANDLE forward_plus_handle = gpu_start;
+    forward_plus_handle.ptr += static_cast<UINT64>(world_gpu_->material_descriptor_count + (frame_index_ * kForwardPlusDescriptorCount)) *
+                               world_gpu_->srv_descriptor_size;
+    command_list->SetGraphicsRootDescriptorTable(3, forward_plus_handle);
     for (const WorldDrawBatch& batch : world_gpu_->batches)
     {
         if (batch.index_count == 0)

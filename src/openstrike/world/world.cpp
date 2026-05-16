@@ -427,6 +427,35 @@ std::optional<Vec3> parse_vec3(std::string_view text)
     return Vec3{*x, *y, *z};
 }
 
+std::optional<std::array<float, 4>> parse_light_value(std::string_view text)
+{
+    std::istringstream stream{std::string(text)};
+    std::array<float, 4> values{255.0F, 255.0F, 255.0F, 200.0F};
+    std::string token;
+    std::size_t count = 0;
+    while (count < values.size() && stream >> token)
+    {
+        const std::optional<float> value = parse_float(token);
+        if (!value)
+        {
+            return std::nullopt;
+        }
+        values[count++] = *value;
+    }
+
+    if (count == 0)
+    {
+        return std::nullopt;
+    }
+
+    if (count == 3)
+    {
+        values[3] = std::max({values[0], values[1], values[2], 1.0F});
+    }
+
+    return values;
+}
+
 std::optional<std::string> find_property(const ParsedEntity& entity, std::string_view name)
 {
     const auto it = entity.properties.find(std::string(name));
@@ -485,6 +514,67 @@ bool is_entity_prop_class(std::string_view class_name)
     const std::string lower = lower_copy(class_name);
     return lower == "prop_static" || lower == "prop_dynamic" || lower == "prop_dynamic_override" ||
            lower == "prop_physics" || lower == "prop_physics_multiplayer" || lower == "prop_detail";
+}
+
+bool is_point_light_class(std::string_view class_name)
+{
+    const std::string lower = lower_copy(class_name);
+    return lower == "light" || lower == "light_spot" || lower == "light_dynamic";
+}
+
+float light_radius_from_entity(const ParsedEntity& entity, float brightness)
+{
+    for (std::string_view key : {"_distance", "distance", "_zero_percent_distance"})
+    {
+        if (const std::optional<std::string> text = find_property(entity, key))
+        {
+            if (const std::optional<float> parsed = parse_float(*text); parsed && *parsed > 1.0F)
+            {
+                return std::clamp(*parsed, 16.0F, 8192.0F);
+            }
+        }
+    }
+
+    const float derived = std::sqrt(std::max(brightness, 1.0F)) * 32.0F;
+    return std::clamp(derived, 128.0F, 2048.0F);
+}
+
+std::vector<WorldLight> collect_lights(const std::vector<ParsedEntity>& entities)
+{
+    std::vector<WorldLight> lights;
+    for (const ParsedEntity& entity : entities)
+    {
+        const std::optional<std::string> class_name = find_property(entity, "classname");
+        if (!class_name || !is_point_light_class(*class_name))
+        {
+            continue;
+        }
+
+        const std::optional<std::string> origin_text = find_property(entity, "origin");
+        const std::optional<Vec3> origin = origin_text ? parse_vec3(*origin_text) : std::optional<Vec3>{};
+        if (!origin)
+        {
+            continue;
+        }
+
+        constexpr std::array<float, 4> default_light{255.0F, 255.0F, 255.0F, 200.0F};
+        const std::optional<std::string> light_text = find_property(entity, "_light");
+        const std::array<float, 4> light_value = light_text ? parse_light_value(*light_text).value_or(default_light) : default_light;
+
+        WorldLight light;
+        light.kind = WorldLightKind::Point;
+        light.position = *origin;
+        light.color = {
+            std::clamp(light_value[0] / 255.0F, 0.0F, 8.0F),
+            std::clamp(light_value[1] / 255.0F, 0.0F, 8.0F),
+            std::clamp(light_value[2] / 255.0F, 0.0F, 8.0F),
+        };
+        light.intensity = std::max(light_value[3] / 255.0F, 0.0F);
+        light.radius = light_radius_from_entity(entity, light_value[3]);
+        lights.push_back(light);
+    }
+
+    return lights;
 }
 
 void apply_entity_angles(WorldProp& prop, const ParsedEntity& entity)
@@ -1574,6 +1664,7 @@ LoadedWorld load_source_bsp(
     }
 
     world.spawn_points = collect_spawn_points(entities);
+    world.lights = collect_lights(entities);
     world.embedded_assets = read_bsp_pakfile_assets(bytes);
     world.props = read_static_props(bytes);
     std::vector<WorldProp> entity_props = collect_entity_props(entities);
@@ -1792,13 +1883,14 @@ bool WorldManager::load_map(std::string_view map_name, ContentFileSystem& filesy
             current_world_ = std::move(*loaded);
             ++generation_;
 
-            log_info("loaded {} world '{}' from '{}' entities={} spawns={} props={} embedded_assets={} render_tris={} collision_tris={} bytes={}",
+            log_info("loaded {} world '{}' from '{}' entities={} spawns={} props={} lights={} embedded_assets={} render_tris={} collision_tris={} bytes={}",
                 to_string(current_world_->kind),
                 current_world_->name,
                 current_world_->resolved_path.string(),
                 current_world_->entity_count,
                 current_world_->spawn_points.size(),
                 current_world_->props.size(),
+                current_world_->lights.size(),
                 current_world_->embedded_assets.size(),
                 current_world_->mesh.indices.size() / 3,
                 current_world_->mesh.collision_triangles.size(),

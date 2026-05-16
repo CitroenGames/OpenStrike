@@ -8,10 +8,29 @@ cbuffer WorldConstants : register(b0)
     row_major float4x4 world_to_clip;
     float4 world_light_direction_ambient;
     float4 world_light_color_intensity;
+    float4 forward_plus_params; // tile_size, tile_count_x, tile_count_y, light_count
 };
 
 Texture2D world_texture : register(t0);
 SamplerState world_sampler : register(s0);
+
+struct ForwardPlusTile
+{
+    uint light_offset;
+    uint light_count;
+    uint padding0;
+    uint padding1;
+};
+
+struct ForwardPlusLight
+{
+    float4 position_radius;
+    float4 color_intensity;
+};
+
+StructuredBuffer<ForwardPlusTile> forward_plus_tiles : register(t1);
+StructuredBuffer<uint> forward_plus_light_indices : register(t2);
+StructuredBuffer<ForwardPlusLight> forward_plus_lights : register(t3);
 
 cbuffer MaterialConstants : register(b1)
 {
@@ -31,6 +50,7 @@ struct VSInput
 struct PSInput
 {
     float4 position : SV_POSITION;
+    float3 world_position : TEXCOORD1;
     float3 normal : NORMAL;
     float2 texcoord : TEXCOORD0;
 };
@@ -39,9 +59,56 @@ PSInput VSMain(VSInput input)
 {
     PSInput output;
     output.position = mul(float4(input.position, 1.0f), world_to_clip);
+    output.world_position = input.position;
     output.normal = input.normal;
     output.texcoord = input.texcoord;
     return output;
+}
+
+float3 ForwardPlusLighting(float3 world_position, float3 normal, float4 screen_position)
+{
+    const uint light_count = (uint)forward_plus_params.w;
+    if (light_count == 0u)
+    {
+        return float3(0.0f, 0.0f, 0.0f);
+    }
+
+    const uint tile_size = max((uint)forward_plus_params.x, 1u);
+    const uint tile_count_x = max((uint)forward_plus_params.y, 1u);
+    const uint tile_count_y = max((uint)forward_plus_params.z, 1u);
+    const uint tile_x = min((uint)(screen_position.x / (float)tile_size), tile_count_x - 1u);
+    const uint tile_y = min((uint)(screen_position.y / (float)tile_size), tile_count_y - 1u);
+    const uint tile_index = min((tile_y * tile_count_x) + tile_x, (tile_count_x * tile_count_y) - 1u);
+    const ForwardPlusTile tile = forward_plus_tiles[tile_index];
+
+    float3 lighting = float3(0.0f, 0.0f, 0.0f);
+    [loop]
+    for (uint index = 0u; index < tile.light_count; ++index)
+    {
+        const uint light_index = forward_plus_light_indices[tile.light_offset + index];
+        if (light_index >= light_count)
+        {
+            continue;
+        }
+
+        const ForwardPlusLight light = forward_plus_lights[light_index];
+        const float3 to_light = light.position_radius.xyz - world_position;
+        const float distance_sq = dot(to_light, to_light);
+        const float radius = max(light.position_radius.w, 1.0f);
+        const float radius_sq = radius * radius;
+        if (distance_sq >= radius_sq)
+        {
+            continue;
+        }
+
+        const float distance_to_light = sqrt(max(distance_sq, 0.0001f));
+        const float3 light_direction = to_light / distance_to_light;
+        const float attenuation = saturate(1.0f - (distance_to_light / radius));
+        const float diffuse = saturate(dot(normal, light_direction)) * attenuation * attenuation;
+        lighting += light.color_intensity.rgb * light.color_intensity.w * diffuse;
+    }
+
+    return lighting;
 }
 
 float4 PSMain(PSInput input) : SV_TARGET
@@ -68,6 +135,7 @@ float4 PSMain(PSInput input) : SV_TARGET
     const float3 light_direction = normalize(world_light_direction_ambient.xyz);
     const float ambient = saturate(world_light_direction_ambient.w);
     const float diffuse = saturate(dot(normal, light_direction)) * max(world_light_color_intensity.w, 0.0f);
-    const float3 lit_color = base_color * (ambient + (world_light_color_intensity.rgb * diffuse));
+    const float3 forward_plus_lighting = ForwardPlusLighting(input.world_position, normal, input.position);
+    const float3 lit_color = base_color * (ambient + (world_light_color_intensity.rgb * diffuse) + forward_plus_lighting);
     return float4(saturate(lit_color), alpha);
 }

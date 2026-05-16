@@ -67,6 +67,7 @@ private:
     void sync_main_menu_visibility();
     bool ensure_skybox_gpu_resources(const LoadedWorld& world);
     bool ensure_world_gpu_resources();
+    bool upload_forward_plus_resources(const LoadedWorld& world);
     bool record_skybox(ID3D12GraphicsCommandList* command_list, const LoadedWorld& world) const;
     bool record_world(ID3D12GraphicsCommandList* command_list) const;
     void shutdown_rml();
