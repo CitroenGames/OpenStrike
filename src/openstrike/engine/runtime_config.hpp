@@ -38,8 +38,11 @@ struct RuntimeConfig
     std::uint16_t network_port = 27015;
     double tick_rate = 64.0;
     bool vsync = true;
+    bool dx12_profile = false;
+    bool dx12_async_recording = true;
     bool deterministic_frames = false;
     bool quiet = false;
+    std::filesystem::path dx12_profile_path;
     std::vector<std::string> startup_commands;
 
     [[nodiscard]] double tick_interval_seconds() const;

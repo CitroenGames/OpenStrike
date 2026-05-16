@@ -476,6 +476,9 @@ void test_command_line_config()
         "--net-port=27016",
         "--connect=127.0.0.1:27016",
         "--no-vsync",
+        "--dx12-profile",
+        "--dx12-no-async-recording",
+        "--dx12-profile-path=dx12-profile.csv",
         "--deterministic",
         "--exec=autoexec.cfg",
         "+map",
@@ -493,6 +496,9 @@ void test_command_line_config()
     REQUIRE(config.network_port == 27016);
     REQUIRE(config.rml_document == std::filesystem::path("ui/mainmenu.rml"));
     REQUIRE(!config.vsync);
+    REQUIRE(config.dx12_profile);
+    REQUIRE(!config.dx12_async_recording);
+    REQUIRE(config.dx12_profile_path == std::filesystem::path("dx12-profile.csv"));
     REQUIRE(config.deterministic_frames);
     REQUIRE(std::abs(config.tick_rate - 128.0) < 0.001);
     REQUIRE(config.content_root == std::filesystem::path("game"));

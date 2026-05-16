@@ -47,6 +47,8 @@ namespace
 {
 constexpr std::uint32_t kFrameCount = 2;
 constexpr std::uint32_t kMaxTextureDescriptors = 128;
+constexpr std::uint64_t kDynamicBufferAlignment = 16;
+constexpr std::uint64_t kMinDynamicUploadBufferBytes = 64ULL * 1024ULL;
 constexpr DXGI_FORMAT kRenderTargetFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
 constexpr DXGI_FORMAT kTextureFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
 
@@ -318,6 +320,11 @@ bool checked_texture_byte_size(std::uint32_t width, std::uint32_t height, std::s
     return true;
 }
 
+std::uint64_t align_up(std::uint64_t value, std::uint64_t alignment)
+{
+    return alignment == 0 ? value : ((value + alignment - 1) / alignment) * alignment;
+}
+
 ComPtr<ID3DBlob> compile_shader(const char* source, const char* entry, const char* target)
 {
     UINT flags = D3DCOMPILE_ENABLE_STRICTNESS;
@@ -357,11 +364,47 @@ struct Texture
     D3D12_GPU_DESCRIPTOR_HANDLE gpu_handle{};
     Rml::Vector2i dimensions{};
 };
+
+struct DynamicUploadBuffer
+{
+    ComPtr<ID3D12Resource> resource;
+    std::uint8_t* mapped = nullptr;
+    std::uint64_t capacity = 0;
+    std::uint64_t offset = 0;
+
+    void reset()
+    {
+        offset = 0;
+    }
+
+    void shutdown()
+    {
+        if (resource != nullptr && mapped != nullptr)
+        {
+            resource->Unmap(0, nullptr);
+        }
+        resource.Reset();
+        mapped = nullptr;
+        capacity = 0;
+        offset = 0;
+    }
+};
+
+struct FrameUploadBuffers
+{
+    DynamicUploadBuffer vertices;
+    DynamicUploadBuffer indices;
+};
 }
 
 struct RmlDx12RenderInterface::Impl
 {
-    [[nodiscard]] bool initialize(ID3D12Device* in_device, ID3D12CommandQueue* in_command_queue)
+    [[nodiscard]] bool initialize(ID3D12Device* in_device,
+        ID3D12CommandQueue* in_command_queue,
+        ID3D12DescriptorHeap* shared_srv_heap,
+        std::uint32_t shared_descriptor_size,
+        std::uint32_t first_descriptor,
+        std::uint32_t descriptor_count)
     {
         device = in_device;
         command_queue = in_command_queue;
@@ -371,7 +414,19 @@ struct RmlDx12RenderInterface::Impl
             return false;
         }
 
-        if (!create_wic_factory() || !create_descriptor_heap() || !create_upload_objects() || !create_pipeline() || !create_white_texture())
+        if (shared_srv_heap != nullptr)
+        {
+            srv_heap = shared_srv_heap;
+            descriptor_size = shared_descriptor_size != 0
+                ? shared_descriptor_size
+                : device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+            descriptor_base = first_descriptor;
+            max_texture_descriptors = descriptor_count == 0 ? kMaxTextureDescriptors : descriptor_count;
+            external_srv_heap = true;
+        }
+
+        if (!create_wic_factory() || (!external_srv_heap && !create_descriptor_heap()) || !create_upload_objects() || !create_pipeline() ||
+            !create_white_texture())
         {
             shutdown();
             return false;
@@ -385,8 +440,17 @@ struct RmlDx12RenderInterface::Impl
     {
         wait_for_uploads();
 
-        for (auto& uploads : frame_uploads)
+        for (FrameUploadBuffers& uploads : frame_uploads)
         {
+            uploads.vertices.shutdown();
+            uploads.indices.shutdown();
+        }
+        for (auto& uploads : retired_frame_uploads)
+        {
+            for (DynamicUploadBuffer& upload : uploads)
+            {
+                upload.shutdown();
+            }
             uploads.clear();
         }
 
@@ -411,6 +475,11 @@ struct RmlDx12RenderInterface::Impl
         device = nullptr;
         initialized = false;
         next_texture_descriptor = 0;
+        descriptor_base = 0;
+        max_texture_descriptors = kMaxTextureDescriptors;
+        external_srv_heap = false;
+        current_frame_stats = {};
+        frame_state_bound = false;
 
         if (com_initialized)
         {
@@ -425,12 +494,22 @@ struct RmlDx12RenderInterface::Impl
         frame_index = in_frame_index % kFrameCount;
         width = in_width;
         height = in_height;
-        frame_uploads[frame_index].clear();
+        current_frame_stats = {};
+        frame_state_bound = false;
+        for (DynamicUploadBuffer& upload : retired_frame_uploads[frame_index])
+        {
+            upload.shutdown();
+        }
+        retired_frame_uploads[frame_index].clear();
+        frame_uploads[frame_index].vertices.reset();
+        frame_uploads[frame_index].indices.reset();
+        bind_frame_state();
     }
 
     void end_frame()
     {
         command_list = nullptr;
+        frame_state_bound = false;
     }
 
     [[nodiscard]] bool create_wic_factory()
@@ -474,7 +553,120 @@ struct RmlDx12RenderInterface::Impl
 
         srv_heap->SetName(L"OpenStrike RmlUi SRV Heap");
         descriptor_size = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+        descriptor_base = 0;
+        max_texture_descriptors = kMaxTextureDescriptors;
         return true;
+    }
+
+    void retire_upload_buffer(DynamicUploadBuffer& buffer)
+    {
+        if (buffer.resource == nullptr)
+        {
+            return;
+        }
+
+        DynamicUploadBuffer retired;
+        retired.resource = std::move(buffer.resource);
+        retired.mapped = buffer.mapped;
+        retired.capacity = buffer.capacity;
+        retired.offset = buffer.offset;
+        retired_frame_uploads[frame_index].push_back(std::move(retired));
+
+        buffer.mapped = nullptr;
+        buffer.capacity = 0;
+        buffer.offset = 0;
+    }
+
+    [[nodiscard]] bool ensure_dynamic_upload_buffer(DynamicUploadBuffer& buffer, std::uint64_t required_bytes, const wchar_t* debug_name)
+    {
+        if (buffer.capacity >= required_bytes)
+        {
+            return true;
+        }
+
+        const std::uint64_t doubled_capacity = buffer.capacity > 0 ? buffer.capacity * 2 : 0;
+        const std::uint64_t new_capacity = std::max({kMinDynamicUploadBufferBytes, required_bytes, doubled_capacity});
+
+        retire_upload_buffer(buffer);
+
+        const auto upload_heap = heap_properties(D3D12_HEAP_TYPE_UPLOAD);
+        const auto desc = buffer_desc(new_capacity);
+        if (!succeeded(device->CreateCommittedResource(&upload_heap,
+                D3D12_HEAP_FLAG_NONE,
+                &desc,
+                D3D12_RESOURCE_STATE_GENERIC_READ,
+                nullptr,
+                IID_PPV_ARGS(&buffer.resource)),
+                "ID3D12Device::CreateCommittedResource RmlUi dynamic upload buffer"))
+        {
+            return false;
+        }
+
+        if (debug_name != nullptr)
+        {
+            buffer.resource->SetName(debug_name);
+        }
+
+        D3D12_RANGE read_range{0, 0};
+        if (!succeeded(buffer.resource->Map(0, &read_range, reinterpret_cast<void**>(&buffer.mapped)),
+                "ID3D12Resource::Map RmlUi dynamic upload buffer"))
+        {
+            buffer.resource.Reset();
+            buffer.mapped = nullptr;
+            return false;
+        }
+
+        buffer.capacity = new_capacity;
+        buffer.offset = 0;
+        ++current_frame_stats.upload_resource_creations;
+        return true;
+    }
+
+    [[nodiscard]] bool allocate_dynamic_upload(DynamicUploadBuffer& buffer,
+        std::uint64_t byte_count,
+        const wchar_t* debug_name,
+        void*& mapped,
+        D3D12_GPU_VIRTUAL_ADDRESS& gpu_address)
+    {
+        const std::uint64_t aligned_offset = align_up(buffer.offset, kDynamicBufferAlignment);
+        const std::uint64_t required_bytes = aligned_offset + byte_count;
+        if (!ensure_dynamic_upload_buffer(buffer, required_bytes, debug_name))
+        {
+            return false;
+        }
+
+        const std::uint64_t offset = buffer.offset == 0 ? 0 : aligned_offset;
+        mapped = buffer.mapped + offset;
+        gpu_address = buffer.resource->GetGPUVirtualAddress() + offset;
+        buffer.offset = offset + byte_count;
+        return true;
+    }
+
+    void bind_frame_state()
+    {
+        if (!initialized || command_list == nullptr || srv_heap == nullptr || pipeline_state == nullptr || root_signature == nullptr || frame_state_bound)
+        {
+            return;
+        }
+
+        D3D12_VIEWPORT viewport{};
+        viewport.TopLeftX = 0.0F;
+        viewport.TopLeftY = 0.0F;
+        viewport.Width = static_cast<float>(width);
+        viewport.Height = static_cast<float>(height);
+        viewport.MinDepth = 0.0F;
+        viewport.MaxDepth = 1.0F;
+
+        ID3D12DescriptorHeap* descriptor_heaps[] = {srv_heap.Get()};
+        command_list->SetDescriptorHeaps(1, descriptor_heaps);
+        command_list->SetPipelineState(pipeline_state.Get());
+        command_list->SetGraphicsRootSignature(root_signature.Get());
+        const std::array<float, 2> viewport_constants{static_cast<float>(width), static_cast<float>(height)};
+        command_list->SetGraphicsRoot32BitConstants(0, static_cast<UINT>(viewport_constants.size()), viewport_constants.data(), 0);
+        command_list->RSSetViewports(1, &viewport);
+        command_list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        ++current_frame_stats.descriptor_heap_sets;
+        frame_state_bound = true;
     }
 
     [[nodiscard]] bool create_upload_objects()
@@ -746,7 +938,7 @@ struct RmlDx12RenderInterface::Impl
 
     Texture* create_texture(const Rml::byte* pixels, std::uint32_t texture_width, std::uint32_t texture_height, const char* debug_name)
     {
-        if (next_texture_descriptor >= kMaxTextureDescriptors)
+        if (next_texture_descriptor >= max_texture_descriptors)
         {
             log_error("RmlUi texture descriptor heap is full");
             return nullptr;
@@ -754,10 +946,11 @@ struct RmlDx12RenderInterface::Impl
 
         auto texture = std::make_unique<Texture>();
         texture->dimensions = Rml::Vector2i(static_cast<int>(texture_width), static_cast<int>(texture_height));
+        const std::uint32_t descriptor_index = descriptor_base + next_texture_descriptor;
         texture->cpu_handle = srv_heap->GetCPUDescriptorHandleForHeapStart();
-        texture->cpu_handle.ptr += static_cast<SIZE_T>(next_texture_descriptor) * descriptor_size;
+        texture->cpu_handle.ptr += static_cast<SIZE_T>(descriptor_index) * descriptor_size;
         texture->gpu_handle = srv_heap->GetGPUDescriptorHandleForHeapStart();
-        texture->gpu_handle.ptr += static_cast<UINT64>(next_texture_descriptor) * descriptor_size;
+        texture->gpu_handle.ptr += static_cast<UINT64>(descriptor_index) * descriptor_size;
         ++next_texture_descriptor;
 
         const auto default_heap = heap_properties(D3D12_HEAP_TYPE_DEFAULT);
@@ -887,56 +1080,32 @@ struct RmlDx12RenderInterface::Impl
             return;
         }
 
-        std::vector<Rml::Vertex> translated_vertices = geometry.vertices;
-        for (Rml::Vertex& vertex : translated_vertices)
-        {
-            vertex.position.x += translation.x;
-            vertex.position.y += translation.y;
-        }
-
-        const auto vertex_bytes = static_cast<std::uint64_t>(translated_vertices.size() * sizeof(Rml::Vertex));
+        const auto vertex_bytes = static_cast<std::uint64_t>(geometry.vertices.size() * sizeof(Rml::Vertex));
         const auto index_bytes = static_cast<std::uint64_t>(geometry.indices.size() * sizeof(int));
 
-        ComPtr<ID3D12Resource> vertex_buffer;
-        ComPtr<ID3D12Resource> index_buffer;
-        const auto upload_heap = heap_properties(D3D12_HEAP_TYPE_UPLOAD);
-        const auto vertex_desc = buffer_desc(vertex_bytes);
-        const auto index_desc = buffer_desc(index_bytes);
-
-        if (!succeeded(device->CreateCommittedResource(&upload_heap, D3D12_HEAP_FLAG_NONE, &vertex_desc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
-                IID_PPV_ARGS(&vertex_buffer)), "ID3D12Device::CreateCommittedResource RmlUi vertex buffer"))
+        FrameUploadBuffers& uploads = frame_uploads[frame_index];
+        void* vertex_mapped = nullptr;
+        D3D12_GPU_VIRTUAL_ADDRESS vertex_address = 0;
+        if (!allocate_dynamic_upload(uploads.vertices, vertex_bytes, L"OpenStrike RmlUi Dynamic Vertex Upload", vertex_mapped, vertex_address))
         {
             return;
         }
 
-        if (!succeeded(device->CreateCommittedResource(&upload_heap, D3D12_HEAP_FLAG_NONE, &index_desc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
-                IID_PPV_ARGS(&index_buffer)), "ID3D12Device::CreateCommittedResource RmlUi index buffer"))
+        auto* vertices = static_cast<Rml::Vertex*>(vertex_mapped);
+        for (std::size_t index = 0; index < geometry.vertices.size(); ++index)
+        {
+            vertices[index] = geometry.vertices[index];
+            vertices[index].position.x += translation.x;
+            vertices[index].position.y += translation.y;
+        }
+
+        void* index_mapped = nullptr;
+        D3D12_GPU_VIRTUAL_ADDRESS index_address = 0;
+        if (!allocate_dynamic_upload(uploads.indices, index_bytes, L"OpenStrike RmlUi Dynamic Index Upload", index_mapped, index_address))
         {
             return;
         }
-
-        void* mapped = nullptr;
-        if (!succeeded(vertex_buffer->Map(0, nullptr, &mapped), "ID3D12Resource::Map RmlUi vertex buffer"))
-        {
-            return;
-        }
-        std::memcpy(mapped, translated_vertices.data(), static_cast<std::size_t>(vertex_bytes));
-        vertex_buffer->Unmap(0, nullptr);
-
-        if (!succeeded(index_buffer->Map(0, nullptr, &mapped), "ID3D12Resource::Map RmlUi index buffer"))
-        {
-            return;
-        }
-        std::memcpy(mapped, geometry.indices.data(), static_cast<std::size_t>(index_bytes));
-        index_buffer->Unmap(0, nullptr);
-
-        D3D12_VIEWPORT viewport{};
-        viewport.TopLeftX = 0.0F;
-        viewport.TopLeftY = 0.0F;
-        viewport.Width = static_cast<float>(width);
-        viewport.Height = static_cast<float>(height);
-        viewport.MinDepth = 0.0F;
-        viewport.MaxDepth = 1.0F;
+        std::memcpy(index_mapped, geometry.indices.data(), static_cast<std::size_t>(index_bytes));
 
         D3D12_RECT scissor{};
         if (scissor_enabled)
@@ -955,31 +1124,25 @@ struct RmlDx12RenderInterface::Impl
         }
 
         D3D12_VERTEX_BUFFER_VIEW vertex_view{};
-        vertex_view.BufferLocation = vertex_buffer->GetGPUVirtualAddress();
+        vertex_view.BufferLocation = vertex_address;
         vertex_view.SizeInBytes = static_cast<UINT>(vertex_bytes);
         vertex_view.StrideInBytes = sizeof(Rml::Vertex);
 
         D3D12_INDEX_BUFFER_VIEW index_view{};
-        index_view.BufferLocation = index_buffer->GetGPUVirtualAddress();
+        index_view.BufferLocation = index_address;
         index_view.SizeInBytes = static_cast<UINT>(index_bytes);
         index_view.Format = DXGI_FORMAT_R32_UINT;
 
-        ID3D12DescriptorHeap* descriptor_heaps[] = {srv_heap.Get()};
-        command_list->SetDescriptorHeaps(1, descriptor_heaps);
-        command_list->SetPipelineState(pipeline_state.Get());
-        command_list->SetGraphicsRootSignature(root_signature.Get());
-        const std::array<float, 2> viewport_constants{static_cast<float>(width), static_cast<float>(height)};
-        command_list->SetGraphicsRoot32BitConstants(0, static_cast<UINT>(viewport_constants.size()), viewport_constants.data(), 0);
+        bind_frame_state();
         command_list->SetGraphicsRootDescriptorTable(1, texture != nullptr ? texture->gpu_handle : white_texture->gpu_handle);
-        command_list->RSSetViewports(1, &viewport);
         command_list->RSSetScissorRects(1, &scissor);
-        command_list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         command_list->IASetVertexBuffers(0, 1, &vertex_view);
         command_list->IASetIndexBuffer(&index_view);
         command_list->DrawIndexedInstanced(static_cast<UINT>(geometry.indices.size()), 1, 0, 0, 0);
 
-        frame_uploads[frame_index].push_back(std::move(vertex_buffer));
-        frame_uploads[frame_index].push_back(std::move(index_buffer));
+        ++current_frame_stats.draw_calls;
+        current_frame_stats.vertex_upload_bytes += vertex_bytes;
+        current_frame_stats.index_upload_bytes += index_bytes;
     }
 
     bool initialized = false;
@@ -993,10 +1156,16 @@ struct RmlDx12RenderInterface::Impl
     Rml::Rectanglei scissor_region = Rml::Rectanglei::MakeInvalid();
 
     std::uint32_t descriptor_size = 0;
+    std::uint32_t descriptor_base = 0;
+    std::uint32_t max_texture_descriptors = kMaxTextureDescriptors;
     std::uint32_t next_texture_descriptor = 0;
     Texture* white_texture = nullptr;
     std::vector<std::unique_ptr<Texture>> textures;
-    std::array<std::vector<ComPtr<ID3D12Resource>>, kFrameCount> frame_uploads;
+    std::array<FrameUploadBuffers, kFrameCount> frame_uploads;
+    std::array<std::vector<DynamicUploadBuffer>, kFrameCount> retired_frame_uploads;
+    RmlDx12FrameStats current_frame_stats;
+    bool external_srv_heap = false;
+    bool frame_state_bound = false;
 
     ComPtr<ID3D12DescriptorHeap> srv_heap;
     ComPtr<ID3D12RootSignature> root_signature;
@@ -1021,9 +1190,14 @@ RmlDx12RenderInterface::~RmlDx12RenderInterface()
     shutdown();
 }
 
-bool RmlDx12RenderInterface::initialize(ID3D12Device* device, ID3D12CommandQueue* command_queue)
+bool RmlDx12RenderInterface::initialize(ID3D12Device* device,
+    ID3D12CommandQueue* command_queue,
+    ID3D12DescriptorHeap* shared_srv_heap,
+    std::uint32_t descriptor_size,
+    std::uint32_t first_descriptor,
+    std::uint32_t descriptor_count)
 {
-    return impl_->initialize(device, command_queue);
+    return impl_->initialize(device, command_queue, shared_srv_heap, descriptor_size, first_descriptor, descriptor_count);
 }
 
 void RmlDx12RenderInterface::shutdown()
@@ -1042,6 +1216,11 @@ void RmlDx12RenderInterface::begin_frame(ID3D12GraphicsCommandList* command_list
 void RmlDx12RenderInterface::end_frame()
 {
     impl_->end_frame();
+}
+
+RmlDx12FrameStats RmlDx12RenderInterface::frame_stats() const
+{
+    return impl_->current_frame_stats;
 }
 
 Rml::CompiledGeometryHandle RmlDx12RenderInterface::CompileGeometry(Rml::Span<const Rml::Vertex> vertices, Rml::Span<const int> indices)

@@ -8,11 +8,21 @@
 #include <memory>
 
 struct ID3D12CommandQueue;
+struct ID3D12DescriptorHeap;
 struct ID3D12Device;
 struct ID3D12GraphicsCommandList;
 
 namespace openstrike
 {
+struct RmlDx12FrameStats
+{
+    std::uint32_t draw_calls = 0;
+    std::uint32_t descriptor_heap_sets = 0;
+    std::uint32_t upload_resource_creations = 0;
+    std::uint64_t vertex_upload_bytes = 0;
+    std::uint64_t index_upload_bytes = 0;
+};
+
 class RmlDx12RenderInterface final : public Rml::RenderInterface
 {
 public:
@@ -22,11 +32,17 @@ public:
     RmlDx12RenderInterface(const RmlDx12RenderInterface&) = delete;
     RmlDx12RenderInterface& operator=(const RmlDx12RenderInterface&) = delete;
 
-    [[nodiscard]] bool initialize(ID3D12Device* device, ID3D12CommandQueue* command_queue);
+    [[nodiscard]] bool initialize(ID3D12Device* device,
+        ID3D12CommandQueue* command_queue,
+        ID3D12DescriptorHeap* shared_srv_heap = nullptr,
+        std::uint32_t descriptor_size = 0,
+        std::uint32_t first_descriptor = 0,
+        std::uint32_t descriptor_count = 0);
     void shutdown();
 
     void begin_frame(ID3D12GraphicsCommandList* command_list, std::uint32_t frame_index, std::uint32_t width, std::uint32_t height);
     void end_frame();
+    [[nodiscard]] RmlDx12FrameStats frame_stats() const;
 
     Rml::CompiledGeometryHandle CompileGeometry(Rml::Span<const Rml::Vertex> vertices, Rml::Span<const int> indices) override;
     void RenderGeometry(Rml::CompiledGeometryHandle geometry, Rml::Vector2f translation, Rml::TextureHandle texture) override;

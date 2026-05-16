@@ -6,6 +6,8 @@
 
 #include <array>
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <memory>
 
 namespace Rml
@@ -38,6 +40,7 @@ class RmlConsoleController;
 class RmlDx12RenderInterface;
 class RmlHudController;
 struct LoadedWorld;
+struct ShaderDescriptorRange;
 
 class Dx12Renderer final : public IRenderer
 {
@@ -57,6 +60,7 @@ private:
 
     bool create_window(const RuntimeConfig& config);
     bool create_device_objects(const RuntimeConfig& config);
+    bool create_shader_descriptor_heap();
     bool create_render_targets();
     bool create_depth_buffer();
     bool create_world_pipeline();
@@ -74,6 +78,7 @@ private:
     void pump_messages();
     bool wait_for_gpu();
     bool move_to_next_frame();
+    bool allocate_shader_descriptors(std::uint32_t count, ShaderDescriptorRange& range);
 
     std::uint32_t width_ = 1280;
     std::uint32_t height_ = 720;
@@ -81,6 +86,8 @@ private:
     bool window_closed_ = false;
     bool vsync_ = true;
     bool allow_tearing_ = false;
+    bool dx12_profile_ = false;
+    bool async_scene_recording_ = true;
     bool sdl_initialized_ = false;
     bool rml_initialized_ = false;
     bool resize_pending_ = false;
@@ -90,6 +97,9 @@ private:
     std::uint32_t frame_index_ = 0;
     std::uint32_t rtv_descriptor_size_ = 0;
     std::uint32_t dsv_descriptor_size_ = 0;
+    std::uint32_t shader_descriptor_size_ = 0;
+    std::uint32_t shader_descriptor_capacity_ = 0;
+    std::uint32_t shader_descriptor_next_ = 0;
     std::uint64_t fence_value_ = 0;
     std::array<std::uint64_t, kFrameCount> frame_fence_values_{};
 
@@ -98,6 +108,7 @@ private:
     Microsoft::WRL::ComPtr<IDXGISwapChain3> swap_chain_;
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> rtv_heap_;
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> dsv_heap_;
+    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> shader_descriptor_heap_;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> skybox_root_signature_;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> skybox_pipeline_state_;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> world_root_signature_;
@@ -125,5 +136,6 @@ private:
     std::unique_ptr<RmlConsoleController> rml_console_controller_;
     EngineContext* engine_context_ = nullptr;
     Rml::Context* rml_context_ = nullptr;
+    std::ofstream dx12_profile_stream_;
 };
 }

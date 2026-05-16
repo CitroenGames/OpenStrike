@@ -6,7 +6,9 @@
 #include <charconv>
 #include <cctype>
 #include <cstdint>
+#include <cstdio>
 #include <filesystem>
+#include <fstream>
 #include <optional>
 #include <string>
 #include <system_error>
@@ -513,6 +515,71 @@ void register_default_commands(CommandRegistry& commands)
     commands.register_command("net_status", "Print client/server network state.", net_status_command);
     commands.register_command("net_say", "Send a text message through the active network session.", net_say_command);
     AudioSystem::register_commands(commands);
+
+    commands.register_command("clear", "Clears the console output.", [](const CommandInvocation&, ConsoleCommandContext&) {
+        Logger::instance().clear_history();
+    });
+
+    commands.register_command("condump", "Dumps the console output to a text file under the active mod path.", [](const CommandInvocation& invocation, ConsoleCommandContext& context) {
+        std::filesystem::path output_dir;
+        if (context.filesystem != nullptr)
+        {
+            const std::vector<SearchPath> mod_paths = context.filesystem->search_paths("MOD");
+            if (!mod_paths.empty())
+            {
+                output_dir = mod_paths.front().root;
+            }
+        }
+        if (output_dir.empty())
+        {
+            output_dir = std::filesystem::current_path();
+        }
+
+        std::filesystem::path target;
+        if (!invocation.args.empty())
+        {
+            target = output_dir / invocation.args[0];
+        }
+        else
+        {
+            for (int index = 0; index < 1000; ++index)
+            {
+                char buffer[32];
+                std::snprintf(buffer, sizeof(buffer), "condump%03d.txt", index);
+                std::filesystem::path candidate = output_dir / buffer;
+                std::error_code ec;
+                if (!std::filesystem::exists(candidate, ec))
+                {
+                    target = std::move(candidate);
+                    break;
+                }
+            }
+            if (target.empty())
+            {
+                log_warning("condump failed: too many existing dump files");
+                return;
+            }
+        }
+
+        std::error_code ec;
+        std::filesystem::create_directories(target.parent_path(), ec);
+
+        std::ofstream stream(target, std::ios::binary | std::ios::trunc);
+        if (!stream)
+        {
+            log_warning("condump failed: cannot open '{}'", target.string());
+            return;
+        }
+
+        const std::vector<std::string> lines = Logger::instance().recent_lines(4096);
+        for (const std::string& line : lines)
+        {
+            stream.write(line.data(), static_cast<std::streamsize>(line.size()));
+            stream.put('\n');
+        }
+
+        log_info("console dumped to {}", target.string());
+    });
 
     commands.register_command("exec", "Executes a cfg file through the command buffer.", [](const CommandInvocation& invocation, ConsoleCommandContext& context) {
         if (invocation.args.empty())

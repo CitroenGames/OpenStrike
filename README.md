@@ -71,6 +71,8 @@ Important runtime flags:
 - `--null-renderer`: run without a graphics backend.
 - `--width=N --height=N`: configure the renderer window size.
 - `--no-vsync`: present without vertical sync when the active backend supports it.
+- `--dx12-profile[ --dx12-profile-path=PATH]`: write per-frame DX12 timing and allocation counters to CSV.
+- `--dx12-no-async-recording`: record DX12 skybox/world command lists sequentially for profiling comparisons.
 - `--frames=N`: stop after `N` rendered frames. Use `0` for an unlimited loop.
 - `--tickrate=N`: fixed simulation rate, default `64`.
 - `--content-root=PATH`: content root used by asset systems. If omitted, OpenStrike checks `OPENSTRIKE_CONTENT_ROOT`, the current directory, and then `./content`.

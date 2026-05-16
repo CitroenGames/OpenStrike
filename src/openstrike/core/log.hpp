@@ -18,6 +18,12 @@ enum class LogLevel
     Error
 };
 
+struct LogEntry
+{
+    LogLevel level = LogLevel::Info;
+    std::string message;
+};
+
 class Logger
 {
 public:
@@ -26,11 +32,13 @@ public:
     void set_min_level(LogLevel level);
     void write(LogLevel level, std::string_view message);
     [[nodiscard]] std::vector<std::string> recent_lines(std::size_t max_count = 200);
+    [[nodiscard]] std::vector<LogEntry> recent_entries(std::size_t max_count = 200);
+    void clear_history();
 
 private:
     std::mutex mutex_;
     LogLevel min_level_ = LogLevel::Info;
-    std::vector<std::string> history_;
+    std::vector<LogEntry> history_;
 };
 
 template <typename... Args>

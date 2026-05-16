@@ -304,6 +304,13 @@ RuntimeConfig RuntimeConfig::from_command_line(const CommandLine& command_line)
     }
 
     config.vsync = !command_line.has_flag("no-vsync");
+    config.dx12_profile = command_line.has_flag("dx12-profile");
+    config.dx12_async_recording = !command_line.has_flag("dx12-no-async-recording");
+    if (const auto profile_path = command_line.option("dx12-profile-path"))
+    {
+        config.dx12_profile = true;
+        config.dx12_profile_path = *profile_path;
+    }
     config.deterministic_frames = command_line.has_flag("deterministic");
     if (command_line.has_flag("realtime"))
     {
