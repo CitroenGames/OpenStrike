@@ -2,6 +2,7 @@
 
 #include "rhi/rhi_types.hpp"
 #include "openstrike/core/content_filesystem.hpp"
+#include "openstrike/material/material_system.hpp"
 #include "openstrike/source/source_asset_store.hpp"
 
 #include <cstdint>
@@ -32,7 +33,7 @@ public:
     void SetLogFunc(std::function<void(const char*)> fn) { m_logFunc = std::move(fn); }
 
 private:
-    CachedTexture LoadVTF(const std::string& materialName);
+    CachedTexture LoadMaterialTexture(const std::string& materialName);
     void RebuildAssetStore();
     void Log(const char* fmt, ...);
 
@@ -43,6 +44,7 @@ private:
 
     std::unique_ptr<openstrike::ContentFileSystem> m_filesystem;
     std::unique_ptr<openstrike::SourceAssetStore> m_assets;
+    std::unique_ptr<openstrike::MaterialSystem> m_materials;
 
     std::function<void(const char*)> m_logFunc;
 };

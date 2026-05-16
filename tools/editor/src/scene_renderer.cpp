@@ -415,7 +415,7 @@ void SceneRenderer::RebuildRopeMeshes()
         float halfW = width * 0.5f;
         Vec3 up = { 0.0f, 1.0f, 0.0f };
         const CachedTexture& tex = m_textureCache.Get(material);
-        float texH = (float)tex.height;
+        float texH = (float)std::max(tex.height, 1);
         RopeSegGroup group; group.material = material;
         float vAccum = 0.0f;
 
@@ -590,7 +590,8 @@ void SceneRenderer::RebuildBrushMeshes()
     {
         const auto& face = entry.face;
         const CachedTexture& tex = m_textureCache.Get(face.material);
-        float texW = (float)tex.width, texH = (float)tex.height;
+        float texW = (float)std::max(tex.width, 1);
+        float texH = (float)std::max(tex.height, 1);
         if (face.material != currentMat)
         {
             int count = (int)triVerts.size() - batchStart;

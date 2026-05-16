@@ -7,6 +7,7 @@
 #include <RmlUi/Core/Context.h>
 #include <RmlUi/Core/Element.h>
 #include <RmlUi/Core/ElementDocument.h>
+#include <RmlUi/Core/Types.h>
 #include <RmlUi/Core/Elements/ElementFormControlInput.h>
 #include <RmlUi/Core/Event.h>
 #include <RmlUi/Core/Input.h>
@@ -37,15 +38,15 @@ constexpr const char* kConsoleDocument = R"(
         }
         #console-root {
             position: absolute;
-            left: 0;
-            top: 0;
-            right: 0;
-            height: 52%;
+            left: 60px;
+            top: 60px;
+            width: 720px;
+            height: 420px;
             display: flex;
             flex-direction: column;
             background-color: rgba(5, 7, 10, 238);
-            border-bottom-width: 2dp;
-            border-bottom-color: rgba(222, 159, 55, 210);
+            border-width: 1dp;
+            border-color: rgba(222, 159, 55, 210);
         }
         #console-header {
             display: flex;
@@ -57,6 +58,7 @@ constexpr const char* kConsoleDocument = R"(
             color: #ffffff;
             font-size: 13dp;
             font-weight: bold;
+            drag: drag;
         }
         #console-title {
             flex: 1;
@@ -155,6 +157,18 @@ constexpr const char* kConsoleDocument = R"(
         #console-submit:hover {
             background-color: rgba(255, 184, 70, 220);
         }
+        #console-resize {
+            position: absolute;
+            right: 0;
+            bottom: 0;
+            width: 16dp;
+            height: 16dp;
+            background-color: rgba(222, 159, 55, 160);
+            drag: drag;
+        }
+        #console-resize:hover {
+            background-color: rgba(255, 184, 70, 220);
+        }
     </style>
 </head>
 <body>
@@ -170,6 +184,7 @@ constexpr const char* kConsoleDocument = R"(
             <input id="console-input" name="command" type="text" />
             <input id="console-submit" type="submit" value="Submit" />
         </form>
+        <div id="console-resize"></div>
     </div>
 </body>
 </rml>
@@ -288,7 +303,18 @@ bool RmlConsoleController::initialize(Rml::Context& rml_context, EngineContext& 
     {
         completion->AddEventListener("click", this);
     }
+    if (Rml::Element* header = element("console-header"))
+    {
+        header->AddEventListener("dragstart", this);
+        header->AddEventListener("drag", this);
+    }
+    if (Rml::Element* resize = element("console-resize"))
+    {
+        resize->AddEventListener("dragstart", this);
+        resize->AddEventListener("drag", this);
+    }
 
+    apply_window_layout();
     refresh_output(true);
     document_->Hide();
     visible_ = false;
@@ -315,6 +341,16 @@ void RmlConsoleController::shutdown()
         if (Rml::Element* completion = element("console-completion"))
         {
             completion->RemoveEventListener("click", this);
+        }
+        if (Rml::Element* header = element("console-header"))
+        {
+            header->RemoveEventListener("dragstart", this);
+            header->RemoveEventListener("drag", this);
+        }
+        if (Rml::Element* resize = element("console-resize"))
+        {
+            resize->RemoveEventListener("dragstart", this);
+            resize->RemoveEventListener("drag", this);
         }
         document_->Close();
     }
@@ -346,6 +382,8 @@ void RmlConsoleController::show()
     }
 
     visible_ = true;
+    clamp_window_to_screen();
+    apply_window_layout();
     refresh_output(true);
     rebuild_completions();
     render_completions();
@@ -419,6 +457,34 @@ void RmlConsoleController::ProcessEvent(Rml::Event& event)
     {
         on_completion_click(event);
         return;
+    }
+
+    if (current != nullptr && current->GetId() == "console-header")
+    {
+        if (type == "dragstart")
+        {
+            on_drag_start(event, false);
+            return;
+        }
+        if (type == "drag")
+        {
+            on_drag(event, false);
+            return;
+        }
+    }
+
+    if (current != nullptr && current->GetId() == "console-resize")
+    {
+        if (type == "dragstart")
+        {
+            on_drag_start(event, true);
+            return;
+        }
+        if (type == "drag")
+        {
+            on_drag(event, true);
+            return;
+        }
     }
 }
 
@@ -826,5 +892,107 @@ Rml::Element* RmlConsoleController::element(const char* id) const
         return nullptr;
     }
     return document_->GetElementById(id);
+}
+
+void RmlConsoleController::on_drag_start(Rml::Event& event, bool resize)
+{
+    event.StopPropagation();
+    const float mouse_x = event.GetParameter<float>("mouse_x", 0.0f);
+    const float mouse_y = event.GetParameter<float>("mouse_y", 0.0f);
+
+    if (resize)
+    {
+        drag_anchor_x_ = mouse_x - window_width_;
+        drag_anchor_y_ = mouse_y - window_height_;
+    }
+    else
+    {
+        drag_anchor_x_ = mouse_x - window_x_;
+        drag_anchor_y_ = mouse_y - window_y_;
+    }
+}
+
+void RmlConsoleController::on_drag(Rml::Event& event, bool resize)
+{
+    event.StopPropagation();
+    const float mouse_x = event.GetParameter<float>("mouse_x", 0.0f);
+    const float mouse_y = event.GetParameter<float>("mouse_y", 0.0f);
+
+    if (resize)
+    {
+        window_width_ = mouse_x - drag_anchor_x_;
+        window_height_ = mouse_y - drag_anchor_y_;
+    }
+    else
+    {
+        window_x_ = mouse_x - drag_anchor_x_;
+        window_y_ = mouse_y - drag_anchor_y_;
+    }
+
+    clamp_window_to_screen();
+    apply_window_layout();
+}
+
+void RmlConsoleController::clamp_window_to_screen()
+{
+    float screen_w = 1280.0f;
+    float screen_h = 720.0f;
+    if (document_ != nullptr)
+    {
+        if (Rml::Context* context = document_->GetContext())
+        {
+            const Rml::Vector2i dims = context->GetDimensions();
+            if (dims.x > 0 && dims.y > 0)
+            {
+                screen_w = static_cast<float>(dims.x);
+                screen_h = static_cast<float>(dims.y);
+            }
+        }
+    }
+
+    constexpr float kMinW = 320.0f;
+    constexpr float kMinH = 200.0f;
+    constexpr float kEdgeKeep = 48.0f;
+
+    window_width_ = std::clamp(window_width_, kMinW, screen_w);
+    window_height_ = std::clamp(window_height_, kMinH, screen_h);
+
+    const float max_x = screen_w - kEdgeKeep;
+    const float min_x = kEdgeKeep - window_width_;
+    const float max_y = screen_h - kEdgeKeep;
+    const float min_y = 0.0f;
+
+    window_x_ = std::clamp(window_x_, min_x, max_x);
+    window_y_ = std::clamp(window_y_, min_y, max_y);
+
+    if (window_x_ + window_width_ > screen_w)
+    {
+        window_width_ = std::max(kMinW, screen_w - window_x_);
+    }
+    if (window_y_ + window_height_ > screen_h)
+    {
+        window_height_ = std::max(kMinH, screen_h - window_y_);
+    }
+}
+
+void RmlConsoleController::apply_window_layout()
+{
+    Rml::Element* root = element("console-root");
+    if (root == nullptr)
+    {
+        return;
+    }
+
+    char buffer[64];
+    std::snprintf(buffer, sizeof(buffer), "%dpx", static_cast<int>(window_x_));
+    root->SetProperty("left", buffer);
+    std::snprintf(buffer, sizeof(buffer), "%dpx", static_cast<int>(window_y_));
+    root->SetProperty("top", buffer);
+    std::snprintf(buffer, sizeof(buffer), "%dpx", static_cast<int>(window_width_));
+    root->SetProperty("width", buffer);
+    std::snprintf(buffer, sizeof(buffer), "%dpx", static_cast<int>(window_height_));
+    root->SetProperty("height", buffer);
+
+    window_initialized_ = true;
 }
 }

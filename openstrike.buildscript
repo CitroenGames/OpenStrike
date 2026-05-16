@@ -193,7 +193,10 @@ postbuild_message = Copying libphonon.dylib for Release runtime targets
 [project:OpenStrikeTests]
 type = exe
 std = 20
-sources = tests/test_main.cpp
+sources = {
+    tests/test_main.cpp
+    tools/editor/src/brush_mesh_builder.cpp
+}
 includes = src
 warning_level = Level4
 multiprocessor = true

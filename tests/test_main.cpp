@@ -20,6 +20,7 @@
 #include "openstrike/source/source_asset_store.hpp"
 #include "openstrike/source/source_fgd.hpp"
 #include "openstrike/world/world.hpp"
+#include "../tools/editor/src/brush_mesh_builder.hpp"
 
 #include <algorithm>
 #include <array>
@@ -462,6 +463,113 @@ void write_square_bsp(const std::filesystem::path& path, const std::string& enti
     file.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
 }
 
+VmfSolid make_editor_test_box_solid(const Vec3& mins, const Vec3& maxs, const std::string& material)
+{
+    VmfSolid solid;
+    solid.id = 1;
+
+    const float x0 = mins.x, y0 = mins.y, z0 = mins.z;
+    const float x1 = maxs.x, y1 = maxs.y, z1 = maxs.z;
+
+    auto make_side = [&](const Vec3& p0, const Vec3& p1, const Vec3& p2, const Vec3& u_axis, const Vec3& v_axis) {
+        VmfSide side;
+        side.planePoints[0] = p0;
+        side.planePoints[1] = p1;
+        side.planePoints[2] = p2;
+        side.material = material;
+        side.uaxis.axis = u_axis;
+        side.uaxis.scale = 0.25f;
+        side.vaxis.axis = v_axis;
+        side.vaxis.scale = 0.25f;
+        side.lightmapScale = 16;
+        return side;
+    };
+
+    solid.sides.push_back(make_side({x0, y0, z1}, {x0, y1, z1}, {x1, y1, z1}, {1, 0, 0}, {0, -1, 0}));
+    solid.sides.push_back(make_side({x0, y1, z0}, {x0, y0, z0}, {x1, y0, z0}, {1, 0, 0}, {0, 1, 0}));
+    solid.sides.push_back(make_side({x0, y1, z0}, {x1, y1, z0}, {x1, y1, z1}, {1, 0, 0}, {0, 0, -1}));
+    solid.sides.push_back(make_side({x1, y0, z0}, {x0, y0, z0}, {x0, y0, z1}, {-1, 0, 0}, {0, 0, -1}));
+    solid.sides.push_back(make_side({x1, y1, z0}, {x1, y0, z0}, {x1, y0, z1}, {0, 1, 0}, {0, 0, -1}));
+    solid.sides.push_back(make_side({x0, y0, z0}, {x0, y1, z0}, {x0, y1, z1}, {0, -1, 0}, {0, 0, -1}));
+    return solid;
+}
+
+std::array<float, 2> editor_face_uv(const Vec3& pos_gl, const VmfSide& side)
+{
+    const Vec3 src = GLToSource(pos_gl);
+    const float scale_u = side.uaxis.scale != 0.0f ? side.uaxis.scale : 0.25f;
+    const float scale_v = side.vaxis.scale != 0.0f ? side.vaxis.scale : 0.25f;
+    return {
+        Dot(src, side.uaxis.axis) / scale_u + side.uaxis.shift,
+        Dot(src, side.vaxis.axis) / scale_v + side.vaxis.shift,
+    };
+}
+
+std::array<float, 2> lerp_editor_uv(std::array<float, 2> a, std::array<float, 2> b, float t)
+{
+    return {
+        a[0] + (b[0] - a[0]) * t,
+        a[1] + (b[1] - a[1]) * t,
+    };
+}
+
+void test_editor_displacement_uvs_stay_parent_quad_anchored()
+{
+    VmfSolid solid = make_editor_test_box_solid({0, 0, 0}, {128, 128, 16}, "test/floor");
+    VmfSide& top_side = solid.sides[0];
+
+    std::vector<Vec3> parent_quad = ComputeSidePolygon(solid, 0);
+    REQUIRE(parent_quad.size() == 4);
+
+    VmfDispInfo disp;
+    disp.power = 2;
+    disp.startPosition = GLToSource(parent_quad[0]);
+    const int grid_size = disp.GridSize();
+    const int moved_index = (grid_size / 2) * grid_size + (grid_size / 2);
+    disp.normals.resize(grid_size * grid_size, {0, 0, 1});
+    disp.distances.resize(grid_size * grid_size, 0.0f);
+    disp.offsets.resize(grid_size * grid_size, {0, 0, 0});
+    disp.offsetNormals.resize(grid_size * grid_size, {0, 0, 1});
+    disp.alphas.resize(grid_size * grid_size, 0.0f);
+    disp.offsets[moved_index] = {13.0f, 0.0f, 0.0f};
+    top_side.dispinfo = disp;
+
+    std::vector<Vec3> grid_positions = ComputeDispGridPositions(solid, 0);
+    REQUIRE(grid_positions.size() == static_cast<std::size_t>(grid_size * grid_size));
+    const Vec3 moved_position = grid_positions[moved_index];
+
+    const std::array<float, 2> uv0 = editor_face_uv(parent_quad[0], top_side);
+    const std::array<float, 2> uv1 = editor_face_uv(parent_quad[1], top_side);
+    const std::array<float, 2> uv2 = editor_face_uv(parent_quad[2], top_side);
+    const std::array<float, 2> uv3 = editor_face_uv(parent_quad[3], top_side);
+    const float t = 0.5f;
+    const float s = 0.5f;
+    const std::array<float, 2> expected_uv =
+        lerp_editor_uv(lerp_editor_uv(uv0, uv1, t), lerp_editor_uv(uv3, uv2, t), s);
+
+    BrushMesh mesh = BuildBrushMesh(solid);
+    bool found_moved_vertex = false;
+    for (const BrushFace& face : mesh.faces)
+    {
+        if (!face.isDisplacement)
+            continue;
+
+        for (const BrushVertex& vertex : face.vertices)
+        {
+            if (Length(vertex.pos - moved_position) >= 0.001f)
+                continue;
+
+            found_moved_vertex = true;
+            REQUIRE(std::abs(vertex.u - expected_uv[0]) < 0.001f);
+            REQUIRE(std::abs(vertex.v - expected_uv[1]) < 0.001f);
+
+            const std::array<float, 2> displaced_position_uv = editor_face_uv(vertex.pos, top_side);
+            REQUIRE(std::abs(vertex.u - displaced_position_uv[0]) > 1.0f);
+        }
+    }
+    REQUIRE(found_moved_vertex);
+}
+
 void test_command_line_config()
 {
     openstrike::CommandLine command_line({
@@ -579,6 +687,7 @@ void test_material_system_resolves_source_vmt_without_shader_combos()
 {
     const std::filesystem::path root = std::filesystem::current_path() / "build/test_material_content";
     std::filesystem::remove_all(root);
+    std::filesystem::create_directories(root / "materials/brick");
     std::filesystem::create_directories(root / "materials/base");
     std::filesystem::create_directories(root / "materials/maps");
 
@@ -603,6 +712,20 @@ void test_material_system_resolves_source_vmt_without_shader_combos()
             "        \"$alpha\" \"0.5\"\n"
             "    }\n"
             "}\n";
+
+        std::ofstream(root / "materials/maps/textured.vmt") <<
+            "\"LightmappedGeneric\"\n"
+            "{\n"
+            "    \"$basetexture\" \"brick/textured\"\n"
+            "}\n";
+
+        const std::vector<unsigned char> rgba_pixels = {
+            10, 20, 30, 255, 40, 50, 60, 255,
+            70, 80, 90, 255, 100, 110, 120, 255,
+        };
+        const std::vector<unsigned char> vtf = make_minimal_vtf(2, 2, 0, rgba_pixels);
+        std::ofstream vtf_file(root / "materials/brick/textured.vtf", std::ios::binary);
+        vtf_file.write(reinterpret_cast<const char*>(vtf.data()), static_cast<std::streamsize>(vtf.size()));
     }
 
     openstrike::ContentFileSystem filesystem;
@@ -625,6 +748,20 @@ void test_material_system_resolves_source_vmt_without_shader_combos()
     REQUIRE(std::abs(loaded.definition.constants.base_color[1] - 0.5F) < 0.001F);
     REQUIRE(std::abs(loaded.definition.constants.base_color[2] - 1.0F) < 0.001F);
     REQUIRE(std::abs(loaded.definition.constants.base_color[3] - 0.5F) < 0.001F);
+
+    const openstrike::LoadedMaterial textured = materials.load_world_material("maps/textured");
+    REQUIRE(textured.definition.found_source_material);
+    REQUIRE(textured.definition.base_texture == "brick/textured");
+    REQUIRE(textured.base_texture_loaded);
+    REQUIRE(!textured.using_fallback_texture);
+    REQUIRE(textured.base_texture.width == 2);
+    REQUIRE(textured.base_texture.height == 2);
+    REQUIRE(textured.base_texture.format == openstrike::SourceTextureFormat::Rgba8);
+    REQUIRE(textured.base_texture.mips.size() == 1);
+    REQUIRE(textured.base_texture.mips[0].bytes[0] == 10);
+    REQUIRE(textured.base_texture.mips[0].bytes[1] == 20);
+    REQUIRE(textured.base_texture.mips[0].bytes[2] == 30);
+    REQUIRE(textured.base_texture.mips[0].bytes[3] == 255);
 
     const openstrike::LoadedMaterial tool = materials.load_world_material("tools/toolsnodraw");
     REQUIRE((tool.definition.constants.flags & openstrike::MaterialFlags::Tool) != 0);
@@ -1738,6 +1875,7 @@ int main()
         test_fixed_step_accumulates_ticks();
         test_fixed_step_clamps_runaway_frames();
         test_content_filesystem_path_ids();
+        test_editor_displacement_uvs_stay_parent_quad_anchored();
         test_material_system_resolves_source_vmt_without_shader_combos();
         test_source_texture_decodes_compressed_vtf_to_rgba();
         test_renderer_shader_files_are_dedicated();

@@ -8,6 +8,16 @@ struct Plane
     float dist;
 };
 
+struct Vec2
+{
+    float u = 0.0f;
+    float v = 0.0f;
+
+    Vec2 operator+(const Vec2& b) const { return { u + b.u, v + b.v }; }
+    Vec2 operator-(const Vec2& b) const { return { u - b.u, v - b.v }; }
+    Vec2 operator*(float s) const { return { u * s, v * s }; }
+};
+
 static Plane PlaneFromPoints(const Vec3& a, const Vec3& b, const Vec3& c)
 {
     Vec3 n = Normalize(Cross(b - a, c - a));
@@ -83,6 +93,18 @@ static void ComputeFaceUVs(BrushFace& face, const VmfSide& side)
     }
 }
 
+static Vec2 ComputeUVForGLPosition(const Vec3& posGL, const VmfSide& side)
+{
+    float scaleU = (side.uaxis.scale != 0.0f) ? side.uaxis.scale : 0.25f;
+    float scaleV = (side.vaxis.scale != 0.0f) ? side.vaxis.scale : 0.25f;
+    Vec3 srcPos = GLToSource(posGL);
+
+    return {
+        Dot(srcPos, side.uaxis.axis) / scaleU + side.uaxis.shift,
+        Dot(srcPos, side.vaxis.axis) / scaleV + side.vaxis.shift,
+    };
+}
+
 static void BuildDisplacementFace(
     const std::vector<Vec3>& quadVerts,
     const VmfSide& side,
@@ -113,6 +135,10 @@ static void BuildDisplacementFace(
     Vec3 corners[4];
     for (int i = 0; i < 4; i++)
         corners[i] = quadVerts[(startCorner + i) % 4];
+
+    Vec2 cornerUVs[4];
+    for (int i = 0; i < 4; i++)
+        cornerUVs[i] = ComputeUVForGLPosition(corners[i], side);
 
     // Compute outward surface normal from corners (matching Hammer's GetNormal:
     // Cross(P3-P0, P1-P0) in builddisp.h:448-452)
@@ -187,17 +213,20 @@ static void BuildDisplacementFace(
     for (auto& n : gridNormals)
         n = Normalize(n);
 
-    // UV computation setup
-    float scaleU = (side.uaxis.scale != 0.0f) ? side.uaxis.scale : 0.25f;
-    float scaleV = (side.vaxis.scale != 0.0f) ? side.vaxis.scale : 0.25f;
-
     auto makeVertex = [&](int idx) -> BrushVertex {
+        int row = idx / gridSize;
+        int col = idx % gridSize;
+        float t = row * invSize;
+        float s = col * invSize;
+        Vec2 rowStart = cornerUVs[0] + (cornerUVs[1] - cornerUVs[0]) * t;
+        Vec2 rowEnd = cornerUVs[3] + (cornerUVs[2] - cornerUVs[3]) * t;
+        Vec2 uv = rowStart + (rowEnd - rowStart) * s;
+
         BrushVertex v;
         v.pos = gridPos[idx];
         v.normal = gridNormals[idx];
-        Vec3 srcPos = GLToSource(v.pos);
-        v.u = Dot(srcPos, side.uaxis.axis) / scaleU + side.uaxis.shift;
-        v.v = Dot(srcPos, side.vaxis.axis) / scaleV + side.vaxis.shift;
+        v.u = uv.u;
+        v.v = uv.v;
         return v;
     };
 

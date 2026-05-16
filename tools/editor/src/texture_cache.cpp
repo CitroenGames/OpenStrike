@@ -4,6 +4,8 @@
 #include "rhi/rhi.hpp"
 
 #include "openstrike/core/content_filesystem.hpp"
+#include "openstrike/material/material.hpp"
+#include "openstrike/material/material_system.hpp"
 #include "openstrike/source/source_asset_store.hpp"
 #include "openstrike/source/source_texture.hpp"
 
@@ -14,7 +16,6 @@
 #include <filesystem>
 #include <optional>
 #include <system_error>
-#include <vector>
 
 namespace
 {
@@ -39,58 +40,6 @@ std::string StripMaterialExtension(std::string text)
             text.resize(text.size() - 4);
     }
     return text;
-}
-
-std::string ParseBaseTextureFromVMT(const std::string& content)
-{
-    std::string lower = content;
-    std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char ch) {
-        return static_cast<char>(std::tolower(ch));
-    });
-
-    constexpr const char* key = "$basetexture";
-    std::size_t search_from = 0;
-    while (search_from < lower.size())
-    {
-        const std::size_t pos = lower.find(key, search_from);
-        if (pos == std::string::npos)
-            return {};
-
-        std::size_t value_pos = pos + 12;
-        if (value_pos < lower.size() && lower[value_pos] == '"')
-            ++value_pos;
-        else if (value_pos < lower.size() && std::isalnum(static_cast<unsigned char>(lower[value_pos])) != 0)
-        {
-            search_from = value_pos;
-            continue;
-        }
-
-        while (value_pos < content.size() && std::isspace(static_cast<unsigned char>(content[value_pos])) != 0)
-            ++value_pos;
-
-        std::string value;
-        if (value_pos < content.size() && content[value_pos] == '"')
-        {
-            const std::size_t end = content.find('"', value_pos + 1);
-            if (end != std::string::npos)
-                value = content.substr(value_pos + 1, end - value_pos - 1);
-        }
-        else
-        {
-            std::size_t end = value_pos;
-            while (end < content.size() && std::isspace(static_cast<unsigned char>(content[end])) == 0 && content[end] != '}')
-                ++end;
-            value = content.substr(value_pos, end - value_pos);
-        }
-
-        value = StripMaterialExtension(std::move(value));
-        if (!value.empty())
-            return value;
-
-        search_from = value_pos + 1;
-    }
-
-    return {};
 }
 }
 
@@ -141,6 +90,7 @@ void TextureCache::Shutdown()
         m_rhi->DestroyTexture(m_fallback.rhiTexture);
         m_fallback.rhiTexture = RHI_NULL_TEXTURE;
     }
+    m_materials.reset();
     m_assets.reset();
     m_filesystem.reset();
 }
@@ -165,6 +115,7 @@ void TextureCache::SetGameDir(const char* dir)
 
 void TextureCache::RebuildAssetStore()
 {
+    m_materials.reset();
     m_assets.reset();
     m_filesystem = std::make_unique<openstrike::ContentFileSystem>();
     if (m_gameDir.empty())
@@ -192,6 +143,7 @@ void TextureCache::RebuildAssetStore()
     }
 
     m_assets = std::make_unique<openstrike::SourceAssetStore>(*m_filesystem);
+    m_materials = std::make_unique<openstrike::MaterialSystem>(*m_assets);
     Log("Texture search path: %s", m_filesystem->search_path_string("GAME").c_str());
 }
 
@@ -205,43 +157,32 @@ const CachedTexture& TextureCache::Get(const std::string& materialName)
     if (it != m_cache.end())
         return it->second;
 
-    CachedTexture tex = LoadVTF(key);
+    CachedTexture tex = LoadMaterialTexture(key);
     auto result = m_cache.emplace(key, tex);
     return result.first->second;
 }
 
-CachedTexture TextureCache::LoadVTF(const std::string& materialName)
+CachedTexture TextureCache::LoadMaterialTexture(const std::string& materialName)
 {
-    if (!m_assets)
+    if (!m_materials)
         return m_fallback;
 
-    std::string vtf_name = materialName;
-    if (std::optional<std::string> vmt = m_assets->read_text("materials/" + materialName + ".vmt"))
-    {
-        std::string base_texture = ParseBaseTextureFromVMT(*vmt);
-        if (!base_texture.empty())
-            vtf_name = std::move(base_texture);
-    }
-
-    const std::string path = "materials/" + vtf_name + ".vtf";
-    std::optional<std::vector<unsigned char>> bytes = m_assets->read_binary(path);
-    if (!bytes)
-    {
-        Log("Texture not found: %s", path.c_str());
-        return m_fallback;
-    }
-
-    std::optional<openstrike::SourceTexture> texture = openstrike::load_vtf_texture(*bytes);
-    if (texture)
-        texture = openstrike::source_texture_to_rgba8(*texture);
+    openstrike::LoadedMaterial material = m_materials->load_world_material(materialName);
+    std::optional<openstrike::SourceTexture> texture = openstrike::source_texture_to_rgba8(material.base_texture);
 
     if (!texture || texture->format != openstrike::SourceTextureFormat::Rgba8 || texture->mips.empty())
     {
-        Log("Unsupported or invalid VTF: %s", path.c_str());
+        Log("Unsupported or invalid material texture: %s", materialName.c_str());
         return m_fallback;
     }
 
     const openstrike::SourceTextureMip& mip = texture->mips.front();
+    if (mip.width == 0 || mip.height == 0 || mip.bytes.empty())
+    {
+        Log("Empty material texture: %s", materialName.c_str());
+        return m_fallback;
+    }
+
     CachedTexture result;
     result.width = static_cast<int>(mip.width);
     result.height = static_cast<int>(mip.height);

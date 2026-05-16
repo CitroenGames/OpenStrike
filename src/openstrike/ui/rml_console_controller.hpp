@@ -50,6 +50,10 @@ private:
     void on_input_keydown(Rml::Event& event);
     void on_input_change();
     void on_completion_click(Rml::Event& event);
+    void on_drag_start(Rml::Event& event, bool resize);
+    void on_drag(Rml::Event& event, bool resize);
+    void apply_window_layout();
+    void clamp_window_to_screen();
 
     void submit_command(std::string command);
     void refresh_output(bool force = false);
@@ -82,5 +86,14 @@ private:
     std::string partial_text_;
     bool autocomplete_mode_ = false;
     bool suppress_input_change_ = false;
+
+    float window_x_ = 60.0f;
+    float window_y_ = 60.0f;
+    float window_width_ = 720.0f;
+    float window_height_ = 420.0f;
+    bool window_initialized_ = false;
+
+    float drag_anchor_x_ = 0.0f;
+    float drag_anchor_y_ = 0.0f;
 };
 }
