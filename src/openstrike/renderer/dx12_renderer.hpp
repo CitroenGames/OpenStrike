@@ -10,12 +10,6 @@
 #include <fstream>
 #include <memory>
 
-namespace Rml
-{
-class Context;
-}
-
-class SystemInterface_SDL;
 struct SDL_Window;
 struct HWND__;
 using HWND = HWND__*;
@@ -35,12 +29,8 @@ using HANDLE = void*;
 namespace openstrike
 {
 class EngineContext;
-class MainMenuController;
-class RmlConsoleController;
 class RmlDx12RenderInterface;
-class RmlHudController;
-class RmlLoadingScreenController;
-class RmlTeamMenuController;
+class RmlUiLayer;
 struct LoadedWorld;
 struct ShaderDescriptorRange;
 
@@ -70,7 +60,6 @@ private:
     bool create_multicore_command_objects();
     bool resize_swap_chain(std::uint32_t width, std::uint32_t height);
     bool initialize_rml(const RuntimeConfig& config);
-    void sync_main_menu_visibility();
     bool ensure_skybox_gpu_resources(const LoadedWorld& world);
     bool ensure_world_gpu_resources();
     bool upload_forward_plus_resources(const LoadedWorld& world);
@@ -91,7 +80,6 @@ private:
     bool dx12_profile_ = false;
     bool async_scene_recording_ = true;
     bool sdl_initialized_ = false;
-    bool rml_initialized_ = false;
     bool resize_pending_ = false;
     SDL_Window* window_ = nullptr;
     HWND hwnd_ = nullptr;
@@ -130,17 +118,9 @@ private:
     std::unique_ptr<SkyboxGpuResources> skybox_gpu_;
     std::uint64_t world_gpu_generation_ = 0;
     std::uint64_t skybox_gpu_generation_ = 0;
-    std::uint64_t main_menu_world_generation_ = 0;
-    bool main_menu_loading_active_ = false;
-    std::unique_ptr<SystemInterface_SDL> rml_system_interface_;
     std::unique_ptr<RmlDx12RenderInterface> rml_render_interface_;
-    std::unique_ptr<MainMenuController> main_menu_controller_;
-    std::unique_ptr<RmlLoadingScreenController> rml_loading_screen_controller_;
-    std::unique_ptr<RmlHudController> rml_hud_controller_;
-    std::unique_ptr<RmlTeamMenuController> rml_team_menu_controller_;
-    std::unique_ptr<RmlConsoleController> rml_console_controller_;
+    std::unique_ptr<RmlUiLayer> rml_ui_layer_;
     EngineContext* engine_context_ = nullptr;
-    Rml::Context* rml_context_ = nullptr;
     std::ofstream dx12_profile_stream_;
 };
 }

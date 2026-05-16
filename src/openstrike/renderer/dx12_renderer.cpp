@@ -3,17 +3,12 @@
 #include "openstrike/core/log.hpp"
 #include "openstrike/engine/engine_context.hpp"
 #include "openstrike/engine/sdl_input.hpp"
-#include "openstrike/game/game_mode.hpp"
 #include "openstrike/material/material_system.hpp"
 #include "openstrike/renderer/rml_dx12_render_interface.hpp"
 #include "openstrike/renderer/world_material_shader.hpp"
 #include "openstrike/source/source_asset_store.hpp"
 #include "openstrike/source/source_texture.hpp"
-#include "openstrike/ui/main_menu_controller.hpp"
-#include "openstrike/ui/rml_console_controller.hpp"
-#include "openstrike/ui/rml_hud_controller.hpp"
-#include "openstrike/ui/rml_loading_screen_controller.hpp"
-#include "openstrike/ui/rml_team_menu_controller.hpp"
+#include "openstrike/ui/rml_ui_layer.hpp"
 #include "openstrike/world/world.hpp"
 
 #ifndef WIN32_LEAN_AND_MEAN
@@ -31,9 +26,6 @@
 #include <dxgi1_6.h>
 #include <wrl/client.h>
 
-#include <RmlUi/Core.h>
-#include <RmlUi/Debugger.h>
-#include <RmlUi_Platform_SDL.h>
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
 
@@ -870,11 +862,6 @@ ComPtr<IDXGIAdapter1> choose_hardware_adapter(IDXGIFactory6* factory)
     return {};
 }
 
-std::string rml_path_string(const std::filesystem::path& path)
-{
-    return path.lexically_normal().generic_string();
-}
-
 std::string lower_ascii_copy(std::string_view text)
 {
     std::string result(text);
@@ -1391,16 +1378,6 @@ std::array<std::uint16_t, kSkyboxFaceCount * 6> build_skybox_indices()
     return indices;
 }
 
-bool gameplay_ui_visible(
-    const RmlConsoleController* console,
-    const MainMenuController* main_menu,
-    const RmlLoadingScreenController* loading_screen,
-    const RmlTeamMenuController* team_menu)
-{
-    return (console != nullptr && console->visible()) || (main_menu != nullptr && main_menu->visible()) ||
-           (loading_screen != nullptr && loading_screen->visible()) || (team_menu != nullptr && team_menu->visible());
-}
-
 double elapsed_us(std::chrono::steady_clock::time_point begin, std::chrono::steady_clock::time_point end)
 {
     return std::chrono::duration<double, std::micro>(end - begin).count();
@@ -1550,32 +1527,9 @@ void Dx12Renderer::render(const FrameContext& context)
     pump_us = elapsed_us(phase_start, std::chrono::steady_clock::now());
 
     phase_start = std::chrono::steady_clock::now();
-    if (rml_console_controller_ != nullptr)
+    if (rml_ui_layer_ != nullptr)
     {
-        rml_console_controller_->update();
-    }
-
-    if (rml_loading_screen_controller_ != nullptr && engine_context_ != nullptr)
-    {
-        rml_loading_screen_controller_->update(engine_context_->loading_screen);
-    }
-
-    sync_main_menu_visibility();
-    const bool loading_screen_visible = rml_loading_screen_controller_ != nullptr && rml_loading_screen_controller_->visible();
-    const bool main_menu_visible = main_menu_controller_ != nullptr && main_menu_controller_->visible();
-    if (rml_team_menu_controller_ != nullptr)
-    {
-        rml_team_menu_controller_->update(main_menu_visible, loading_screen_visible);
-    }
-    if (rml_hud_controller_ != nullptr)
-    {
-        const bool team_menu_visible = rml_team_menu_controller_ != nullptr && rml_team_menu_controller_->visible();
-        rml_hud_controller_->update(main_menu_visible || loading_screen_visible || team_menu_visible);
-    }
-
-    if (rml_context_ != nullptr)
-    {
-        rml_context_->Update();
+        rml_ui_layer_->update(width_, height_);
     }
     ui_us = elapsed_us(phase_start, std::chrono::steady_clock::now());
 
@@ -1715,11 +1669,11 @@ void Dx12Renderer::render(const FrameContext& context)
         return;
     }
 
-    if (rml_context_ != nullptr && rml_render_interface_)
+    if (rml_ui_layer_ != nullptr && rml_render_interface_)
     {
         post_command_list_->OMSetRenderTargets(1, &rtv_handle, FALSE, nullptr);
         rml_render_interface_->begin_frame(post_command_list_.Get(), frame, width_, height_);
-        rml_context_->Render();
+        rml_ui_layer_->render();
         rml_stats = rml_render_interface_->frame_stats();
         rml_render_interface_->end_frame();
     }
@@ -1799,12 +1753,12 @@ void Dx12Renderer::render(const FrameContext& context)
 
 bool Dx12Renderer::should_close() const
 {
-    return window_closed_ || (main_menu_controller_ != nullptr && main_menu_controller_->should_quit());
+    return window_closed_ || (rml_ui_layer_ != nullptr && rml_ui_layer_->should_quit());
 }
 
 void Dx12Renderer::shutdown()
 {
-    if (!initialized_ && window_ == nullptr && fence_event_ == nullptr && !rml_initialized_)
+    if (!initialized_ && window_ == nullptr && fence_event_ == nullptr && rml_ui_layer_ == nullptr && rml_render_interface_ == nullptr)
     {
         return;
     }
@@ -2507,9 +2461,6 @@ bool Dx12Renderer::resize_swap_chain(std::uint32_t width, std::uint32_t height)
 
 bool Dx12Renderer::initialize_rml(const RuntimeConfig& config)
 {
-    rml_system_interface_ = std::make_unique<SystemInterface_SDL>();
-    rml_system_interface_->SetWindow(window_);
-
     ShaderDescriptorRange rml_descriptor_range;
     if (!allocate_shader_descriptors(kRmlDescriptorCount, rml_descriptor_range))
     {
@@ -2527,160 +2478,8 @@ bool Dx12Renderer::initialize_rml(const RuntimeConfig& config)
         return false;
     }
 
-    Rml::SetSystemInterface(rml_system_interface_.get());
-    Rml::SetRenderInterface(rml_render_interface_.get());
-
-    if (!Rml::Initialise())
-    {
-        log_error("Rml::Initialise failed");
-        return false;
-    }
-    rml_initialized_ = true;
-
-    rml_context_ = Rml::CreateContext("main", Rml::Vector2i(static_cast<int>(width_), static_cast<int>(height_)));
-    if (rml_context_ == nullptr)
-    {
-        log_error("Rml::CreateContext failed");
-        return false;
-    }
-
-    Rml::Debugger::Initialise(rml_context_);
-    Rml::Debugger::SetVisible(false);
-    main_menu_controller_ = std::make_unique<MainMenuController>();
-    main_menu_controller_->set_open_console_callback([this] {
-        if (rml_console_controller_ != nullptr)
-        {
-            rml_console_controller_->show();
-        }
-    });
-    main_menu_controller_->set_launch_map_callback([this](std::string map_name, std::string game_mode_alias) {
-        if (engine_context_ != nullptr)
-        {
-            if (!apply_game_mode_alias(engine_context_->variables, game_mode_alias, engine_context_->filesystem, map_name))
-            {
-                log_warning("menu selected unknown game mode alias '{}'", game_mode_alias);
-            }
-            engine_context_->loading_screen.open_for_map(
-                map_name, current_game_mode_display_name(engine_context_->variables), default_loading_description(), default_loading_tip());
-            engine_context_->loading_screen.set_progress(0.05F, "Retrieving game data...");
-            engine_context_->command_buffer.add_text("map " + map_name);
-        }
-    });
-
-    const std::vector<std::filesystem::path> font_roots{
-        config.content_root / "csgo/resource/ui/fonts",
-        config.content_root / "assets/ui/fonts",
-        config.content_root / "resource/ui/fonts",
-    };
-
-    int loaded_fonts = 0;
-    for (const std::filesystem::path& font_root : font_roots)
-    {
-        std::error_code error;
-        if (!std::filesystem::is_directory(font_root, error))
-        {
-            continue;
-        }
-
-        for (const std::filesystem::directory_entry& entry : std::filesystem::directory_iterator(font_root, error))
-        {
-            if (error)
-            {
-                break;
-            }
-
-            if (!entry.is_regular_file(error))
-            {
-                continue;
-            }
-
-            std::string extension = entry.path().extension().string();
-            std::transform(extension.begin(), extension.end(), extension.begin(), [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
-            if (extension != ".ttf" && extension != ".otf")
-            {
-                continue;
-            }
-
-            if (Rml::LoadFontFace(rml_path_string(entry.path()), loaded_fonts == 0))
-            {
-                ++loaded_fonts;
-            }
-        }
-    }
-
-    log_info("loaded {} RmlUi font face(s) from '{}'", loaded_fonts, rml_path_string(config.content_root));
-    if (!main_menu_controller_->initialize(*rml_context_, config))
-    {
-        return false;
-    }
-
-    if (engine_context_ != nullptr)
-    {
-        rml_loading_screen_controller_ = std::make_unique<RmlLoadingScreenController>();
-        if (!rml_loading_screen_controller_->initialize(*rml_context_, config))
-        {
-            return false;
-        }
-
-        rml_hud_controller_ = std::make_unique<RmlHudController>();
-        if (!rml_hud_controller_->initialize(*rml_context_, *engine_context_, config))
-        {
-            return false;
-        }
-
-        rml_team_menu_controller_ = std::make_unique<RmlTeamMenuController>();
-        if (!rml_team_menu_controller_->initialize(*rml_context_, *engine_context_, config))
-        {
-            return false;
-        }
-
-        rml_console_controller_ = std::make_unique<RmlConsoleController>();
-        if (!rml_console_controller_->initialize(*rml_context_, *engine_context_))
-        {
-            return false;
-        }
-    }
-
-    return true;
-}
-
-void Dx12Renderer::sync_main_menu_visibility()
-{
-    if (engine_context_ == nullptr || main_menu_controller_ == nullptr)
-    {
-        return;
-    }
-
-    const std::uint64_t world_generation = engine_context_->world.generation();
-    const bool loading_screen_active = engine_context_->loading_screen.visible();
-    if (world_generation == main_menu_world_generation_ && loading_screen_active == main_menu_loading_active_)
-    {
-        return;
-    }
-
-    main_menu_world_generation_ = world_generation;
-    main_menu_loading_active_ = loading_screen_active;
-    if (loading_screen_active)
-    {
-        if (main_menu_controller_->visible())
-        {
-            main_menu_controller_->set_visible(false);
-            log_info("hid RmlUi main menu for loading screen");
-        }
-    }
-    else if (engine_context_->world.current_world() != nullptr)
-    {
-        if (main_menu_controller_->visible())
-        {
-            main_menu_controller_->set_visible(false);
-            log_info("hid RmlUi main menu for active world");
-        }
-    }
-    else if (!main_menu_controller_->visible())
-    {
-        main_menu_controller_->set_visible(true);
-        log_info("showed RmlUi main menu because no world is active");
-    }
+    rml_ui_layer_ = std::make_unique<RmlUiLayer>();
+    return rml_ui_layer_->initialize(*window_, *rml_render_interface_, engine_context_, config, width_, height_);
 }
 
 bool Dx12Renderer::ensure_skybox_gpu_resources(const LoadedWorld& world)
@@ -3287,21 +3086,8 @@ bool Dx12Renderer::record_world(ID3D12GraphicsCommandList* command_list) const
 
 void Dx12Renderer::shutdown_rml()
 {
-    rml_console_controller_.reset();
-    rml_team_menu_controller_.reset();
-    rml_hud_controller_.reset();
-    rml_loading_screen_controller_.reset();
-    main_menu_controller_.reset();
-
-    if (rml_initialized_)
-    {
-        Rml::Shutdown();
-        rml_initialized_ = false;
-    }
-
-    rml_context_ = nullptr;
+    rml_ui_layer_.reset();
     rml_render_interface_.reset();
-    rml_system_interface_.reset();
 }
 
 void Dx12Renderer::pump_messages()
@@ -3331,38 +3117,12 @@ void Dx12Renderer::pump_messages()
             }
         }
 
-        if (event.type == SDL_EVENT_KEY_DOWN && event.key.key == SDLK_F8)
+        if (rml_ui_layer_ != nullptr && rml_ui_layer_->handle_hotkey_event(event))
         {
-            Rml::Debugger::SetVisible(!Rml::Debugger::IsVisible());
             continue;
         }
 
-        if (event.type == SDL_EVENT_KEY_DOWN && rml_console_controller_ != nullptr)
-        {
-            if (event.key.key == SDLK_GRAVE || event.key.key == SDLK_TILDE)
-            {
-                rml_console_controller_->toggle();
-                continue;
-            }
-
-            if (event.key.key == SDLK_ESCAPE && rml_console_controller_->visible())
-            {
-                rml_console_controller_->hide();
-                continue;
-            }
-        }
-
-        if (event.type == SDL_EVENT_KEY_DOWN && event.key.key == SDLK_ESCAPE && main_menu_controller_ != nullptr &&
-            engine_context_ != nullptr && engine_context_->world.current_world() != nullptr)
-        {
-            main_menu_controller_->set_visible(!main_menu_controller_->visible());
-            continue;
-        }
-
-        const bool ui_visible = gameplay_ui_visible(rml_console_controller_.get(),
-            main_menu_controller_.get(),
-            rml_loading_screen_controller_.get(),
-            rml_team_menu_controller_.get());
+        const bool ui_visible = rml_ui_layer_ != nullptr && rml_ui_layer_->gameplay_ui_visible();
         if (engine_context_ != nullptr && !ui_visible)
         {
             if (handle_sdl_gameplay_input_event(engine_context_->input, event))
@@ -3371,19 +3131,17 @@ void Dx12Renderer::pump_messages()
             }
         }
 
-        if (rml_context_ != nullptr)
+        if (rml_ui_layer_ != nullptr)
         {
-            RmlSDL::InputEventHandler(rml_context_, window_, event);
+            rml_ui_layer_->dispatch_sdl_event(*window_, event);
         }
     }
 
     if (engine_context_ != nullptr)
     {
-        const bool should_capture = engine_context_->world.current_world() != nullptr &&
-                                    !gameplay_ui_visible(rml_console_controller_.get(),
-                                        main_menu_controller_.get(),
-                                        rml_loading_screen_controller_.get(),
-                                        rml_team_menu_controller_.get());
+        const bool should_capture = rml_ui_layer_ != nullptr
+                                        ? rml_ui_layer_->wants_mouse_capture()
+                                        : engine_context_->world.current_world() != nullptr;
         if (!should_capture)
         {
             engine_context_->input.clear_gameplay_buttons();

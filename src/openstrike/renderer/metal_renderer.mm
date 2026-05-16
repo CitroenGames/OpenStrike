@@ -6,15 +6,10 @@
 #include "openstrike/material/material_system.hpp"
 #include "openstrike/source/source_asset_store.hpp"
 #include "openstrike/source/source_texture.hpp"
-#include "openstrike/ui/main_menu_controller.hpp"
-#include "openstrike/ui/rml_console_controller.hpp"
-#include "openstrike/ui/rml_hud_controller.hpp"
-#include "openstrike/ui/rml_loading_screen_controller.hpp"
+#include "openstrike/ui/rml_ui_layer.hpp"
 #include "openstrike/world/world.hpp"
 
 #include <RmlUi/Core.h>
-#include <RmlUi/Debugger.h>
-#include <RmlUi_Platform_SDL.h>
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
 #include <SDL3/SDL_metal.h>
@@ -833,11 +828,6 @@ id<MTLTexture> upload_lightmap_to_metal(id<MTLDevice> device, const WorldLightma
     return output;
 }
 
-std::string rml_path_string(const std::filesystem::path& path)
-{
-    return path.lexically_normal().generic_string();
-}
-
 void premultiply_alpha(std::vector<Rml::byte>& pixels)
 {
     for (std::size_t index = 0; index + 3 < pixels.size(); index += 4)
@@ -1336,12 +1326,6 @@ private:
     Rml::Rectanglei scissor_region_ = Rml::Rectanglei::MakeInvalid();
 };
 
-bool gameplay_ui_visible(
-    const RmlConsoleController* console, const MainMenuController* main_menu, const RmlLoadingScreenController* loading_screen)
-{
-    return (console != nullptr && console->visible()) || (main_menu != nullptr && main_menu->visible()) ||
-           (loading_screen != nullptr && loading_screen->visible());
-}
 }
 
 struct MetalRenderer::Impl
@@ -1364,21 +1348,13 @@ struct MetalRenderer::Impl
     id<MTLCommandBuffer> in_flight_command_buffer = nil;
     std::unique_ptr<WorldGpuResources> world_gpu;
     std::unique_ptr<SkyboxGpuResources> skybox_gpu;
-    std::unique_ptr<SystemInterface_SDL> rml_system_interface;
     std::unique_ptr<RmlMetalRenderInterface> rml_render_interface;
-    std::unique_ptr<MainMenuController> main_menu_controller;
-    std::unique_ptr<RmlLoadingScreenController> rml_loading_screen_controller;
-    std::unique_ptr<RmlHudController> rml_hud_controller;
-    std::unique_ptr<RmlConsoleController> rml_console_controller;
-    Rml::Context* rml_context = nullptr;
-    std::uint64_t main_menu_world_generation = 0;
-    bool main_menu_loading_active = false;
+    std::unique_ptr<RmlUiLayer> rml_ui_layer;
     MetalFrameLights frame_lights;
     std::uint32_t width = 1280;
     std::uint32_t height = 720;
     bool initialized = false;
     bool sdl_initialized = false;
-    bool rml_initialized = false;
     bool window_closed = false;
     bool vsync = true;
     bool mouse_captured = false;
@@ -1579,181 +1555,24 @@ struct MetalRenderer::Impl
 
     bool initialize_rml(const RuntimeConfig& config)
     {
-        rml_system_interface = std::make_unique<SystemInterface_SDL>();
-        rml_system_interface->SetWindow(window);
-
         rml_render_interface = std::make_unique<RmlMetalRenderInterface>();
         if (!rml_render_interface->initialize(device))
         {
             return false;
         }
 
-        Rml::SetSystemInterface(rml_system_interface.get());
-        Rml::SetRenderInterface(rml_render_interface.get());
-        if (!Rml::Initialise())
-        {
-            log_error("Rml::Initialise failed");
-            return false;
-        }
-        rml_initialized = true;
-
-        rml_context = Rml::CreateContext("main", Rml::Vector2i(static_cast<int>(width), static_cast<int>(height)));
-        if (rml_context == nullptr)
-        {
-            log_error("Rml::CreateContext failed");
-            return false;
-        }
-
-        Rml::Debugger::Initialise(rml_context);
-        Rml::Debugger::SetVisible(false);
-        main_menu_controller = std::make_unique<MainMenuController>();
-        main_menu_controller->set_open_console_callback([this] {
-            if (rml_console_controller != nullptr)
-            {
-                rml_console_controller->show();
-            }
-        });
-        main_menu_controller->set_launch_map_callback([this](std::string map_name, std::string game_mode) {
-            if (engine_context != nullptr)
-            {
-                engine_context->loading_screen.open_for_map(map_name, game_mode, default_loading_description(), default_loading_tip());
-                engine_context->loading_screen.set_progress(0.05F, "Retrieving game data...");
-                engine_context->command_buffer.add_text("map " + map_name);
-            }
-        });
-
-        const std::vector<std::filesystem::path> font_roots{
-            config.content_root / "csgo/resource/ui/fonts",
-            config.content_root / "assets/ui/fonts",
-            config.content_root / "resource/ui/fonts",
-        };
-
-        int loaded_fonts = 0;
-        for (const std::filesystem::path& font_root : font_roots)
-        {
-            std::error_code error;
-            if (!std::filesystem::is_directory(font_root, error))
-            {
-                continue;
-            }
-
-            for (const std::filesystem::directory_entry& entry : std::filesystem::directory_iterator(font_root, error))
-            {
-                if (error)
-                {
-                    break;
-                }
-
-                if (!entry.is_regular_file(error))
-                {
-                    continue;
-                }
-
-                std::string extension = entry.path().extension().string();
-                std::transform(extension.begin(), extension.end(), extension.begin(), [](unsigned char ch) {
-                    return static_cast<char>(std::tolower(ch));
-                });
-                if (extension != ".ttf" && extension != ".otf")
-                {
-                    continue;
-                }
-
-                if (Rml::LoadFontFace(rml_path_string(entry.path()), loaded_fonts == 0))
-                {
-                    ++loaded_fonts;
-                }
-            }
-        }
-
-        log_info("loaded {} RmlUi font face(s) from '{}'", loaded_fonts, rml_path_string(config.content_root));
-        if (!main_menu_controller->initialize(*rml_context, config))
-        {
-            return false;
-        }
-
-        if (engine_context != nullptr)
-        {
-            rml_loading_screen_controller = std::make_unique<RmlLoadingScreenController>();
-            if (!rml_loading_screen_controller->initialize(*rml_context, config))
-            {
-                return false;
-            }
-
-            rml_hud_controller = std::make_unique<RmlHudController>();
-            if (!rml_hud_controller->initialize(*rml_context, *engine_context, config))
-            {
-                return false;
-            }
-
-            rml_console_controller = std::make_unique<RmlConsoleController>();
-            if (!rml_console_controller->initialize(*rml_context, *engine_context))
-            {
-                return false;
-            }
-        }
-
-        return true;
-    }
-
-    void sync_main_menu_visibility()
-    {
-        if (engine_context == nullptr || main_menu_controller == nullptr)
-        {
-            return;
-        }
-
-        const std::uint64_t world_generation = engine_context->world.generation();
-        const bool loading_screen_active = engine_context->loading_screen.visible();
-        if (world_generation == main_menu_world_generation && loading_screen_active == main_menu_loading_active)
-        {
-            return;
-        }
-
-        main_menu_world_generation = world_generation;
-        main_menu_loading_active = loading_screen_active;
-        if (loading_screen_active)
-        {
-            if (main_menu_controller->visible())
-            {
-                main_menu_controller->set_visible(false);
-                log_info("hid RmlUi main menu for loading screen");
-            }
-        }
-        else if (engine_context->world.current_world() != nullptr)
-        {
-            if (main_menu_controller->visible())
-            {
-                main_menu_controller->set_visible(false);
-                log_info("hid RmlUi main menu for active world");
-            }
-        }
-        else if (!main_menu_controller->visible())
-        {
-            main_menu_controller->set_visible(true);
-            log_info("showed RmlUi main menu because no world is active");
-        }
+        rml_ui_layer = std::make_unique<RmlUiLayer>();
+        return rml_ui_layer->initialize(*window, *rml_render_interface, engine_context, config, width, height);
     }
 
     void shutdown_rml()
     {
-        rml_console_controller.reset();
-        rml_hud_controller.reset();
-        rml_loading_screen_controller.reset();
-        main_menu_controller.reset();
-
-        if (rml_initialized)
-        {
-            Rml::Shutdown();
-            rml_initialized = false;
-        }
-
-        rml_context = nullptr;
+        rml_ui_layer.reset();
         if (rml_render_interface != nullptr)
         {
             rml_render_interface->shutdown();
         }
         rml_render_interface.reset();
-        rml_system_interface.reset();
     }
 
     void render(const FrameContext& context)
@@ -1778,28 +1597,9 @@ struct MetalRenderer::Impl
             }
         }
 
-        if (rml_context != nullptr)
+        if (rml_ui_layer != nullptr)
         {
-            rml_context->SetDimensions(Rml::Vector2i(static_cast<int>(width), static_cast<int>(height)));
-        }
-        if (rml_console_controller != nullptr)
-        {
-            rml_console_controller->update();
-        }
-        if (rml_loading_screen_controller != nullptr && engine_context != nullptr)
-        {
-            rml_loading_screen_controller->update(engine_context->loading_screen);
-        }
-        sync_main_menu_visibility();
-        const bool loading_screen_visible = rml_loading_screen_controller != nullptr && rml_loading_screen_controller->visible();
-        if (rml_hud_controller != nullptr)
-        {
-            const bool main_menu_visible = main_menu_controller != nullptr && main_menu_controller->visible();
-            rml_hud_controller->update(main_menu_visible || loading_screen_visible);
-        }
-        if (rml_context != nullptr)
-        {
-            rml_context->Update();
+            rml_ui_layer->update(width, height);
         }
 
         const LoadedWorld* active_world = engine_context != nullptr ? engine_context->world.current_world() : nullptr;
@@ -1839,10 +1639,10 @@ struct MetalRenderer::Impl
             {
                 record_world(encoder);
             }
-            if (rml_context != nullptr && rml_render_interface != nullptr)
+            if (rml_ui_layer != nullptr && rml_render_interface != nullptr)
             {
                 rml_render_interface->begin_frame(encoder, width, height);
-                rml_context->Render();
+                rml_ui_layer->render();
                 rml_render_interface->end_frame();
             }
 
@@ -2247,43 +2047,12 @@ struct MetalRenderer::Impl
                 }
             }
 
-            if (event.type == SDL_EVENT_KEY_DOWN && event.key.key == SDLK_F8)
+            if (rml_ui_layer != nullptr && rml_ui_layer->handle_hotkey_event(event))
             {
-                Rml::Debugger::SetVisible(!Rml::Debugger::IsVisible());
                 continue;
             }
 
-            if (event.type == SDL_EVENT_KEY_DOWN && rml_console_controller != nullptr)
-            {
-                if (event.key.key == SDLK_GRAVE || event.key.key == SDLK_TILDE)
-                {
-                    rml_console_controller->toggle();
-                    continue;
-                }
-
-                if (event.key.key == SDLK_ESCAPE && rml_console_controller->visible())
-                {
-                    rml_console_controller->hide();
-                    continue;
-                }
-            }
-
-            if (event.type == SDL_EVENT_KEY_DOWN && event.key.key == SDLK_ESCAPE && main_menu_controller != nullptr &&
-                engine_context != nullptr && engine_context->world.current_world() != nullptr)
-            {
-                main_menu_controller->set_visible(!main_menu_controller->visible());
-                continue;
-            }
-
-            if (event.type == SDL_EVENT_KEY_DOWN && event.key.key == SDLK_ESCAPE && engine_context != nullptr &&
-                engine_context->world.current_world() == nullptr && main_menu_controller == nullptr)
-            {
-                window_closed = true;
-                return;
-            }
-
-            const bool ui_visible = gameplay_ui_visible(
-                rml_console_controller.get(), main_menu_controller.get(), rml_loading_screen_controller.get());
+            const bool ui_visible = rml_ui_layer != nullptr && rml_ui_layer->gameplay_ui_visible();
             if (engine_context != nullptr && !ui_visible)
             {
                 if (handle_sdl_gameplay_input_event(engine_context->input, event))
@@ -2292,17 +2061,16 @@ struct MetalRenderer::Impl
                 }
             }
 
-            if (rml_context != nullptr)
+            if (rml_ui_layer != nullptr)
             {
-                RmlSDL::InputEventHandler(rml_context, window, event);
+                rml_ui_layer->dispatch_sdl_event(*window, event);
             }
         }
 
         if (engine_context != nullptr)
         {
-            const bool should_capture = engine_context->world.current_world() != nullptr &&
-                                        !gameplay_ui_visible(
-                                            rml_console_controller.get(), main_menu_controller.get(), rml_loading_screen_controller.get());
+            const bool should_capture = rml_ui_layer != nullptr ? rml_ui_layer->wants_mouse_capture()
+                                                                : engine_context->world.current_world() != nullptr;
             if (!should_capture)
             {
                 engine_context->input.clear_gameplay_buttons();
@@ -2354,7 +2122,7 @@ void MetalRenderer::render(const FrameContext& context)
 
 bool MetalRenderer::should_close() const
 {
-    return impl_->window_closed || (impl_->main_menu_controller != nullptr && impl_->main_menu_controller->should_quit());
+    return impl_->window_closed || (impl_->rml_ui_layer != nullptr && impl_->rml_ui_layer->should_quit());
 }
 
 void MetalRenderer::shutdown()
