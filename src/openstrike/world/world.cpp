@@ -1599,6 +1599,32 @@ Vec2 lightmap_coordinate(
     return uv;
 }
 
+Vec2 displacement_lightmap_coordinate(
+    float row_fraction,
+    float column_fraction,
+    const BspFace& face,
+    const FaceLightmapPlacement& placement,
+    const WorldLightmapAtlas& atlas)
+{
+    if (!placement.valid || atlas.width == 0 || atlas.height == 0)
+    {
+        return {0.5F, 0.5F};
+    }
+
+    const float luxel_width = static_cast<float>(std::max(face.lightmap_size[0], 0));
+    const float luxel_height = static_cast<float>(std::max(face.lightmap_size[1], 0));
+    const float luxel_s = (std::clamp(column_fraction, 0.0F, 1.0F) * luxel_width) + 0.5F;
+    const float luxel_t = (std::clamp(row_fraction, 0.0F, 1.0F) * luxel_height) + 0.5F;
+
+    Vec2 uv{
+        (static_cast<float>(placement.x + 1U) + luxel_s) / static_cast<float>(atlas.width),
+        (static_cast<float>(placement.y + 1U) + luxel_t) / static_cast<float>(atlas.height),
+    };
+    uv.x = std::clamp(uv.x, 0.0F, 1.0F);
+    uv.y = std::clamp(uv.y, 0.0F, 1.0F);
+    return uv;
+}
+
 WorldMeshVertex make_world_vertex(
     Vec3 point,
     Vec3 normal,
@@ -1947,14 +1973,9 @@ void append_displacement_surface(
     if (render_chunk != nullptr && material != nullptr)
     {
         std::array<Vec2, 4> corner_texcoords{};
-        std::array<Vec2, 4> corner_lightmap_texcoords{};
         for (std::size_t index = 0; index < surface.corners.size(); ++index)
         {
             corner_texcoords[index] = texture_coordinate(surface.corners[index], texinfo, *material);
-            if (placement != nullptr && placement->valid && atlas.has_baked_samples)
-            {
-                corner_lightmap_texcoords[index] = lightmap_coordinate(surface.corners[index], texinfo, face, *placement, atlas);
-            }
         }
 
         const std::uint32_t first_vertex = static_cast<std::uint32_t>(render_chunk->vertices.size());
@@ -1972,12 +1993,11 @@ void append_displacement_surface(
                 source_vertex.column_fraction);
             if (placement != nullptr && placement->valid && atlas.has_baked_samples)
             {
-                vertex.lightmap_texcoord = vec2_bilerp(corner_lightmap_texcoords[0],
-                    corner_lightmap_texcoords[1],
-                    corner_lightmap_texcoords[2],
-                    corner_lightmap_texcoords[3],
-                    source_vertex.row_fraction,
-                    source_vertex.column_fraction);
+                vertex.lightmap_texcoord = displacement_lightmap_coordinate(source_vertex.row_fraction,
+                    source_vertex.column_fraction,
+                    face,
+                    *placement,
+                    atlas);
                 vertex.lightmap_weight = 1.0F;
             }
             render_chunk->vertices.push_back(vertex);
