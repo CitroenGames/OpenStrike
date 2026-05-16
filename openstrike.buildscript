@@ -220,7 +220,7 @@ exceptions = true
 rtti = true
 defines = NOMINMAX, WIN32_LEAN_AND_MEAN
 subsystem = Console
-target_link_libraries(PRIVATE OpenStrikeCore)
+target_link_libraries(PRIVATE OpenStrikeCore freetype)
 if(macOS)
 {
     ldflags = -Wl,-rpath,@loader_path -Wl,-rpath,@loader_path/../../../thirdparty/steamaudio/lib/osx
