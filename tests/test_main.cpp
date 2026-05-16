@@ -11,6 +11,7 @@
 #include "openstrike/game/fps_controller.hpp"
 #include "openstrike/game/game_simulation.hpp"
 #include "openstrike/game/movement.hpp"
+#include "openstrike/game/team_system.hpp"
 #include "openstrike/material/material_system.hpp"
 #include "openstrike/nav/navigation.hpp"
 #include "openstrike/network/network_protocol.hpp"
@@ -21,6 +22,7 @@
 #include "openstrike/renderer/world_material_shader.hpp"
 #include "openstrike/source/source_asset_store.hpp"
 #include "openstrike/source/source_fgd.hpp"
+#include "openstrike/source/source_keyvalues.hpp"
 #include "openstrike/world/world.hpp"
 #include "../tools/editor/src/brush_mesh_builder.hpp"
 
@@ -145,6 +147,35 @@ std::vector<unsigned char> make_minimal_vtf(std::uint16_t width, std::uint16_t h
     write_s32_le(bytes, 52, image_format);
     bytes[56] = 1;
     write_s32_le(bytes, 57, -1);
+    bytes.insert(bytes.end(), image_bytes.begin(), image_bytes.end());
+    return bytes;
+}
+
+std::vector<unsigned char> make_resource_vtf(std::uint16_t width, std::uint16_t height, std::int32_t image_format, std::vector<unsigned char> image_bytes)
+{
+    constexpr std::size_t header_size = 88;
+    std::vector<unsigned char> bytes(header_size, 0);
+    bytes[0] = 'V';
+    bytes[1] = 'T';
+    bytes[2] = 'F';
+    bytes[3] = '\0';
+    write_u32_le(bytes, 4, 7);
+    write_u32_le(bytes, 8, 5);
+    write_u32_le(bytes, 12, static_cast<std::uint32_t>(header_size));
+    write_u16_le(bytes, 16, width);
+    write_u16_le(bytes, 18, height);
+    write_u16_le(bytes, 24, 1);
+    write_f32_le(bytes, 32, 0.25F);
+    write_f32_le(bytes, 36, 0.5F);
+    write_f32_le(bytes, 40, 0.75F);
+    write_f32_le(bytes, 48, 1.0F);
+    write_s32_le(bytes, 52, image_format);
+    bytes[56] = 1;
+    write_s32_le(bytes, 57, -1);
+    write_u16_le(bytes, 63, 1);
+    write_u32_le(bytes, 68, 1);
+    write_u32_le(bytes, 80, 0x30);
+    write_u32_le(bytes, 84, static_cast<std::uint32_t>(header_size));
     bytes.insert(bytes.end(), image_bytes.begin(), image_bytes.end());
     return bytes;
 }
@@ -784,6 +815,49 @@ void test_editor_displacement_uvs_stay_parent_quad_anchored()
     REQUIRE(found_moved_vertex);
 }
 
+void test_editor_displacement_position_edits_round_trip_source_field_vectors()
+{
+    VmfSolid solid = make_editor_test_box_solid({0, 0, 0}, {128, 128, 16}, "test/floor");
+    VmfSide& top_side = solid.sides[0];
+
+    std::vector<Vec3> parent_quad = ComputeSidePolygon(solid, 0);
+    REQUIRE(parent_quad.size() == 4);
+
+    VmfDispInfo disp;
+    disp.power = 2;
+    disp.startPosition = GLToSource(parent_quad[0]);
+    const int grid_size = disp.GridSize();
+    const int center = (grid_size / 2) * grid_size + (grid_size / 2);
+    const int vert_count = grid_size * grid_size;
+    disp.normals.resize(vert_count, {0, 0, 0});
+    disp.distances.resize(vert_count, 0.0f);
+    disp.offsets.resize(vert_count, {0, 0, 0});
+    disp.offsetNormals.resize(vert_count, {0, 0, 1});
+    disp.alphas.resize(vert_count, 0.0f);
+    disp.triangleTags.resize((grid_size - 1) * (grid_size - 1) * 2, 0);
+    top_side.dispinfo = disp;
+
+    std::vector<Vec3> before = ComputeDispGridPositions(solid, 0);
+    REQUIRE(before.size() == static_cast<std::size_t>(vert_count));
+
+    const Vec3 target = before[center] + Vec3{0.0f, 16.0f, 0.0f};
+    REQUIRE(SetDispVertexPositionGL(solid, 0, center, target));
+
+    const VmfDispInfo& edited = solid.sides[0].dispinfo.value();
+    REQUIRE(std::abs(edited.distances[center] - 16.0f) < 0.001f);
+    REQUIRE(Dot(Normalize(SourceToGL(edited.normals[center])), Vec3{0, 1, 0}) > 0.999f);
+
+    std::vector<Vec3> after = ComputeDispGridPositions(solid, 0);
+    REQUIRE(Length(after[center] - target) < 0.001f);
+
+    UpdateDispTriangleTags(solid, 0);
+    for (int tag : solid.sides[0].dispinfo->triangleTags)
+    {
+        REQUIRE((tag & DISP_TRI_TAG_WALKABLE) != 0);
+        REQUIRE((tag & DISP_TRI_TAG_BUILDABLE) != 0);
+    }
+}
+
 void test_command_line_config()
 {
     openstrike::CommandLine command_line({
@@ -897,6 +971,31 @@ void test_content_filesystem_path_ids()
     std::filesystem::remove_all(root);
 }
 
+void test_source_keyvalues_parser_handles_source_roots_and_vectors()
+{
+    const std::string text =
+        "versioninfo { \"formatversion\" \"100\" }\n"
+        "world\n"
+        "{\n"
+        "    \"id\" \"1\"\n"
+        "    \"classname\" \"worldspawn\"\n"
+        "}\n"
+        "\"LightmappedGeneric\"\n"
+        "{\n"
+        "    \"$color\" [128 64 32]\n"
+        "    \"replace\" { \"$basetexture\" \"Brick\\Wall01.vtf\" }\n"
+        "}\n";
+
+    openstrike::SourceKeyValueParseResult parsed = openstrike::parse_source_keyvalues(text);
+    REQUIRE(parsed.ok);
+    REQUIRE(parsed.roots.size() == 3);
+    REQUIRE(parsed.roots[1]->key == "world");
+    REQUIRE(std::string(parsed.roots[1]->GetString("classname")) == "worldspawn");
+    REQUIRE(openstrike::source_kv_find_value_ci(*parsed.roots[2], "$COLOR").has_value());
+    REQUIRE(*openstrike::source_kv_find_value_ci(*parsed.roots[2], "$COLOR") == "[128 64 32]");
+    REQUIRE(openstrike::source_kv_find_child_ci(*parsed.roots[2], "REPLACE") != nullptr);
+}
+
 void test_material_system_resolves_source_vmt_without_shader_combos()
 {
     const std::filesystem::path root = std::filesystem::current_path() / "build/test_material_content";
@@ -931,6 +1030,12 @@ void test_material_system_resolves_source_vmt_without_shader_combos()
             "\"LightmappedGeneric\"\n"
             "{\n"
             "    \"$basetexture\" \"brick/textured\"\n"
+            "}\n";
+
+        std::ofstream(root / "materials/maps/unquoted_color.vmt") <<
+            "\"LightmappedGeneric\"\n"
+            "{\n"
+            "    \"$color\" [128 64 32]\n"
             "}\n";
 
         const std::vector<unsigned char> rgba_pixels = {
@@ -977,6 +1082,12 @@ void test_material_system_resolves_source_vmt_without_shader_combos()
     REQUIRE(textured.base_texture.mips[0].bytes[2] == 30);
     REQUIRE(textured.base_texture.mips[0].bytes[3] == 255);
 
+    const openstrike::LoadedMaterial unquoted_color = materials.load_world_material("maps/unquoted_color");
+    REQUIRE(unquoted_color.definition.found_source_material);
+    REQUIRE(std::abs(unquoted_color.definition.constants.base_color[0] - (128.0F / 255.0F)) < 0.001F);
+    REQUIRE(std::abs(unquoted_color.definition.constants.base_color[1] - (64.0F / 255.0F)) < 0.001F);
+    REQUIRE(std::abs(unquoted_color.definition.constants.base_color[2] - (32.0F / 255.0F)) < 0.001F);
+
     const openstrike::LoadedMaterial tool = materials.load_world_material("tools/toolsnodraw");
     REQUIRE((tool.definition.constants.flags & openstrike::MaterialFlags::Tool) != 0);
     REQUIRE((tool.definition.constants.flags & openstrike::MaterialFlags::NoDraw) != 0);
@@ -992,6 +1103,8 @@ void test_source_texture_decodes_compressed_vtf_to_rgba()
 {
     constexpr std::int32_t image_format_dxt1 = 13;
     constexpr std::int32_t image_format_dxt5 = 15;
+    constexpr std::int32_t image_format_ati2n = 34;
+    constexpr std::int32_t image_format_ati1n = 35;
 
     std::vector<unsigned char> dxt1_block(8, 0);
     write_u16_le(dxt1_block, 0, 0xF800U);
@@ -1029,6 +1142,65 @@ void test_source_texture_decodes_compressed_vtf_to_rgba()
     REQUIRE(bc3_rgba->mips[0].bytes[1] == 0);
     REQUIRE(bc3_rgba->mips[0].bytes[2] == 0);
     REQUIRE(bc3_rgba->mips[0].bytes[3] == 128);
+
+    std::vector<unsigned char> ati1n_block(8, 0);
+    ati1n_block[0] = 255;
+    ati1n_block[1] = 0;
+    const std::optional<openstrike::SourceTexture> bc4_texture = openstrike::load_vtf_texture(make_minimal_vtf(4, 4, image_format_ati1n, ati1n_block));
+    REQUIRE(bc4_texture.has_value());
+    REQUIRE(bc4_texture->format == openstrike::SourceTextureFormat::Bc4);
+
+    const std::optional<openstrike::SourceTexture> bc4_rgba = openstrike::source_texture_to_rgba8(*bc4_texture);
+    REQUIRE(bc4_rgba.has_value());
+    REQUIRE(bc4_rgba->mips[0].bytes[0] == 255);
+    REQUIRE(bc4_rgba->mips[0].bytes[1] == 255);
+    REQUIRE(bc4_rgba->mips[0].bytes[2] == 255);
+    REQUIRE(bc4_rgba->mips[0].bytes[3] == 255);
+
+    std::vector<unsigned char> ati2n_block(16, 0);
+    ati2n_block[0] = 255;
+    ati2n_block[1] = 0;
+    ati2n_block[8] = 128;
+    ati2n_block[9] = 0;
+    const std::optional<openstrike::SourceTexture> bc5_texture = openstrike::load_vtf_texture(make_minimal_vtf(4, 4, image_format_ati2n, ati2n_block));
+    REQUIRE(bc5_texture.has_value());
+    REQUIRE(bc5_texture->format == openstrike::SourceTextureFormat::Bc5);
+
+    const std::optional<openstrike::SourceTexture> bc5_rgba = openstrike::source_texture_to_rgba8(*bc5_texture);
+    REQUIRE(bc5_rgba.has_value());
+    REQUIRE(bc5_rgba->mips[0].bytes[0] == 255);
+    REQUIRE(bc5_rgba->mips[0].bytes[1] == 128);
+    REQUIRE(bc5_rgba->mips[0].bytes[3] == 255);
+}
+
+void test_source_texture_loads_resource_vtf_metadata_and_legacy_formats()
+{
+    constexpr std::int32_t image_format_i8 = 5;
+    const std::vector<unsigned char> intensity_pixels = {0, 64, 128, 255};
+    const std::optional<openstrike::SourceTexture> texture =
+        openstrike::load_vtf_texture(make_resource_vtf(2, 2, image_format_i8, intensity_pixels));
+
+    REQUIRE(texture.has_value());
+    REQUIRE(texture->format == openstrike::SourceTextureFormat::Rgba8);
+    REQUIRE(texture->width == 2);
+    REQUIRE(texture->height == 2);
+    REQUIRE(texture->info.major_version == 7);
+    REQUIRE(texture->info.minor_version == 5);
+    REQUIRE(texture->info.header_size == 88);
+    REQUIRE(texture->info.image_format == image_format_i8);
+    REQUIRE(texture->info.resources.size() == 1);
+    REQUIRE(texture->info.resources[0].type == 0x30);
+    REQUIRE(texture->info.resources[0].data == 88);
+    REQUIRE(std::abs(texture->info.reflectivity[1] - 0.5F) < 0.001F);
+    REQUIRE(texture->mips.size() == 1);
+    REQUIRE(texture->mips[0].bytes.size() == 16);
+    REQUIRE(texture->mips[0].bytes[0] == 0);
+    REQUIRE(texture->mips[0].bytes[1] == 0);
+    REQUIRE(texture->mips[0].bytes[2] == 0);
+    REQUIRE(texture->mips[0].bytes[3] == 255);
+    REQUIRE(texture->mips[0].bytes[4] == 64);
+    REQUIRE(texture->mips[0].bytes[5] == 64);
+    REQUIRE(texture->mips[0].bytes[6] == 64);
 }
 
 void test_renderer_shader_files_are_dedicated()
@@ -1089,19 +1261,32 @@ void test_network_stream_and_protocol_roundtrip()
     REQUIRE(decoded->header.tick == 64);
     REQUIRE(openstrike::read_text_payload(decoded->payload) == "hello");
 
+    const std::vector<unsigned char> binary_payload{0x00U, 0x7FU, 0x80U, 0xFFU, 0x42U};
+    const std::vector<unsigned char> command_packet =
+        openstrike::encode_network_packet(openstrike::NetworkMessageType::UserCommand, 4, 3, 65, binary_payload);
+    const std::optional<openstrike::NetworkPacket> decoded_command = openstrike::decode_network_packet(command_packet);
+    REQUIRE(decoded_command.has_value());
+    REQUIRE(decoded_command->header.type == openstrike::NetworkMessageType::UserCommand);
+    REQUIRE(decoded_command->header.sequence == 4);
+    REQUIRE(decoded_command->header.ack == 3);
+    REQUIRE(decoded_command->header.tick == 65);
+    REQUIRE(decoded_command->payload == binary_payload);
+
+    const std::vector<unsigned char> snapshot_packet =
+        openstrike::encode_network_packet(openstrike::NetworkMessageType::Snapshot, 5, 4, 66, binary_payload);
+    const std::optional<openstrike::NetworkPacket> decoded_snapshot = openstrike::decode_network_packet(snapshot_packet);
+    REQUIRE(decoded_snapshot.has_value());
+    REQUIRE(decoded_snapshot->header.type == openstrike::NetworkMessageType::Snapshot);
+    REQUIRE(decoded_snapshot->header.tick == 66);
+    REQUIRE(decoded_snapshot->payload == binary_payload);
+
     std::vector<unsigned char> corrupt = packet;
     corrupt[0] = 0;
     REQUIRE(!openstrike::decode_network_packet(corrupt).has_value());
 }
 
-void test_network_udp_loopback_connects_and_exchanges_text()
+void connect_loopback_client(openstrike::NetworkServer& server, openstrike::NetworkClient& client)
 {
-    openstrike::NetworkServer server;
-    REQUIRE(server.start(0));
-    const std::vector<openstrike::NetworkEvent> startup_events = server.drain_events();
-    REQUIRE(!startup_events.empty());
-
-    openstrike::NetworkClient client;
     REQUIRE(client.connect(openstrike::NetworkAddress::localhost(server.local_port()), 1));
 
     bool server_saw_client = false;
@@ -1133,6 +1318,17 @@ void test_network_udp_loopback_connects_and_exchanges_text()
     REQUIRE(client_connected);
     REQUIRE(client.is_connected());
     REQUIRE(server.clients().size() == 1);
+}
+
+void test_network_udp_loopback_connects_and_exchanges_text()
+{
+    openstrike::NetworkServer server;
+    REQUIRE(server.start(0));
+    const std::vector<openstrike::NetworkEvent> startup_events = server.drain_events();
+    REQUIRE(!startup_events.empty());
+
+    openstrike::NetworkClient client;
+    connect_loopback_client(server, client);
 
     REQUIRE(client.send_text("client hello", 100));
     bool server_received_text = false;
@@ -1168,6 +1364,542 @@ void test_network_udp_loopback_connects_and_exchanges_text()
 
     client.disconnect(300);
     server.stop();
+}
+
+void test_network_udp_loopback_client_sends_user_command()
+{
+    openstrike::NetworkServer server;
+    REQUIRE(server.start(0));
+    (void)server.drain_events();
+
+    openstrike::NetworkClient client;
+    connect_loopback_client(server, client);
+
+    const std::vector<unsigned char> command{0x01U, 0x00U, 0xFEU, 0x7FU, 0x33U};
+    REQUIRE(client.send_user_command(command, 410));
+
+    bool server_received_command = false;
+    for (int attempt = 0; attempt < 64 && !server_received_command; ++attempt)
+    {
+        server.poll(static_cast<std::uint64_t>(410 + attempt));
+        for (const openstrike::NetworkEvent& event : server.drain_events())
+        {
+            if (event.type == openstrike::NetworkEventType::UserCommandReceived && event.payload == command && event.tick == 410)
+            {
+                REQUIRE(event.connection_id == server.clients().front().connection_id);
+                server_received_command = true;
+            }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    REQUIRE(server_received_command);
+
+    client.disconnect(500);
+    server.stop();
+}
+
+void test_network_udp_loopback_server_sends_snapshot()
+{
+    openstrike::NetworkServer server;
+    REQUIRE(server.start(0));
+    (void)server.drain_events();
+
+    openstrike::NetworkClient client;
+    connect_loopback_client(server, client);
+
+    const std::vector<unsigned char> snapshot{0x10U, 0x20U, 0x00U, 0xFFU, 0x5AU, 0xC3U};
+    server.broadcast_snapshot(snapshot, 620);
+
+    bool client_received_snapshot = false;
+    for (int attempt = 0; attempt < 64 && !client_received_snapshot; ++attempt)
+    {
+        client.poll(static_cast<std::uint64_t>(620 + attempt));
+        for (const openstrike::NetworkEvent& event : client.drain_events())
+        {
+            if (event.type == openstrike::NetworkEventType::SnapshotReceived && event.payload == snapshot && event.tick == 620)
+            {
+                REQUIRE(event.connection_id == client.connection_id());
+                client_received_snapshot = true;
+            }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    REQUIRE(client_received_snapshot);
+
+    client.disconnect(700);
+    server.stop();
+}
+
+void test_team_id_helpers_match_counter_strike()
+{
+    REQUIRE(openstrike::TEAM_UNASSIGNED == 0);
+    REQUIRE(openstrike::TEAM_SPECTATOR == 1);
+    REQUIRE(openstrike::TEAM_TERRORIST == 2);
+    REQUIRE(openstrike::TEAM_CT == 3);
+    REQUIRE(openstrike::is_joinable_team_id(0));
+    REQUIRE(openstrike::is_joinable_team_id(1));
+    REQUIRE(openstrike::is_joinable_team_id(2));
+    REQUIRE(openstrike::is_joinable_team_id(3));
+    REQUIRE(!openstrike::is_joinable_team_id(4));
+    REQUIRE(openstrike::team_name(openstrike::TEAM_TERRORIST) == "Terrorists");
+    REQUIRE(openstrike::team_short_name(openstrike::TEAM_CT) == "CT");
+}
+
+void test_team_manager_membership_and_scores()
+{
+    openstrike::TeamManager teams;
+    openstrike::TeamJoinRules rules;
+    rules.require_join_game = false;
+
+    REQUIRE(teams.try_join_team(10, openstrike::TEAM_TERRORIST, true, rules).accepted);
+    REQUIRE(teams.try_join_team(11, openstrike::TEAM_CT, true, rules).accepted);
+    REQUIRE(teams.find_team(openstrike::TEAM_TERRORIST)->members.size() == 1);
+    REQUIRE(teams.find_team(openstrike::TEAM_CT)->members.size() == 1);
+    REQUIRE(teams.find_team(openstrike::TEAM_TERRORIST)->alive_count == 1);
+
+    teams.add_team_score(openstrike::TEAM_TERRORIST, 2);
+    teams.set_team_score(openstrike::TEAM_CT, 3);
+    teams.mark_surrendered(openstrike::TEAM_TERRORIST);
+    REQUIRE(teams.find_team(openstrike::TEAM_TERRORIST)->score_total == 2);
+    REQUIRE(teams.find_team(openstrike::TEAM_CT)->score_total == 3);
+    REQUIRE(teams.find_team(openstrike::TEAM_TERRORIST)->surrendered);
+
+    REQUIRE(teams.try_join_team(10, openstrike::TEAM_SPECTATOR, true, rules).accepted);
+    REQUIRE(teams.find_team(openstrike::TEAM_TERRORIST)->members.empty());
+    REQUIRE(teams.find_team(openstrike::TEAM_SPECTATOR)->members.size() == 1);
+    REQUIRE(teams.find_player(10)->alive == false);
+}
+
+void test_team_auto_assign_uses_smaller_team_then_lower_score()
+{
+    openstrike::TeamManager teams;
+    openstrike::TeamJoinRules rules;
+    rules.require_join_game = false;
+    rules.limit_teams = 0;
+
+    REQUIRE(teams.try_join_team(1, openstrike::TEAM_TERRORIST, true, rules).accepted);
+    openstrike::TeamJoinResult result = teams.try_join_team(2, openstrike::TEAM_UNASSIGNED, true, rules);
+    REQUIRE(result.accepted);
+    REQUIRE(result.resolved_team == openstrike::TEAM_CT);
+
+    openstrike::TeamManager score_tie;
+    score_tie.set_team_score(openstrike::TEAM_TERRORIST, 1);
+    score_tie.set_team_score(openstrike::TEAM_CT, 3);
+    result = score_tie.try_join_team(3, openstrike::TEAM_UNASSIGNED, true, rules);
+    REQUIRE(result.accepted);
+    REQUIRE(result.resolved_team == openstrike::TEAM_TERRORIST);
+}
+
+void test_team_join_rejections_for_capacity_stack_spectator_and_humanteam()
+{
+    openstrike::TeamJoinRules rules;
+    rules.require_join_game = false;
+    rules.max_players = 2;
+    rules.terrorist_spawn_count = 1;
+    rules.ct_spawn_count = 1;
+    rules.limit_teams = 0;
+
+    openstrike::TeamManager full;
+    REQUIRE(full.try_join_team(1, openstrike::TEAM_TERRORIST, true, rules).accepted);
+    openstrike::TeamJoinResult result = full.try_join_team(2, openstrike::TEAM_TERRORIST, true, rules);
+    REQUIRE(!result.accepted);
+    REQUIRE(result.reason == openstrike::TeamJoinFailedReason::TerroristsFull);
+
+    openstrike::TeamManager stacked;
+    rules.max_players = 10;
+    rules.terrorist_spawn_count = 0;
+    rules.ct_spawn_count = 0;
+    rules.limit_teams = 1;
+    REQUIRE(stacked.try_join_team(1, openstrike::TEAM_TERRORIST, true, rules).accepted);
+    result = stacked.try_join_team(2, openstrike::TEAM_TERRORIST, true, rules);
+    REQUIRE(!result.accepted);
+    REQUIRE(result.reason == openstrike::TeamJoinFailedReason::TooManyTs);
+
+    openstrike::TeamManager spectator;
+    rules.limit_teams = 0;
+    rules.allow_spectators = false;
+    result = spectator.try_join_team(3, openstrike::TEAM_SPECTATOR, true, rules);
+    REQUIRE(!result.accepted);
+    REQUIRE(result.reason == openstrike::TeamJoinFailedReason::CannotJoinSpectator);
+
+    openstrike::TeamManager humans;
+    rules.allow_spectators = true;
+    rules.human_team = "CT";
+    result = humans.try_join_team(4, openstrike::TEAM_TERRORIST, true, rules);
+    REQUIRE(!result.accepted);
+    REQUIRE(result.reason == openstrike::TeamJoinFailedReason::HumansCanOnlyJoinCts);
+    result = humans.try_join_team(4, openstrike::TEAM_CT, true, rules);
+    REQUIRE(result.accepted);
+}
+
+void test_team_command_jointeam_applies_local_offline()
+{
+    openstrike::RuntimeConfig config;
+    config.content_root = std::filesystem::current_path();
+    openstrike::EngineContext context;
+    openstrike::configure_engine_context(context, config);
+
+    context.command_buffer.add_text("joingame; jointeam 2 1");
+    openstrike::ConsoleCommandContext console_context = context.console_context();
+    context.command_buffer.execute(context.commands, console_context);
+
+    const openstrike::TeamPlayerState* player = context.teams.find_player(openstrike::kLocalTeamPlayerId);
+    REQUIRE(player != nullptr);
+    REQUIRE(player->current_team == openstrike::TEAM_TERRORIST);
+    REQUIRE(player->alive);
+}
+
+void test_team_command_jointeam_requires_joingame()
+{
+    openstrike::RuntimeConfig config;
+    config.content_root = std::filesystem::current_path();
+    openstrike::EngineContext context;
+    openstrike::configure_engine_context(context, config);
+
+    context.command_buffer.add_text("jointeam 2 1");
+    openstrike::ConsoleCommandContext console_context = context.console_context();
+    context.command_buffer.execute(context.commands, console_context);
+
+    const openstrike::TeamPlayerState* player = context.teams.find_player(openstrike::kLocalTeamPlayerId);
+    REQUIRE(player != nullptr);
+    REQUIRE(player->current_team == openstrike::TEAM_UNASSIGNED);
+    REQUIRE(!player->alive);
+    REQUIRE(player->last_join_failure == openstrike::TeamJoinFailedReason::ChangedTooOften);
+
+    context.command_buffer.add_text("joingame; jointeam 2 1");
+    context.command_buffer.execute(context.commands, console_context);
+
+    player = context.teams.find_player(openstrike::kLocalTeamPlayerId);
+    REQUIRE(player != nullptr);
+    REQUIRE(player->current_team == openstrike::TEAM_TERRORIST);
+    REQUIRE(player->alive);
+    REQUIRE(player->last_join_failure == openstrike::TeamJoinFailedReason::None);
+}
+
+void test_team_payloads_and_snapshot_round_trip()
+{
+    const openstrike::TeamUserCommand command{
+        .kind = openstrike::TeamUserCommandKind::JoinTeam,
+        .requested_team = openstrike::TEAM_CT,
+        .force = true,
+    };
+    const std::vector<unsigned char> command_payload = openstrike::make_team_user_command_payload(command);
+    const std::optional<openstrike::TeamUserCommand> decoded_command = openstrike::read_team_user_command_payload(command_payload);
+    REQUIRE(decoded_command.has_value());
+    REQUIRE(decoded_command->kind == openstrike::TeamUserCommandKind::JoinTeam);
+    REQUIRE(decoded_command->requested_team == openstrike::TEAM_CT);
+    REQUIRE(decoded_command->force);
+
+    openstrike::TeamManager teams;
+    openstrike::TeamJoinRules rules;
+    rules.require_join_game = false;
+    REQUIRE(teams.try_join_team(77, openstrike::TEAM_CT, true, rules).accepted);
+    teams.set_team_score(openstrike::TEAM_CT, 4);
+
+    const std::vector<unsigned char> snapshot_payload = openstrike::make_team_snapshot_payload(teams.make_snapshot());
+    const std::optional<openstrike::TeamSnapshot> decoded_snapshot = openstrike::read_team_snapshot_payload(snapshot_payload);
+    REQUIRE(decoded_snapshot.has_value());
+    REQUIRE(decoded_snapshot->players.size() == 1);
+    REQUIRE(decoded_snapshot->players[0].connection_id == 77);
+    REQUIRE(decoded_snapshot->players[0].current_team == openstrike::TEAM_CT);
+    REQUIRE(decoded_snapshot->teams[openstrike::TEAM_CT].score_total == 4);
+
+    std::vector<unsigned char> malformed_members = snapshot_payload;
+    REQUIRE(malformed_members.size() > 33);
+    write_u32_le(malformed_members, 29, 0x0000FFFFU);
+    REQUIRE(!openstrike::read_team_snapshot_payload(malformed_members).has_value());
+
+    std::vector<unsigned char> malformed_player_team = snapshot_payload;
+    REQUIRE(malformed_player_team.size() > 133);
+    write_u32_le(malformed_player_team, 130, 99U);
+    REQUIRE(!openstrike::read_team_snapshot_payload(malformed_player_team).has_value());
+
+    std::vector<unsigned char> malformed_alive_spectator = snapshot_payload;
+    REQUIRE(malformed_alive_spectator.size() > 142);
+    write_u32_le(malformed_alive_spectator, 130, openstrike::TEAM_SPECTATOR);
+    REQUIRE(!openstrike::read_team_snapshot_payload(malformed_alive_spectator).has_value());
+
+    std::vector<unsigned char> malformed_failure = snapshot_payload;
+    REQUIRE(malformed_failure.size() > 156);
+    malformed_failure[156] = 99U;
+    REQUIRE(!openstrike::read_team_snapshot_payload(malformed_failure).has_value());
+}
+
+void test_team_network_join_command_validates_and_replicates_snapshot()
+{
+    openstrike::RuntimeConfig config;
+    config.content_root = std::filesystem::current_path();
+    openstrike::EngineContext server_context;
+    openstrike::configure_engine_context(server_context, config);
+    REQUIRE(server_context.network.start_server(0));
+    (void)server_context.network.drain_events();
+
+    openstrike::NetworkClient client;
+    REQUIRE(client.connect(openstrike::NetworkAddress::localhost(server_context.network.server().local_port()), 1));
+
+    bool client_connected = false;
+    for (int attempt = 0; attempt < 64 && !client_connected; ++attempt)
+    {
+        server_context.network.poll(static_cast<std::uint64_t>(2 + attempt));
+        for (const openstrike::NetworkEvent& event : server_context.network.drain_events())
+        {
+            openstrike::handle_team_network_event(server_context, event);
+        }
+        client.poll(static_cast<std::uint64_t>(2 + attempt));
+        for (const openstrike::NetworkEvent& event : client.drain_events())
+        {
+            client_connected = client_connected || event.type == openstrike::NetworkEventType::ConnectedToServer;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    REQUIRE(client_connected);
+
+    const std::vector<unsigned char> join_game = openstrike::make_team_user_command_payload(openstrike::TeamUserCommand{
+        .kind = openstrike::TeamUserCommandKind::JoinGame,
+    });
+    REQUIRE(client.send_user_command(join_game, 100));
+    const std::vector<unsigned char> join_team = openstrike::make_team_user_command_payload(openstrike::TeamUserCommand{
+        .kind = openstrike::TeamUserCommandKind::JoinTeam,
+        .requested_team = openstrike::TEAM_TERRORIST,
+        .force = true,
+    });
+    REQUIRE(client.send_user_command(join_team, 101));
+
+    openstrike::TeamManager client_teams;
+    bool client_applied_snapshot = false;
+    for (int attempt = 0; attempt < 64 && !client_applied_snapshot; ++attempt)
+    {
+        server_context.network.poll(static_cast<std::uint64_t>(110 + attempt));
+        for (const openstrike::NetworkEvent& event : server_context.network.drain_events())
+        {
+            openstrike::handle_team_network_event(server_context, event);
+        }
+
+        client.poll(static_cast<std::uint64_t>(110 + attempt));
+        for (const openstrike::NetworkEvent& event : client.drain_events())
+        {
+            if (event.type == openstrike::NetworkEventType::SnapshotReceived)
+            {
+                const std::optional<openstrike::TeamSnapshot> snapshot = openstrike::read_team_snapshot_payload(event.payload);
+                if (snapshot)
+                {
+                    client_teams.apply_snapshot(*snapshot, client.connection_id());
+                    const openstrike::TeamPlayerState* player = client_teams.find_player(client.connection_id());
+                    client_applied_snapshot = player != nullptr && player->current_team == openstrike::TEAM_TERRORIST;
+                }
+            }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    REQUIRE(client_applied_snapshot);
+    REQUIRE(server_context.teams.find_player(client.connection_id())->current_team == openstrike::TEAM_TERRORIST);
+
+    client.disconnect(200);
+    server_context.network.stop_server();
+}
+
+void test_connected_team_menu_targets_local_connection()
+{
+    openstrike::RuntimeConfig config;
+    config.content_root = std::filesystem::current_path();
+    openstrike::EngineContext server_context;
+    openstrike::configure_engine_context(server_context, config);
+    REQUIRE(server_context.network.start_server(0));
+    (void)server_context.network.drain_events();
+
+    openstrike::EngineContext client_context;
+    openstrike::configure_engine_context(client_context, config);
+    REQUIRE(client_context.network.connect_client(openstrike::NetworkAddress::localhost(server_context.network.server().local_port()), 1));
+
+    bool client_connected = false;
+    for (int attempt = 0; attempt < 64 && !client_connected; ++attempt)
+    {
+        server_context.network.poll(static_cast<std::uint64_t>(2 + attempt));
+        for (const openstrike::NetworkEvent& event : server_context.network.drain_events())
+        {
+            openstrike::handle_team_network_event(server_context, event);
+        }
+        client_context.network.poll(static_cast<std::uint64_t>(2 + attempt));
+        for (const openstrike::NetworkEvent& event : client_context.network.drain_events())
+        {
+            client_connected = client_connected || event.type == openstrike::NetworkEventType::ConnectedToServer;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    REQUIRE(client_connected);
+
+    const std::uint32_t local_id = openstrike::local_team_connection_id(client_context.network);
+    REQUIRE(local_id != openstrike::kLocalTeamPlayerId);
+    client_context.teams.mark_join_game(local_id);
+    openstrike::TeamJoinRules rules;
+    REQUIRE(client_context.teams.try_join_team(local_id, openstrike::TEAM_CT, true, rules).accepted);
+    REQUIRE(!client_context.teams.should_show_team_menu(local_id, true));
+
+    client_context.command_buffer.add_text("teammenu");
+    openstrike::ConsoleCommandContext console_context = client_context.console_context();
+    client_context.command_buffer.execute(client_context.commands, console_context);
+
+    const openstrike::TeamPlayerState* player = client_context.teams.find_player(local_id);
+    REQUIRE(player != nullptr);
+    REQUIRE(player->team_menu_requested);
+    REQUIRE(client_context.teams.should_show_team_menu(local_id, true));
+    const openstrike::TeamPlayerState* player_zero = client_context.teams.find_player(openstrike::kLocalTeamPlayerId);
+    REQUIRE(player_zero == nullptr || !player_zero->team_menu_requested);
+
+    client_context.network.disconnect_client(200);
+    server_context.network.stop_server();
+}
+
+void test_listen_server_local_team_join_broadcasts_snapshot()
+{
+    openstrike::RuntimeConfig config;
+    config.content_root = std::filesystem::current_path();
+    openstrike::EngineContext server_context;
+    openstrike::configure_engine_context(server_context, config);
+    REQUIRE(server_context.network.start_server(0));
+    (void)server_context.network.drain_events();
+
+    openstrike::NetworkClient remote_client;
+    REQUIRE(remote_client.connect(openstrike::NetworkAddress::localhost(server_context.network.server().local_port()), 1));
+
+    bool client_connected = false;
+    for (int attempt = 0; attempt < 64 && !client_connected; ++attempt)
+    {
+        server_context.network.poll(static_cast<std::uint64_t>(2 + attempt));
+        for (const openstrike::NetworkEvent& event : server_context.network.drain_events())
+        {
+            openstrike::handle_team_network_event(server_context, event);
+        }
+        remote_client.poll(static_cast<std::uint64_t>(2 + attempt));
+        for (const openstrike::NetworkEvent& event : remote_client.drain_events())
+        {
+            client_connected = client_connected || event.type == openstrike::NetworkEventType::ConnectedToServer;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    REQUIRE(client_connected);
+
+    server_context.command_buffer.add_text("joingame; jointeam 2 1");
+    openstrike::ConsoleCommandContext console_context = server_context.console_context();
+    server_context.command_buffer.execute(server_context.commands, console_context);
+
+    bool received_local_team_snapshot = false;
+    for (int attempt = 0; attempt < 64 && !received_local_team_snapshot; ++attempt)
+    {
+        remote_client.poll(static_cast<std::uint64_t>(110 + attempt));
+        for (const openstrike::NetworkEvent& event : remote_client.drain_events())
+        {
+            if (event.type == openstrike::NetworkEventType::SnapshotReceived)
+            {
+                const std::optional<openstrike::TeamSnapshot> snapshot = openstrike::read_team_snapshot_payload(event.payload);
+                if (snapshot)
+                {
+                    const auto it = std::find_if(snapshot->players.begin(), snapshot->players.end(), [](const openstrike::TeamPlayerState& player) {
+                        return player.connection_id == openstrike::kLocalTeamPlayerId &&
+                               player.current_team == openstrike::TEAM_TERRORIST;
+                    });
+                    received_local_team_snapshot = it != snapshot->players.end();
+                }
+            }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    REQUIRE(received_local_team_snapshot);
+    REQUIRE(server_context.teams.find_player(openstrike::kLocalTeamPlayerId)->current_team == openstrike::TEAM_TERRORIST);
+
+    remote_client.disconnect(200);
+    server_context.network.stop_server();
+}
+
+void test_failed_team_join_snapshot_preserves_current_team()
+{
+    openstrike::TeamManager teams;
+    openstrike::TeamJoinRules rules;
+    rules.require_join_game = false;
+    rules.max_players = 2;
+    rules.terrorist_spawn_count = 1;
+    rules.limit_teams = 0;
+    REQUIRE(teams.try_join_team(1, openstrike::TEAM_TERRORIST, true, rules).accepted);
+
+    const openstrike::TeamJoinResult result = teams.try_join_team(2, openstrike::TEAM_TERRORIST, true, rules);
+    REQUIRE(!result.accepted);
+    REQUIRE(result.reason == openstrike::TeamJoinFailedReason::TerroristsFull);
+    const openstrike::TeamPlayerState* player = teams.find_player(2);
+    REQUIRE(player != nullptr);
+    REQUIRE(player->current_team == openstrike::TEAM_UNASSIGNED);
+    REQUIRE(player->last_join_failure == openstrike::TeamJoinFailedReason::TerroristsFull);
+}
+
+void test_team_specific_spawn_selection_from_bsp_entities()
+{
+    const std::filesystem::path root = std::filesystem::current_path() / "build/test_team_spawn_content";
+    std::filesystem::remove_all(root);
+    std::filesystem::create_directories(root / "game/maps");
+
+    const std::string entities =
+        "{\n\"classname\" \"worldspawn\"\n}\n"
+        "{\n\"classname\" \"info_player_terrorist\"\n\"origin\" \"10 20 30\"\n}\n"
+        "{\n\"classname\" \"info_player_counterterrorist\"\n\"origin\" \"40 50 60\"\n}\n"
+        "{\n\"classname\" \"info_player_teamspawn\"\n\"TeamNum\" \"3\"\n\"origin\" \"70 80 90\"\n}\n"
+        "{\n\"classname\" \"info_player_deathmatch\"\n\"origin\" \"1 2 3\"\n}\n";
+    write_minimal_bsp(root / "game/maps/team_spawns.bsp", entities);
+
+    openstrike::RuntimeConfig config;
+    config.content_root = root / "game";
+    openstrike::EngineContext context;
+    openstrike::configure_engine_context(context, config);
+    REQUIRE(context.world.load_map("team_spawns", context.filesystem));
+    const openstrike::LoadedWorld* world = context.world.current_world();
+    REQUIRE(world != nullptr);
+    REQUIRE(world->spawn_points.size() == 4);
+
+    openstrike::TeamManager teams;
+    const std::optional<openstrike::WorldSpawnPoint> t_spawn =
+        teams.select_spawn_point(*world, openstrike::TEAM_TERRORIST, 0);
+    const std::optional<openstrike::WorldSpawnPoint> ct_spawn =
+        teams.select_spawn_point(*world, openstrike::TEAM_CT, 0);
+    REQUIRE(t_spawn.has_value());
+    REQUIRE(ct_spawn.has_value());
+    REQUIRE(t_spawn->team_id == openstrike::TEAM_TERRORIST);
+    REQUIRE(ct_spawn->team_id == openstrike::TEAM_CT);
+
+    std::filesystem::remove_all(root);
+}
+
+void test_hud_state_reflects_authoritative_team()
+{
+    const std::filesystem::path root = std::filesystem::current_path() / "build/test_team_hud_content";
+    std::filesystem::remove_all(root);
+    std::filesystem::create_directories(root / "game/maps");
+
+    const std::string entities =
+        "{\n\"classname\" \"worldspawn\"\n}\n"
+        "{\n\"classname\" \"info_player_terrorist\"\n\"origin\" \"8 16 32\"\n}\n";
+    write_minimal_bsp(root / "game/maps/team_hud.bsp", entities);
+
+    openstrike::RuntimeConfig config;
+    config.content_root = root / "game";
+    openstrike::EngineContext context;
+    openstrike::configure_engine_context(context, config);
+    REQUIRE(context.world.load_map("team_hud", context.filesystem));
+
+    openstrike::GameSimulation simulation;
+    simulation.on_start(config, context);
+    simulation.on_fixed_update({}, context);
+    context.teams.mark_join_game(openstrike::kLocalTeamPlayerId);
+    openstrike::TeamJoinRules rules = openstrike::team_join_rules_from_context(context.variables, context.world.current_world());
+    REQUIRE(context.teams.try_join_team(openstrike::kLocalTeamPlayerId, openstrike::TEAM_TERRORIST, true, rules).accepted);
+    simulation.on_fixed_update({}, context);
+
+    REQUIRE(context.hud.team_name == "Terrorists");
+    REQUIRE(context.hud.alive);
+    REQUIRE(context.hud.health == 100);
+
+    std::filesystem::remove_all(root);
 }
 
 void test_command_buffer_cvars_and_quit()
@@ -1894,6 +2626,97 @@ void test_map_and_changelevel_match_source_server_rules()
     std::filesystem::remove_all(root);
 }
 
+void test_game_mode_cvars_aliases_cfg_and_loading()
+{
+    const std::filesystem::path root = std::filesystem::current_path() / "build/test_game_mode_cvars";
+    std::filesystem::remove_all(root);
+    std::filesystem::create_directories(root / "game/maps");
+    std::filesystem::create_directories(root / "game/cfg");
+
+    const std::string entities =
+        "{\n"
+        "\"classname\" \"worldspawn\"\n"
+        "\"mapversion\" \"1\"\n"
+        "}\n";
+    write_minimal_bsp(root / "game/maps/de_dust2.bsp", entities);
+    {
+        std::ofstream(root / "game/cfg/gamemode_competitive.cfg") << "set mp_roundtime 1.92; set mp_friendlyfire 1";
+        std::ofstream(root / "game/cfg/gamemode_competitive_short.cfg") << "set mp_maxrounds 12";
+        std::ofstream(root / "game/cfg/gamemode_competitive_server.cfg") << "set mp_freezetime 7";
+    }
+
+    openstrike::RuntimeConfig config;
+    config.content_root = root / "game";
+
+    openstrike::EngineContext context;
+    openstrike::configure_engine_context(context, config);
+    REQUIRE(context.variables.get_string("game_type") == "0");
+    REQUIRE(context.variables.get_string("game_mode") == "1");
+
+    context.variables.set("sv_skirmish_id", "12");
+    context.command_buffer.add_text("game_alias wingman");
+    openstrike::ConsoleCommandContext console_context = context.console_context();
+    context.command_buffer.execute(context.commands, console_context);
+    REQUIRE(context.variables.get_string("game_type") == "0");
+    REQUIRE(context.variables.get_string("game_mode") == "2");
+    REQUIRE(context.variables.get_string("sv_skirmish_id") == "12");
+
+    context.command_buffer.add_text("set sv_skirmish_id 0; set sv_game_mode_flags 32; set mp_roundtime 9; map de_dust2 comp");
+    context.command_buffer.execute(context.commands, console_context);
+
+    const openstrike::LoadedWorld* loaded = context.world.current_world();
+    REQUIRE(loaded != nullptr);
+    REQUIRE(loaded->name == "de_dust2");
+    REQUIRE(context.variables.get_string("game_type") == "0");
+    REQUIRE(context.variables.get_string("game_mode") == "1");
+    REQUIRE(context.variables.get_string("sv_game_mode_flags") == "32");
+    REQUIRE(context.variables.get_string("maxplayers") == "10");
+    REQUIRE(context.variables.get_string("mp_roundtime") == "1.92");
+    REQUIRE(context.variables.get_string("mp_friendlyfire") == "1");
+    REQUIRE(context.variables.get_string("mp_maxrounds") == "12");
+    REQUIRE(context.variables.get_string("mp_freezetime") == "7");
+    REQUIRE(context.loading_screen.snapshot().game_mode == "Short Competitive");
+
+    std::filesystem::remove_all(root);
+}
+
+void test_game_mode_auto_alias_reads_map_defaults()
+{
+    const std::filesystem::path root = std::filesystem::current_path() / "build/test_game_mode_auto_alias";
+    std::filesystem::remove_all(root);
+    std::filesystem::create_directories(root / "game/maps");
+    std::filesystem::create_directories(root / "game/cfg");
+
+    const std::string entities =
+        "{\n"
+        "\"classname\" \"worldspawn\"\n"
+        "}\n";
+    write_minimal_bsp(root / "game/maps/auto_mode.bsp", entities);
+    {
+        std::ofstream(root / "game/maps/auto_mode.kv") << "\"auto_mode\" { \"default_game_type\" \"1\" \"default_game_mode\" \"0\" }";
+        std::ofstream(root / "game/cfg/gamemode_armsrace.cfg") << "set bot_quota 5";
+    }
+
+    openstrike::RuntimeConfig config;
+    config.content_root = root / "game";
+
+    openstrike::EngineContext context;
+    openstrike::configure_engine_context(context, config);
+    context.command_buffer.add_text("map auto_mode auto");
+    openstrike::ConsoleCommandContext console_context = context.console_context();
+    context.command_buffer.execute(context.commands, console_context);
+
+    const openstrike::LoadedWorld* loaded = context.world.current_world();
+    REQUIRE(loaded != nullptr);
+    REQUIRE(context.variables.get_string("game_type") == "1");
+    REQUIRE(context.variables.get_string("game_mode") == "0");
+    REQUIRE(context.variables.get_string("maxplayers") == "10");
+    REQUIRE(context.variables.get_string("bot_quota") == "5");
+    REQUIRE(context.loading_screen.snapshot().game_mode == "Arms Race");
+
+    std::filesystem::remove_all(root);
+}
+
 void test_disconnect_command_unloads_world_and_network()
 {
     const std::filesystem::path root = std::filesystem::current_path() / "build/test_disconnect_command_content";
@@ -2002,12 +2825,30 @@ void test_game_simulation_updates_hud_for_loaded_world()
     simulation.on_fixed_update(openstrike::SimulationStep{0, 1.0 / 64.0}, context);
 
     REQUIRE(context.hud.visible);
+    REQUIRE(!context.hud.alive);
+    REQUIRE(context.hud.health == 0);
+    REQUIRE(context.hud.round_phase == "CHOOSE TEAM");
+    REQUIRE(!context.camera.active);
+
+    const std::uint32_t local_id = openstrike::local_team_connection_id(context.network);
+    context.teams.mark_join_game(local_id);
+    const openstrike::TeamJoinResult join_result = context.teams.try_join_team(
+        local_id,
+        openstrike::TEAM_CT,
+        true,
+        openstrike::team_join_rules_from_context(context.variables, context.world.current_world()));
+    REQUIRE(join_result.accepted);
+    simulation.on_fixed_update(openstrike::SimulationStep{0, 1.0 / 64.0}, context);
+
+    REQUIRE(context.hud.visible);
+    REQUIRE(context.hud.alive);
     REQUIRE(context.hud.health == 100);
     REQUIRE(context.hud.max_health == 100);
     REQUIRE(context.hud.money == 800);
     REQUIRE(context.hud.ammo_in_clip == 12);
     REQUIRE(context.hud.reserve_ammo == 24);
     REQUIRE(context.hud.round_phase == "hud_world");
+    REQUIRE(context.hud.team_name == "Counter-Terrorists");
     REQUIRE(context.hud.grounded);
     REQUIRE(context.hud.crosshair_gap >= 12.0F);
     REQUIRE(context.camera.active);
@@ -2577,11 +3418,29 @@ int main()
         test_fixed_step_clamps_runaway_frames();
         test_content_filesystem_path_ids();
         test_editor_displacement_uvs_stay_parent_quad_anchored();
+        test_editor_displacement_position_edits_round_trip_source_field_vectors();
+        test_source_keyvalues_parser_handles_source_roots_and_vectors();
         test_material_system_resolves_source_vmt_without_shader_combos();
         test_source_texture_decodes_compressed_vtf_to_rgba();
+        test_source_texture_loads_resource_vtf_metadata_and_legacy_formats();
         test_renderer_shader_files_are_dedicated();
         test_network_stream_and_protocol_roundtrip();
         test_network_udp_loopback_connects_and_exchanges_text();
+        test_network_udp_loopback_client_sends_user_command();
+        test_network_udp_loopback_server_sends_snapshot();
+        test_team_id_helpers_match_counter_strike();
+        test_team_manager_membership_and_scores();
+        test_team_auto_assign_uses_smaller_team_then_lower_score();
+        test_team_join_rejections_for_capacity_stack_spectator_and_humanteam();
+        test_team_command_jointeam_applies_local_offline();
+        test_team_command_jointeam_requires_joingame();
+        test_team_payloads_and_snapshot_round_trip();
+        test_team_network_join_command_validates_and_replicates_snapshot();
+        test_connected_team_menu_targets_local_connection();
+        test_listen_server_local_team_join_broadcasts_snapshot();
+        test_failed_team_join_snapshot_preserves_current_team();
+        test_team_specific_spawn_selection_from_bsp_entities();
+        test_hud_state_reflects_authoritative_team();
         test_command_buffer_cvars_and_quit();
         test_loading_screen_state_matches_source_map_lifecycle();
         test_audio_sound_chars_match_source_prefix_rules();
@@ -2599,6 +3458,8 @@ int main()
         test_source_fgd_accepts_concatenated_source_strings();
         test_map_command_loads_current_world();
         test_map_and_changelevel_match_source_server_rules();
+        test_game_mode_cvars_aliases_cfg_and_loading();
+        test_game_mode_auto_alias_reads_map_defaults();
         test_disconnect_command_unloads_world_and_network();
         test_quit_and_exit_commands_disconnect_before_shutdown();
         test_game_simulation_updates_hud_for_loaded_world();

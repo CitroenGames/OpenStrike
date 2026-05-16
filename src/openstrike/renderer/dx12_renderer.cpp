@@ -3,6 +3,7 @@
 #include "openstrike/core/log.hpp"
 #include "openstrike/engine/engine_context.hpp"
 #include "openstrike/engine/sdl_input.hpp"
+#include "openstrike/game/game_mode.hpp"
 #include "openstrike/material/material_system.hpp"
 #include "openstrike/renderer/rml_dx12_render_interface.hpp"
 #include "openstrike/renderer/world_material_shader.hpp"
@@ -12,6 +13,7 @@
 #include "openstrike/ui/rml_console_controller.hpp"
 #include "openstrike/ui/rml_hud_controller.hpp"
 #include "openstrike/ui/rml_loading_screen_controller.hpp"
+#include "openstrike/ui/rml_team_menu_controller.hpp"
 #include "openstrike/world/world.hpp"
 
 #ifndef WIN32_LEAN_AND_MEAN
@@ -487,6 +489,10 @@ DXGI_FORMAT dxgi_format_for_source(SourceTextureFormat format)
         return DXGI_FORMAT_BC2_UNORM;
     case SourceTextureFormat::Bc3:
         return DXGI_FORMAT_BC3_UNORM;
+    case SourceTextureFormat::Bc4:
+        return DXGI_FORMAT_BC4_UNORM;
+    case SourceTextureFormat::Bc5:
+        return DXGI_FORMAT_BC5_UNORM;
     case SourceTextureFormat::Rgba8:
         return DXGI_FORMAT_R8G8B8A8_UNORM;
     }
@@ -1386,10 +1392,13 @@ std::array<std::uint16_t, kSkyboxFaceCount * 6> build_skybox_indices()
 }
 
 bool gameplay_ui_visible(
-    const RmlConsoleController* console, const MainMenuController* main_menu, const RmlLoadingScreenController* loading_screen)
+    const RmlConsoleController* console,
+    const MainMenuController* main_menu,
+    const RmlLoadingScreenController* loading_screen,
+    const RmlTeamMenuController* team_menu)
 {
     return (console != nullptr && console->visible()) || (main_menu != nullptr && main_menu->visible()) ||
-           (loading_screen != nullptr && loading_screen->visible());
+           (loading_screen != nullptr && loading_screen->visible()) || (team_menu != nullptr && team_menu->visible());
 }
 
 double elapsed_us(std::chrono::steady_clock::time_point begin, std::chrono::steady_clock::time_point end)
@@ -1553,10 +1562,15 @@ void Dx12Renderer::render(const FrameContext& context)
 
     sync_main_menu_visibility();
     const bool loading_screen_visible = rml_loading_screen_controller_ != nullptr && rml_loading_screen_controller_->visible();
+    const bool main_menu_visible = main_menu_controller_ != nullptr && main_menu_controller_->visible();
+    if (rml_team_menu_controller_ != nullptr)
+    {
+        rml_team_menu_controller_->update(main_menu_visible, loading_screen_visible);
+    }
     if (rml_hud_controller_ != nullptr)
     {
-        const bool main_menu_visible = main_menu_controller_ != nullptr && main_menu_controller_->visible();
-        rml_hud_controller_->update(main_menu_visible || loading_screen_visible);
+        const bool team_menu_visible = rml_team_menu_controller_ != nullptr && rml_team_menu_controller_->visible();
+        rml_hud_controller_->update(main_menu_visible || loading_screen_visible || team_menu_visible);
     }
 
     if (rml_context_ != nullptr)
@@ -2539,10 +2553,15 @@ bool Dx12Renderer::initialize_rml(const RuntimeConfig& config)
             rml_console_controller_->show();
         }
     });
-    main_menu_controller_->set_launch_map_callback([this](std::string map_name, std::string game_mode) {
+    main_menu_controller_->set_launch_map_callback([this](std::string map_name, std::string game_mode_alias) {
         if (engine_context_ != nullptr)
         {
-            engine_context_->loading_screen.open_for_map(map_name, game_mode, default_loading_description(), default_loading_tip());
+            if (!apply_game_mode_alias(engine_context_->variables, game_mode_alias, engine_context_->filesystem, map_name))
+            {
+                log_warning("menu selected unknown game mode alias '{}'", game_mode_alias);
+            }
+            engine_context_->loading_screen.open_for_map(
+                map_name, current_game_mode_display_name(engine_context_->variables), default_loading_description(), default_loading_tip());
             engine_context_->loading_screen.set_progress(0.05F, "Retrieving game data...");
             engine_context_->command_buffer.add_text("map " + map_name);
         }
@@ -2605,6 +2624,12 @@ bool Dx12Renderer::initialize_rml(const RuntimeConfig& config)
 
         rml_hud_controller_ = std::make_unique<RmlHudController>();
         if (!rml_hud_controller_->initialize(*rml_context_, *engine_context_, config))
+        {
+            return false;
+        }
+
+        rml_team_menu_controller_ = std::make_unique<RmlTeamMenuController>();
+        if (!rml_team_menu_controller_->initialize(*rml_context_, *engine_context_, config))
         {
             return false;
         }
@@ -3263,6 +3288,7 @@ bool Dx12Renderer::record_world(ID3D12GraphicsCommandList* command_list) const
 void Dx12Renderer::shutdown_rml()
 {
     rml_console_controller_.reset();
+    rml_team_menu_controller_.reset();
     rml_hud_controller_.reset();
     rml_loading_screen_controller_.reset();
     main_menu_controller_.reset();
@@ -3333,8 +3359,10 @@ void Dx12Renderer::pump_messages()
             continue;
         }
 
-        const bool ui_visible = gameplay_ui_visible(
-            rml_console_controller_.get(), main_menu_controller_.get(), rml_loading_screen_controller_.get());
+        const bool ui_visible = gameplay_ui_visible(rml_console_controller_.get(),
+            main_menu_controller_.get(),
+            rml_loading_screen_controller_.get(),
+            rml_team_menu_controller_.get());
         if (engine_context_ != nullptr && !ui_visible)
         {
             if (handle_sdl_gameplay_input_event(engine_context_->input, event))
@@ -3352,8 +3380,10 @@ void Dx12Renderer::pump_messages()
     if (engine_context_ != nullptr)
     {
         const bool should_capture = engine_context_->world.current_world() != nullptr &&
-                                    !gameplay_ui_visible(
-                                        rml_console_controller_.get(), main_menu_controller_.get(), rml_loading_screen_controller_.get());
+                                    !gameplay_ui_visible(rml_console_controller_.get(),
+                                        main_menu_controller_.get(),
+                                        rml_loading_screen_controller_.get(),
+                                        rml_team_menu_controller_.get());
         if (!should_capture)
         {
             engine_context_->input.clear_gameplay_buttons();

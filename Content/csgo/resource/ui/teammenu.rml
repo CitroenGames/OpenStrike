@@ -52,6 +52,18 @@ body {
     margin-bottom: 8dp;
 }
 
+#team-error {
+    display: none;
+    width: 100%;
+    padding: 8dp 10dp;
+    color: rgba(255, 210, 150, 255);
+    background-color: rgba(120, 45, 35, 180);
+    border-width: 1dp;
+    border-color: rgba(255, 170, 110, 90);
+    font-size: 13dp;
+    text-align: center;
+}
+
 /* ── Team buttons (shared) ── */
 .team-btn {
     width: 100%;
@@ -136,6 +148,7 @@ body {
         <div id="team-card">
             <div id="team-title">CHOOSE A TEAM</div>
             <div id="team-timer">Auto-assign in 15s</div>
+            <div id="team-error"></div>
 
             <div id="btn-join-t" class="team-btn" data-command="JoinT">
                 <span>TERRORISTS</span>

@@ -24,6 +24,7 @@ enum class WorldAssetKind
 struct WorldSpawnPoint
 {
     std::string class_name;
+    int team_id = 0;
     Vec3 origin;
     Vec3 angles;
 };

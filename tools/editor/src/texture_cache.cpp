@@ -7,10 +7,10 @@
 #include "openstrike/material/material.hpp"
 #include "openstrike/material/material_system.hpp"
 #include "openstrike/source/source_asset_store.hpp"
+#include "openstrike/source/source_paths.hpp"
 #include "openstrike/source/source_texture.hpp"
 
 #include <algorithm>
-#include <cctype>
 #include <cstdarg>
 #include <cstdio>
 #include <filesystem>
@@ -19,27 +19,12 @@
 
 namespace
 {
-std::string LowerAssetPath(std::string text)
-{
-    std::replace(text.begin(), text.end(), '\\', '/');
-    std::transform(text.begin(), text.end(), text.begin(), [](unsigned char ch) {
-        return static_cast<char>(std::tolower(ch));
-    });
-    return text;
-}
-
 std::string StripMaterialExtension(std::string text)
 {
-    text = LowerAssetPath(std::move(text));
-    if (text.rfind("materials/", 0) == 0)
-        text.erase(0, 10);
-    if (text.size() > 4)
-    {
-        const std::string ext = text.substr(text.size() - 4);
-        if (ext == ".vmt" || ext == ".vtf")
-            text.resize(text.size() - 4);
-    }
-    return text;
+    std::string normalized = openstrike::normalize_source_material_name(std::move(text));
+    if (normalized.size() >= 4 && normalized.ends_with(".vtf"))
+        normalized.resize(normalized.size() - 4);
+    return normalized;
 }
 }
 

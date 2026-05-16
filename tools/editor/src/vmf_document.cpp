@@ -1343,17 +1343,18 @@ bool VmfDocument::CreateDisplacement(int solidIndex, int sideIndex, int power)
     disp.normals.resize(vertCount, normal);
     disp.distances.resize(vertCount, 0.0f);
     disp.offsets.resize(vertCount, {0, 0, 0});
-    disp.offsetNormals.resize(vertCount, {0, 0, 1});
+    disp.offsetNormals.resize(vertCount, normal);
     disp.alphas.resize(vertCount, 0.0f);
 
     int triCols = (1 << power);
     int triTagCount = triCols * triCols * 2;
-    disp.triangleTags.resize(triTagCount, 9); // walkable + buildable
+    disp.triangleTags.resize(triTagCount, 0);
 
     for (int i = 0; i < 10; i++)
         disp.allowedVerts[i] = -1; // all allowed
 
     side.dispinfo = std::move(disp);
+    UpdateDispTriangleTags(solid, sideIndex);
     m_dirty = true;
     return true;
 }

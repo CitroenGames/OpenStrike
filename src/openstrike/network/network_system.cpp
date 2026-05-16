@@ -45,6 +45,21 @@ void NetworkSystem::broadcast_server_text(std::string_view text, std::uint64_t t
     server_.broadcast_text(text, tick);
 }
 
+bool NetworkSystem::send_client_user_command(std::span<const unsigned char> payload, std::uint64_t tick)
+{
+    return client_.send_user_command(payload, tick);
+}
+
+bool NetworkSystem::send_server_snapshot(const NetworkAddress& address, std::span<const unsigned char> payload, std::uint64_t tick)
+{
+    return server_.send_snapshot(address, payload, tick);
+}
+
+void NetworkSystem::broadcast_server_snapshot(std::span<const unsigned char> payload, std::uint64_t tick)
+{
+    server_.broadcast_snapshot(payload, tick);
+}
+
 NetworkServer& NetworkSystem::server()
 {
     return server_;

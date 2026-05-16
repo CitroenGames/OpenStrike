@@ -2,6 +2,7 @@
 
 #include "openstrike/core/log.hpp"
 #include "openstrike/engine/engine_context.hpp"
+#include "openstrike/game/team_system.hpp"
 #include "openstrike/world/world.hpp"
 
 #include <algorithm>
@@ -26,6 +27,15 @@ void GameSimulation::on_start(const RuntimeConfig& config, EngineContext& engine
 void GameSimulation::on_fixed_update(const SimulationStep&, EngineContext& engine)
 {
     sync_world(engine);
+    sync_team_state(engine);
+    if (!local_player_active(engine))
+    {
+        engine.input.clear_gameplay_buttons();
+        engine.camera.active = false;
+        update_hud(engine);
+        return;
+    }
+
     const FpsInputSample input_sample = sample_fps_input(engine.input);
     update_fps_view(fps_view_, input_sample, fps_settings_);
     input_ = build_fps_move_command(fps_view_, input_sample);
@@ -96,6 +106,7 @@ void GameSimulation::sync_world(EngineContext& engine)
     {
         physics_.clear_character();
         physics_.clear_static_world();
+        engine.teams.reset_for_new_world();
         engine.camera.active = false;
         return;
     }
@@ -103,42 +114,70 @@ void GameSimulation::sync_world(EngineContext& engine)
     physics_.clear_character();
     physics_.clear_static_world();
     local_player_ = {};
-    local_player_.on_ground = true;
-
-    if (!world->spawn_points.empty())
-    {
-        const WorldSpawnPoint& spawn = world->spawn_points.front();
-        local_player_.origin = spawn.origin;
-        fps_view_.pitch_degrees = spawn.angles.x;
-        fps_view_.yaw_degrees = spawn.angles.y;
-    }
-
-    if (const std::optional<float> floor_z = find_floor_z(*world, local_player_.origin, 512.0F))
-    {
-        local_player_.origin.z = *floor_z;
-        local_player_.on_ground = true;
-    }
+    local_player_.on_ground = false;
+    engine.teams.reset_for_new_world();
+    engine.teams.request_team_menu(local_team_connection_id(engine.network));
 
     if (physics_.load_static_world(*world))
     {
-        physics_.reset_character(local_player_.origin, local_player_.velocity);
     }
     else
     {
         log_warning("falling back to legacy floor probing for world '{}'", world->name);
     }
 
-    log_info("game simulation entered world '{}' at player origin=({}, {}, {})",
-        world->name,
-        local_player_.origin.x,
-        local_player_.origin.y,
-        local_player_.origin.z);
+    log_info("game simulation entered world '{}'", world->name);
+    update_camera(engine);
+}
+
+void GameSimulation::sync_team_state(EngineContext& engine)
+{
+    const std::uint64_t team_revision = engine.teams.revision();
+    if (team_revision == observed_team_revision_)
+    {
+        return;
+    }
+
+    observed_team_revision_ = team_revision;
+    const LoadedWorld* world = engine.world.current_world();
+    const TeamPlayerState* team_player = engine.teams.find_player(local_team_connection_id(engine.network));
+    if (world == nullptr || team_player == nullptr || !team_player->alive || !is_playing_team(team_player->current_team))
+    {
+        physics_.clear_character();
+        engine.camera.active = false;
+        return;
+    }
+
+    if (const std::optional<WorldSpawnPoint> spawn =
+            engine.teams.select_spawn_point(*world, team_player->current_team, team_player->connection_id))
+    {
+        local_player_ = {};
+        local_player_.origin = spawn->origin;
+        local_player_.velocity = {};
+        local_player_.on_ground = true;
+        fps_view_.pitch_degrees = spawn->angles.x;
+        fps_view_.yaw_degrees = spawn->angles.y;
+        if (const std::optional<float> floor_z = find_floor_z(*world, local_player_.origin, 512.0F))
+        {
+            local_player_.origin.z = *floor_z;
+        }
+        if (physics_.has_static_world())
+        {
+            physics_.reset_character(local_player_.origin, local_player_.velocity);
+        }
+        log_info("spawned local player on {} at ({}, {}, {})",
+            team_name(team_player->current_team),
+            local_player_.origin.x,
+            local_player_.origin.y,
+            local_player_.origin.z);
+    }
+
     update_camera(engine);
 }
 
 void GameSimulation::update_camera(EngineContext& engine) const
 {
-    if (engine.world.current_world() == nullptr)
+    if (engine.world.current_world() == nullptr || !local_player_active(engine))
     {
         engine.camera.active = false;
         return;
@@ -153,20 +192,37 @@ void GameSimulation::update_camera(EngineContext& engine) const
 void GameSimulation::update_hud(EngineContext& engine) const
 {
     const LoadedWorld* world = engine.world.current_world();
+    const TeamPlayerState* team_player = engine.teams.find_player(local_team_connection_id(engine.network));
+    const int current_team = team_player != nullptr ? team_player->current_team : TEAM_UNASSIGNED;
+    const TeamInfo* terrorist_team = engine.teams.find_team(TEAM_TERRORIST);
+    const TeamInfo* ct_team = engine.teams.find_team(TEAM_CT);
 
     HudState next;
     next.visible = world != nullptr;
-    next.alive = true;
+    next.alive = team_player != nullptr && team_player->alive && is_playing_team(current_team);
     next.grounded = local_player_.on_ground;
-    next.health = 100;
+    next.health = next.alive ? 100 : 0;
     next.max_health = 100;
     next.armor = 0;
     next.money = 800;
     next.ammo_in_clip = 12;
     next.reserve_ammo = 24;
-    next.team_name = "Counter-Terrorists";
+    next.kills = team_player != nullptr ? team_player->kills : 0;
+    next.deaths = team_player != nullptr ? team_player->deaths : 0;
+    next.counter_terrorist_score = ct_team != nullptr ? ct_team->score_total : 0;
+    next.terrorist_score = terrorist_team != nullptr ? terrorist_team->score_total : 0;
+    next.ping_ms = team_player != nullptr ? team_player->ping_ms : 0;
+    next.team_name = std::string(team_name(current_team));
     next.weapon_name = "USP-S";
     next.round_phase = world != nullptr ? world->name : "MENU";
+    if (world != nullptr && current_team == TEAM_UNASSIGNED)
+    {
+        next.round_phase = "CHOOSE TEAM";
+    }
+    else if (world != nullptr && current_team == TEAM_SPECTATOR)
+    {
+        next.round_phase = "SPECTATING";
+    }
     next.round_time_seconds = 115.0;
     next.speed = local_player_.velocity.length_2d();
     next.crosshair_gap = std::clamp(10.0F + (next.speed * 0.04F), 12.0F, 28.0F);
@@ -190,5 +246,11 @@ void GameSimulation::update_hud(EngineContext& engine) const
 
     next.revision = engine.hud.revision + 1;
     engine.hud = next;
+}
+
+bool GameSimulation::local_player_active(EngineContext& engine) const
+{
+    const TeamPlayerState* player = engine.teams.find_player(local_team_connection_id(engine.network));
+    return player != nullptr && player->alive && is_playing_team(player->current_team);
 }
 }

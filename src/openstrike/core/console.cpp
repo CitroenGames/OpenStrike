@@ -113,6 +113,30 @@ bool ConsoleVariables::set(std::string_view name, std::string value)
     return true;
 }
 
+bool ConsoleVariables::reset(std::string_view name)
+{
+    ConsoleVariable* variable = find(name);
+    if (variable == nullptr)
+    {
+        return false;
+    }
+
+    variable->value = variable->default_value;
+    return true;
+}
+
+void ConsoleVariables::reset_with_flags(std::uint32_t flags)
+{
+    for (auto& [name, variable] : variables_)
+    {
+        (void)name;
+        if ((variable.flags & flags) == flags)
+        {
+            variable.value = variable.default_value;
+        }
+    }
+}
+
 std::string ConsoleVariables::get_string(std::string_view name, std::string_view fallback) const
 {
     if (const ConsoleVariable* variable = find(name))

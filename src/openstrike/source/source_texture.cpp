@@ -2,14 +2,18 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstring>
 #include <stdexcept>
+#include <utility>
 
 namespace openstrike
 {
 namespace
 {
 constexpr std::uint32_t kVtfHighResImageResource = 0x30U;
+constexpr std::uint32_t kVtfResourceFlagMask = 0xFF000000U;
+constexpr std::uint32_t kVtfResourceHasNoDataChunk = 0x02000000U;
 constexpr std::uint32_t kTextureFlagsEnvmap = 0x00004000U;
 
 enum SourceImageFormat : std::int32_t
@@ -18,14 +22,27 @@ enum SourceImageFormat : std::int32_t
     ImageFormatAbgr8888 = 1,
     ImageFormatRgb888 = 2,
     ImageFormatBgr888 = 3,
+    ImageFormatRgb565 = 4,
+    ImageFormatI8 = 5,
+    ImageFormatIa88 = 6,
+    ImageFormatA8 = 8,
+    ImageFormatRgb888Bluescreen = 9,
+    ImageFormatBgr888Bluescreen = 10,
     ImageFormatArgb8888 = 11,
     ImageFormatBgra8888 = 12,
     ImageFormatDxt1 = 13,
     ImageFormatDxt3 = 14,
     ImageFormatDxt5 = 15,
     ImageFormatBgrx8888 = 16,
+    ImageFormatBgr565 = 17,
+    ImageFormatBgrx5551 = 18,
+    ImageFormatBgra4444 = 19,
     ImageFormatDxt1OneBitAlpha = 20,
+    ImageFormatBgra5551 = 21,
+    ImageFormatUv88 = 22,
     ImageFormatRgbx8888 = 31,
+    ImageFormatAti2n = 34,
+    ImageFormatAti1n = 35,
 };
 
 struct Rgba8
@@ -62,6 +79,15 @@ std::int32_t read_s32_le(std::span<const unsigned char> bytes, std::size_t offse
     return static_cast<std::int32_t>(read_u32_le(bytes, offset));
 }
 
+float read_f32_le(std::span<const unsigned char> bytes, std::size_t offset)
+{
+    const std::uint32_t raw = read_u32_le(bytes, offset);
+    float value = 0.0F;
+    static_assert(sizeof(value) == sizeof(raw));
+    std::memcpy(&value, &raw, sizeof(value));
+    return value;
+}
+
 std::uint32_t mip_dimension(std::uint32_t dimension, std::uint32_t mip)
 {
     return std::max<std::uint32_t>(dimension >> mip, 1);
@@ -81,13 +107,30 @@ bool source_format_for_vtf(std::int32_t image_format, SourceTextureFormat& outpu
     case ImageFormatDxt5:
         output = SourceTextureFormat::Bc3;
         return true;
+    case ImageFormatAti1n:
+        output = SourceTextureFormat::Bc4;
+        return true;
+    case ImageFormatAti2n:
+        output = SourceTextureFormat::Bc5;
+        return true;
     case ImageFormatRgba8888:
     case ImageFormatAbgr8888:
     case ImageFormatRgb888:
     case ImageFormatBgr888:
+    case ImageFormatRgb565:
+    case ImageFormatI8:
+    case ImageFormatIa88:
+    case ImageFormatA8:
+    case ImageFormatRgb888Bluescreen:
+    case ImageFormatBgr888Bluescreen:
     case ImageFormatArgb8888:
     case ImageFormatBgra8888:
     case ImageFormatBgrx8888:
+    case ImageFormatBgr565:
+    case ImageFormatBgrx5551:
+    case ImageFormatBgra4444:
+    case ImageFormatBgra5551:
+    case ImageFormatUv88:
     case ImageFormatRgbx8888:
         output = SourceTextureFormat::Rgba8;
         return true;
@@ -104,9 +147,20 @@ bool is_uncompressed_rgba_output(std::int32_t image_format)
     case ImageFormatAbgr8888:
     case ImageFormatRgb888:
     case ImageFormatBgr888:
+    case ImageFormatRgb565:
+    case ImageFormatI8:
+    case ImageFormatIa88:
+    case ImageFormatA8:
+    case ImageFormatRgb888Bluescreen:
+    case ImageFormatBgr888Bluescreen:
     case ImageFormatArgb8888:
     case ImageFormatBgra8888:
     case ImageFormatBgrx8888:
+    case ImageFormatBgr565:
+    case ImageFormatBgrx5551:
+    case ImageFormatBgra4444:
+    case ImageFormatBgra5551:
+    case ImageFormatUv88:
     case ImageFormatRgbx8888:
         return true;
     default:
@@ -128,7 +182,20 @@ std::uint32_t vtf_image_size(std::int32_t image_format, std::uint32_t width, std
         {
         case ImageFormatRgb888:
         case ImageFormatBgr888:
+        case ImageFormatRgb888Bluescreen:
+        case ImageFormatBgr888Bluescreen:
             return width * height * 3;
+        case ImageFormatRgb565:
+        case ImageFormatBgr565:
+        case ImageFormatBgrx5551:
+        case ImageFormatBgra4444:
+        case ImageFormatBgra5551:
+        case ImageFormatIa88:
+        case ImageFormatUv88:
+            return width * height * 2;
+        case ImageFormatI8:
+        case ImageFormatA8:
+            return width * height;
         default:
             return width * height * 4;
         }
@@ -147,8 +214,9 @@ std::uint32_t low_res_image_size(std::int32_t image_format, std::uint32_t width,
     return vtf_image_size(image_format, width, height);
 }
 
-std::optional<std::uint32_t> high_res_image_offset(std::span<const unsigned char> bytes, std::uint32_t major, std::uint32_t minor, std::uint32_t header_size)
+std::vector<SourceTextureResource> read_resource_table(std::span<const unsigned char> bytes, std::uint32_t major, std::uint32_t minor)
 {
+    std::vector<SourceTextureResource> resources;
     if (major == 7 && minor >= 3 && bytes.size() >= 80)
     {
         const std::uint32_t resource_count = read_u32_le(bytes, 68);
@@ -156,20 +224,36 @@ std::optional<std::uint32_t> high_res_image_offset(std::span<const unsigned char
         const std::size_t resource_end = resource_begin + (static_cast<std::size_t>(resource_count) * 8);
         if (resource_end <= bytes.size())
         {
+            resources.reserve(resource_count);
             for (std::size_t index = 0; index < resource_count; ++index)
             {
                 const std::size_t offset = resource_begin + (index * 8);
-                const std::uint32_t type = read_u32_le(bytes, offset) & 0x00FFFFFFU;
+                const std::uint32_t raw_type = read_u32_le(bytes, offset);
                 const std::uint32_t data_offset = read_u32_le(bytes, offset + 4);
-                if (type == kVtfHighResImageResource)
-                {
-                    return data_offset;
-                }
+                resources.push_back(SourceTextureResource{
+                    .type = raw_type & ~kVtfResourceFlagMask,
+                    .data = data_offset,
+                    .has_no_data_chunk = (raw_type & kVtfResourceHasNoDataChunk) != 0,
+                });
             }
         }
     }
+    return resources;
+}
 
-    if (bytes.size() < header_size || header_size < 63)
+std::optional<std::uint32_t> high_res_image_offset(
+    std::span<const unsigned char> bytes,
+    const SourceTextureInfo& info)
+{
+    for (const SourceTextureResource& resource : info.resources)
+    {
+        if (resource.type == kVtfHighResImageResource && !resource.has_no_data_chunk)
+        {
+            return resource.data;
+        }
+    }
+
+    if (bytes.size() < info.header_size || info.header_size < 63)
     {
         return std::nullopt;
     }
@@ -177,7 +261,7 @@ std::optional<std::uint32_t> high_res_image_offset(std::span<const unsigned char
     const std::int32_t low_format = read_s32_le(bytes, 57);
     const std::uint32_t low_width = bytes[61];
     const std::uint32_t low_height = bytes[62];
-    return header_size + low_res_image_size(low_format, low_width, low_height);
+    return info.header_size + low_res_image_size(low_format, low_width, low_height);
 }
 
 std::uint64_t disk_offset_for_mip(
@@ -196,6 +280,14 @@ std::uint64_t disk_offset_for_mip(
                   frame_count * face_count;
     }
     return offset;
+}
+
+std::uint16_t read_block_u16_le(const unsigned char* bytes);
+
+unsigned char expand_bits(std::uint32_t value, unsigned bits)
+{
+    const std::uint32_t max_value = (1U << bits) - 1U;
+    return static_cast<unsigned char>((value * 255U + (max_value / 2U)) / max_value);
 }
 
 std::vector<unsigned char> convert_to_rgba(std::int32_t image_format, std::span<const unsigned char> source, std::uint32_t width, std::uint32_t height)
@@ -263,6 +355,91 @@ std::vector<unsigned char> convert_to_rgba(std::int32_t image_format, std::span<
             b = src[0];
             g = src[1];
             r = src[2];
+            break;
+        case ImageFormatRgb888Bluescreen:
+            src += pixel * 3;
+            r = src[0];
+            g = src[1];
+            b = src[2];
+            if (r == 0 && g == 0 && b == 255)
+            {
+                a = 0;
+            }
+            break;
+        case ImageFormatBgr888Bluescreen:
+            src += pixel * 3;
+            b = src[0];
+            g = src[1];
+            r = src[2];
+            if (r == 0 && g == 0 && b == 255)
+            {
+                a = 0;
+            }
+            break;
+        case ImageFormatRgb565:
+        {
+            src += pixel * 2;
+            const std::uint16_t raw = read_block_u16_le(src);
+            r = expand_bits(raw & 0x1FU, 5);
+            g = expand_bits((raw >> 5U) & 0x3FU, 6);
+            b = expand_bits((raw >> 11U) & 0x1FU, 5);
+            break;
+        }
+        case ImageFormatBgr565:
+        {
+            src += pixel * 2;
+            const std::uint16_t raw = read_block_u16_le(src);
+            b = expand_bits(raw & 0x1FU, 5);
+            g = expand_bits((raw >> 5U) & 0x3FU, 6);
+            r = expand_bits((raw >> 11U) & 0x1FU, 5);
+            break;
+        }
+        case ImageFormatBgrx5551:
+        case ImageFormatBgra5551:
+        {
+            src += pixel * 2;
+            const std::uint16_t raw = read_block_u16_le(src);
+            b = expand_bits(raw & 0x1FU, 5);
+            g = expand_bits((raw >> 5U) & 0x1FU, 5);
+            r = expand_bits((raw >> 10U) & 0x1FU, 5);
+            if (image_format == ImageFormatBgra5551)
+            {
+                a = (raw & 0x8000U) != 0 ? 255 : 0;
+            }
+            break;
+        }
+        case ImageFormatBgra4444:
+        {
+            src += pixel * 2;
+            const std::uint16_t raw = read_block_u16_le(src);
+            b = expand_bits(raw & 0xFU, 4);
+            g = expand_bits((raw >> 4U) & 0xFU, 4);
+            r = expand_bits((raw >> 8U) & 0xFU, 4);
+            a = expand_bits((raw >> 12U) & 0xFU, 4);
+            break;
+        }
+        case ImageFormatI8:
+            src += pixel;
+            r = src[0];
+            g = src[0];
+            b = src[0];
+            break;
+        case ImageFormatIa88:
+            src += pixel * 2;
+            r = src[0];
+            g = src[0];
+            b = src[0];
+            a = src[1];
+            break;
+        case ImageFormatA8:
+            src += pixel;
+            a = src[0];
+            break;
+        case ImageFormatUv88:
+            src += pixel * 2;
+            r = src[0];
+            g = src[1];
+            b = 255;
             break;
         default:
             break;
@@ -470,6 +647,79 @@ std::vector<unsigned char> decode_bc3(std::span<const unsigned char> source, std
     }
     return rgba;
 }
+
+void decode_bc4_values(
+    const unsigned char* block,
+    std::array<unsigned char, 16>& values)
+{
+    const std::array<unsigned char, 8> table = decode_bc3_alpha_table(block);
+    std::uint64_t selectors = 0;
+    for (std::uint32_t byte = 0; byte < 6; ++byte)
+    {
+        selectors |= static_cast<std::uint64_t>(block[2 + byte]) << (byte * 8U);
+    }
+
+    for (std::uint32_t pixel = 0; pixel < 16; ++pixel)
+    {
+        values[pixel] = table[(selectors >> (pixel * 3U)) & 0x7U];
+    }
+}
+
+std::vector<unsigned char> decode_bc4(std::span<const unsigned char> source, std::uint32_t width, std::uint32_t height)
+{
+    std::vector<unsigned char> rgba(static_cast<std::size_t>(width) * height * 4U);
+    const std::uint32_t block_cols = std::max<std::uint32_t>((width + 3U) / 4U, 1U);
+    const std::uint32_t block_rows = std::max<std::uint32_t>((height + 3U) / 4U, 1U);
+    for (std::uint32_t by = 0; by < block_rows; ++by)
+    {
+        for (std::uint32_t bx = 0; bx < block_cols; ++bx)
+        {
+            const std::size_t block_offset = (static_cast<std::size_t>(by) * block_cols + bx) * 8U;
+            std::array<unsigned char, 16> values{};
+            decode_bc4_values(source.data() + block_offset, values);
+            for (std::uint32_t y = 0; y < 4; ++y)
+            {
+                for (std::uint32_t x = 0; x < 4; ++x)
+                {
+                    const unsigned char value = values[(y * 4U) + x];
+                    write_decoded_pixel(rgba, width, height, (bx * 4U) + x, (by * 4U) + y, Rgba8{value, value, value, 255});
+                }
+            }
+        }
+    }
+    return rgba;
+}
+
+std::vector<unsigned char> decode_bc5(std::span<const unsigned char> source, std::uint32_t width, std::uint32_t height)
+{
+    std::vector<unsigned char> rgba(static_cast<std::size_t>(width) * height * 4U);
+    const std::uint32_t block_cols = std::max<std::uint32_t>((width + 3U) / 4U, 1U);
+    const std::uint32_t block_rows = std::max<std::uint32_t>((height + 3U) / 4U, 1U);
+    for (std::uint32_t by = 0; by < block_rows; ++by)
+    {
+        for (std::uint32_t bx = 0; bx < block_cols; ++bx)
+        {
+            const std::size_t block_offset = (static_cast<std::size_t>(by) * block_cols + bx) * 16U;
+            std::array<unsigned char, 16> red{};
+            std::array<unsigned char, 16> green{};
+            decode_bc4_values(source.data() + block_offset, red);
+            decode_bc4_values(source.data() + block_offset + 8, green);
+            for (std::uint32_t y = 0; y < 4; ++y)
+            {
+                for (std::uint32_t x = 0; x < 4; ++x)
+                {
+                    const std::uint32_t pixel = (y * 4U) + x;
+                    const float nx = (static_cast<float>(red[pixel]) / 127.5F) - 1.0F;
+                    const float ny = (static_cast<float>(green[pixel]) / 127.5F) - 1.0F;
+                    const float nz = std::sqrt(std::max(0.0F, 1.0F - (nx * nx) - (ny * ny)));
+                    const unsigned char blue = static_cast<unsigned char>(std::clamp((nz * 0.5F + 0.5F) * 255.0F, 0.0F, 255.0F));
+                    write_decoded_pixel(rgba, width, height, (bx * 4U) + x, (by * 4U) + y, Rgba8{red[pixel], green[pixel], blue, 255});
+                }
+            }
+        }
+    }
+    return rgba;
+}
 }
 
 std::optional<SourceTexture> load_vtf_texture(std::span<const unsigned char> bytes)
@@ -488,9 +738,14 @@ std::optional<SourceTexture> load_vtf_texture(std::span<const unsigned char> byt
         const std::uint32_t height = read_u16_le(bytes, 18);
         const std::uint32_t flags = read_u32_le(bytes, 20);
         const std::uint32_t frame_count = std::max<std::uint32_t>(read_u16_le(bytes, 24), 1);
+        const std::uint16_t start_frame = read_u16_le(bytes, 26);
         const std::int32_t image_format = read_s32_le(bytes, 52);
         const std::uint32_t mip_count = std::max<std::uint32_t>(bytes[56], 1);
-        if (width == 0 || height == 0)
+        const std::int32_t low_res_image_format = read_s32_le(bytes, 57);
+        const std::uint32_t low_res_width = bytes[61];
+        const std::uint32_t low_res_height = bytes[62];
+        const std::uint32_t depth = (major == 7 && minor >= 2 && bytes.size() >= 65) ? std::max<std::uint32_t>(read_u16_le(bytes, 63), 1) : 1;
+        if (width == 0 || height == 0 || depth != 1)
         {
             return std::nullopt;
         }
@@ -501,17 +756,41 @@ std::optional<SourceTexture> load_vtf_texture(std::span<const unsigned char> byt
             return std::nullopt;
         }
 
-        const std::optional<std::uint32_t> image_offset = high_res_image_offset(bytes, major, minor, header_size);
+        const std::uint32_t face_count = (flags & kTextureFlagsEnvmap) != 0 ? 6U : 1U;
+        SourceTextureInfo info;
+        info.major_version = major;
+        info.minor_version = minor;
+        info.header_size = header_size;
+        info.depth = depth;
+        info.flags = flags;
+        info.frame_count = frame_count;
+        info.face_count = face_count;
+        info.mip_count = mip_count;
+        info.image_format = image_format;
+        info.low_res_image_format = low_res_image_format;
+        info.low_res_width = low_res_width;
+        info.low_res_height = low_res_height;
+        info.start_frame = start_frame;
+        if (bytes.size() >= 52)
+        {
+            info.reflectivity[0] = read_f32_le(bytes, 32);
+            info.reflectivity[1] = read_f32_le(bytes, 36);
+            info.reflectivity[2] = read_f32_le(bytes, 40);
+            info.bump_scale = read_f32_le(bytes, 48);
+        }
+        info.resources = read_resource_table(bytes, major, minor);
+
+        const std::optional<std::uint32_t> image_offset = high_res_image_offset(bytes, info);
         if (!image_offset || *image_offset >= bytes.size())
         {
             return std::nullopt;
         }
 
-        const std::uint32_t face_count = (flags & kTextureFlagsEnvmap) != 0 ? 6U : 1U;
         SourceTexture texture;
         texture.width = width;
         texture.height = height;
         texture.format = texture_format;
+        texture.info = std::move(info);
         texture.mips.reserve(mip_count);
 
         for (std::uint32_t mip = 0; mip < mip_count; ++mip)
@@ -559,9 +838,11 @@ std::uint32_t source_texture_row_bytes(SourceTextureFormat format, std::uint32_t
     switch (format)
     {
     case SourceTextureFormat::Bc1:
+    case SourceTextureFormat::Bc4:
         return std::max<std::uint32_t>((width + 3U) / 4U, 1U) * 8U;
     case SourceTextureFormat::Bc2:
     case SourceTextureFormat::Bc3:
+    case SourceTextureFormat::Bc5:
         return std::max<std::uint32_t>((width + 3U) / 4U, 1U) * 16U;
     case SourceTextureFormat::Rgba8:
         return width * 4U;
@@ -577,6 +858,8 @@ std::uint32_t source_texture_row_count(SourceTextureFormat format, std::uint32_t
     case SourceTextureFormat::Bc1:
     case SourceTextureFormat::Bc2:
     case SourceTextureFormat::Bc3:
+    case SourceTextureFormat::Bc4:
+    case SourceTextureFormat::Bc5:
         return std::max<std::uint32_t>((height + 3U) / 4U, 1U);
     case SourceTextureFormat::Rgba8:
         return height;
@@ -601,6 +884,7 @@ std::optional<SourceTexture> source_texture_to_rgba8(const SourceTexture& textur
     converted.width = texture.width;
     converted.height = texture.height;
     converted.format = SourceTextureFormat::Rgba8;
+    converted.info = texture.info;
     converted.mips.reserve(texture.mips.size());
 
     for (const SourceTextureMip& source_mip : texture.mips)
@@ -627,6 +911,12 @@ std::optional<SourceTexture> source_texture_to_rgba8(const SourceTexture& textur
             break;
         case SourceTextureFormat::Bc3:
             decoded_mip.bytes = decode_bc3(source, source_mip.width, source_mip.height);
+            break;
+        case SourceTextureFormat::Bc4:
+            decoded_mip.bytes = decode_bc4(source, source_mip.width, source_mip.height);
+            break;
+        case SourceTextureFormat::Bc5:
+            decoded_mip.bytes = decode_bc5(source, source_mip.width, source_mip.height);
             break;
         case SourceTextureFormat::Rgba8:
             decoded_mip.bytes = source_mip.bytes;

@@ -23,6 +23,48 @@ std::string rml_path_string(const std::filesystem::path& path)
 {
     return path.lexically_normal().generic_string();
 }
+
+std::string game_mode_alias_for_tab(const Rml::String& tab)
+{
+    if (tab == "casual")
+    {
+        return "casual";
+    }
+    if (tab == "deathmatch")
+    {
+        return "deathmatch";
+    }
+    if (tab == "wingman")
+    {
+        return "wingman";
+    }
+    if (tab == "wargames")
+    {
+        return "skirmish";
+    }
+    return "competitive";
+}
+
+std::string game_mode_label_for_tab(const Rml::String& tab)
+{
+    if (tab == "casual")
+    {
+        return "Casual";
+    }
+    if (tab == "deathmatch")
+    {
+        return "Deathmatch";
+    }
+    if (tab == "wingman")
+    {
+        return "Wingman";
+    }
+    if (tab == "wargames")
+    {
+        return "War Games";
+    }
+    return "Competitive";
+}
 }
 
 MainMenuController::MainMenuController() = default;
@@ -389,11 +431,11 @@ void MainMenuController::execute_go()
         return;
     }
 
-    const std::string mode = play_mode_ == "bots" ? "Practice With Bots" : "Competitive";
+    const std::string mode = play_mode_ == "bots" ? "Practice With Bots" : game_mode_label_for_tab(active_play_tab_);
     if (launch_map_callback_)
     {
         set_status("Loading " + selected_map_ + "...", true);
-        launch_map_callback_(std::string(selected_map_), mode);
+        launch_map_callback_(std::string(selected_map_), game_mode_alias_for_tab(active_play_tab_));
     }
     else
     {

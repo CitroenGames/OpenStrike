@@ -53,7 +53,7 @@ void DisplacementToolPanel::Draw(VmfDocument* doc)
         bool selected = (m_mode == mode);
         if (selected)
             ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.3f, 0.5f, 0.8f, 1.0f));
-        if (ImGui::Button(label, ImVec2(ImGui::GetContentRegionAvail().x * 0.24f, 0)))
+        if (ImGui::Button(label, ImVec2(ImGui::GetContentRegionAvail().x * 0.32f, 0)))
             m_mode = mode;
         if (selected)
             ImGui::PopStyleColor();
@@ -61,9 +61,12 @@ void DisplacementToolPanel::Draw(VmfDocument* doc)
     };
 
     ModeButton("Create", DispToolMode::Create);
-    ModeButton("Sculpt", DispToolMode::Sculpt);
+    ModeButton("Raise/Lower", DispToolMode::Sculpt);
     ModeButton("Smooth", DispToolMode::Smooth);
+    ImGui::NewLine();
     ModeButton("Paint", DispToolMode::Paint);
+    ModeButton("Walkable", DispToolMode::TagWalkable);
+    ModeButton("Buildable", DispToolMode::TagBuildable);
     ImGui::NewLine();
 
     ImGui::Separator();
@@ -80,30 +83,45 @@ void DisplacementToolPanel::Draw(VmfDocument* doc)
         ImGui::RadioButton("3 (9x9)", &m_power, 3); ImGui::SameLine();
         ImGui::RadioButton("4 (17x17)", &m_power, 4);
     }
+    else if (m_mode == DispToolMode::TagWalkable || m_mode == DispToolMode::TagBuildable)
+    {
+        ImGui::Text("Triangle Tags");
+        ImGui::TextDisabled("LMB toggles forced state. RMB clears forced state.");
+    }
     else
     {
         // Brush settings for Sculpt, Smooth, Paint
         ImGui::Text("Brush Settings:");
 
         ImGui::SliderFloat("Size", &m_brushSize, 8.0f, 512.0f, "%.0f");
-        ImGui::SliderFloat("Strength", &m_brushStrength, 0.01f, 1.0f, "%.2f");
-        ImGui::SliderFloat("Falloff", &m_brushFalloff, 0.5f, 4.0f, "%.1f");
+        ImGui::SliderFloat("Distance", &m_brushStrength, 0.25f, 64.0f, "%.2f");
+        ImGui::SliderFloat("Softness", &m_brushFalloff, 0.25f, 4.0f, "%.2f");
+
+        int brushType = (m_brushType == DispBrushType::Soft) ? 0 : 1;
+        if (ImGui::RadioButton("Soft", &brushType, 0)) m_brushType = DispBrushType::Soft;
+        ImGui::SameLine();
+        if (ImGui::RadioButton("Hard", &brushType, 1)) m_brushType = DispBrushType::Hard;
+
+        int axis = (int)m_paintAxis;
+        const char* axisNames[] = { "Face", "X", "Y", "Z", "Subdivision" };
+        if (ImGui::Combo("Axis", &axis, axisNames, 5))
+            m_paintAxis = (DispPaintAxis)axis;
 
         if (m_mode == DispToolMode::Sculpt)
         {
             ImGui::Separator();
-            ImGui::TextWrapped("LMB: Raise terrain\nShift+LMB: Lower terrain");
+            ImGui::TextDisabled("LMB/RMB mirrors Hammer raise/lower.");
         }
         else if (m_mode == DispToolMode::Smooth)
         {
             ImGui::Separator();
-            ImGui::TextWrapped("LMB: Smooth terrain");
+            ImGui::TextDisabled("Smooth projects vertices along the selected axis.");
         }
         else if (m_mode == DispToolMode::Paint)
         {
             ImGui::Separator();
             ImGui::SliderFloat("Target Alpha", &m_paintAlpha, 0.0f, 255.0f, "%.0f");
-            ImGui::TextWrapped("LMB: Paint alpha values\nShift+LMB: Erase (paint to 0)");
+            ImGui::TextDisabled("Shift/RMB paints alpha toward zero.");
         }
     }
 

@@ -1,5 +1,6 @@
 #include "brush_mesh_builder.hpp"
 #include <algorithm>
+#include <array>
 
 
 struct Plane
@@ -291,24 +292,27 @@ std::vector<Vec3> ComputeSidePolygon(const VmfSolid& solid, int sideIndex)
     return poly;
 }
 
-std::vector<Vec3> ComputeDispGridPositions(const VmfSolid& solid, int sideIndex, std::vector<Vec3>* quadVertsGL)
+static bool ResolveDispCorners(
+    const VmfSolid& solid,
+    int sideIndex,
+    std::array<Vec3, 4>& corners,
+    std::vector<Vec3>* quadVertsGL = nullptr)
 {
     if (sideIndex < 0 || sideIndex >= (int)solid.sides.size())
-        return {};
+        return false;
 
     const VmfSide& side = solid.sides[sideIndex];
     if (!side.dispinfo.has_value())
-        return {};
+        return false;
 
     std::vector<Vec3> poly = ComputeSidePolygon(solid, sideIndex);
     if (poly.size() != 4)
-        return {};
+        return false;
 
     if (quadVertsGL)
         *quadVertsGL = poly;
 
     const VmfDispInfo& disp = side.dispinfo.value();
-    int gridSize = disp.GridSize();
 
     // Find start corner
     Vec3 startGL = SourceToGL(disp.startPosition);
@@ -325,15 +329,36 @@ std::vector<Vec3> ComputeDispGridPositions(const VmfSolid& solid, int sideIndex,
         }
     }
 
-    Vec3 corners[4];
     for (int i = 0; i < 4; i++)
         corners[i] = poly[(startCorner + i) % 4];
 
+    return true;
+}
+
+Vec3 ComputeDispFaceNormalGL(const VmfSolid& solid, int sideIndex)
+{
+    std::array<Vec3, 4> corners;
+    if (!ResolveDispCorners(solid, sideIndex, corners))
+        return {0, 0, 0};
+
     // Outward surface normal and elevation offset (matching Hammer's GetNormal + GenerateDispSurf)
+    return Normalize(Cross(corners[3] - corners[0], corners[1] - corners[0]));
+}
+
+std::vector<Vec3> ComputeDispBaseGridPositions(const VmfSolid& solid, int sideIndex)
+{
+    std::array<Vec3, 4> corners;
+    if (!ResolveDispCorners(solid, sideIndex, corners))
+        return {};
+
+    const VmfSide& side = solid.sides[sideIndex];
+    const VmfDispInfo& disp = side.dispinfo.value();
+    int gridSize = disp.GridSize();
+
     Vec3 surfNormal = Normalize(Cross(corners[3] - corners[0], corners[1] - corners[0]));
     Vec3 elevOffset = surfNormal * disp.elevation;
 
-    std::vector<Vec3> gridPos(gridSize * gridSize);
+    std::vector<Vec3> gridBase(gridSize * gridSize);
     float invSize = 1.0f / (float)(gridSize - 1);
 
     for (int row = 0; row < gridSize; row++)
@@ -346,28 +371,166 @@ std::vector<Vec3> ComputeDispGridPositions(const VmfSolid& solid, int sideIndex,
 
             // Match Hammer's GenerateDispSurf layout:
             // row walks corners[0]->corners[1], col walks across to corners[3]->corners[2]
-            Vec3 basePos =
+            Vec3 flatPos =
                 corners[0] * (1.0f - t) * (1.0f - s) +
                 corners[1] * t          * (1.0f - s) +
                 corners[2] * t          * s +
                 corners[3] * (1.0f - t) * s;
 
-            Vec3 dispNormal = { 0, 0, 0 };
-            float dispDist = 0.0f;
             Vec3 dispOffset = { 0, 0, 0 };
-
-            if (idx < (int)disp.normals.size())
-                dispNormal = SourceToGL(disp.normals[idx]);
-            if (idx < (int)disp.distances.size())
-                dispDist = disp.distances[idx];
             if (idx < (int)disp.offsets.size())
                 dispOffset = SourceToGL(disp.offsets[idx]);
 
-            gridPos[idx] = basePos + elevOffset + dispNormal * dispDist + dispOffset;
+            gridBase[idx] = flatPos + elevOffset + dispOffset;
         }
     }
 
+    return gridBase;
+}
+
+std::vector<Vec3> ComputeDispGridPositions(const VmfSolid& solid, int sideIndex, std::vector<Vec3>* quadVertsGL)
+{
+    std::array<Vec3, 4> corners;
+    if (!ResolveDispCorners(solid, sideIndex, corners, quadVertsGL))
+        return {};
+
+    const VmfSide& side = solid.sides[sideIndex];
+    const VmfDispInfo& disp = side.dispinfo.value();
+    int gridSize = disp.GridSize();
+
+    std::vector<Vec3> gridPos = ComputeDispBaseGridPositions(solid, sideIndex);
+    if (gridPos.empty())
+        return {};
+
+    for (int idx = 0; idx < gridSize * gridSize; idx++)
+    {
+        Vec3 dispNormal = { 0, 0, 0 };
+        float dispDist = 0.0f;
+
+        if (idx < (int)disp.normals.size())
+            dispNormal = SourceToGL(disp.normals[idx]);
+        if (idx < (int)disp.distances.size())
+            dispDist = disp.distances[idx];
+
+        gridPos[idx] += dispNormal * dispDist;
+    }
+
     return gridPos;
+}
+
+static void EnsureDispStorage(VmfDispInfo& disp)
+{
+    int vertCount = disp.GridSize() * disp.GridSize();
+    if ((int)disp.normals.size() < vertCount)
+        disp.normals.resize(vertCount, {0, 0, 0});
+    if ((int)disp.distances.size() < vertCount)
+        disp.distances.resize(vertCount, 0.0f);
+    if ((int)disp.offsets.size() < vertCount)
+        disp.offsets.resize(vertCount, {0, 0, 0});
+    if ((int)disp.offsetNormals.size() < vertCount)
+        disp.offsetNormals.resize(vertCount, {0, 0, 0});
+    if ((int)disp.alphas.size() < vertCount)
+        disp.alphas.resize(vertCount, 0.0f);
+}
+
+bool SetDispVertexPositionGL(VmfSolid& solid, int sideIndex, int vertexIndex, const Vec3& targetGL)
+{
+    if (sideIndex < 0 || sideIndex >= (int)solid.sides.size())
+        return false;
+
+    VmfSide& side = solid.sides[sideIndex];
+    if (!side.dispinfo.has_value())
+        return false;
+
+    VmfDispInfo& disp = side.dispinfo.value();
+    EnsureDispStorage(disp);
+
+    int vertCount = disp.GridSize() * disp.GridSize();
+    if (vertexIndex < 0 || vertexIndex >= vertCount)
+        return false;
+
+    std::vector<Vec3> basePositions = ComputeDispBaseGridPositions(solid, sideIndex);
+    if (vertexIndex >= (int)basePositions.size())
+        return false;
+
+    Vec3 segment = targetGL - basePositions[vertexIndex];
+    float distance = Length(segment);
+    Vec3 fieldNormalGL = distance > 0.0001f
+        ? segment * (1.0f / distance)
+        : ComputeDispFaceNormalGL(solid, sideIndex);
+
+    disp.normals[vertexIndex] = GLToSource(fieldNormalGL);
+    disp.distances[vertexIndex] = distance;
+    return true;
+}
+
+static void UpdateOneTriangleTag(
+    VmfDispInfo& disp,
+    int triIndex,
+    const Vec3& a,
+    const Vec3& b,
+    const Vec3& c,
+    const Vec3& faceNormalGL)
+{
+    if (triIndex < 0 || triIndex >= (int)disp.triangleTags.size())
+        return;
+
+    Vec3 normalGL = Normalize(Cross(b - a, c - a));
+    if (Dot(normalGL, faceNormalGL) < 0.0f)
+        normalGL = -normalGL;
+
+    const float sourceUp = GLToSource(normalGL).z;
+    int forcedBits = disp.triangleTags[triIndex] &
+        (DISP_TRI_TAG_FORCE_WALKABLE_BIT |
+         DISP_TRI_TAG_FORCE_WALKABLE_VAL |
+         DISP_TRI_TAG_FORCE_BUILDABLE_BIT |
+         DISP_TRI_TAG_FORCE_BUILDABLE_VAL |
+         DISP_TRI_TAG_FORCE_REMOVE_BIT);
+
+    int tag = forcedBits;
+    if (sourceUp >= 0.7f)
+        tag |= DISP_TRI_TAG_WALKABLE;
+    if (sourceUp >= 0.8f)
+        tag |= DISP_TRI_TAG_BUILDABLE;
+
+    disp.triangleTags[triIndex] = tag;
+}
+
+void UpdateDispTriangleTags(VmfSolid& solid, int sideIndex)
+{
+    if (sideIndex < 0 || sideIndex >= (int)solid.sides.size())
+        return;
+
+    VmfSide& side = solid.sides[sideIndex];
+    if (!side.dispinfo.has_value())
+        return;
+
+    VmfDispInfo& disp = side.dispinfo.value();
+    int gridSize = disp.GridSize();
+    int cells = gridSize - 1;
+    int triCount = cells * cells * 2;
+    if ((int)disp.triangleTags.size() < triCount)
+        disp.triangleTags.resize(triCount, 0);
+
+    std::vector<Vec3> gridPos = ComputeDispGridPositions(solid, sideIndex);
+    if ((int)gridPos.size() < gridSize * gridSize)
+        return;
+
+    Vec3 faceNormalGL = ComputeDispFaceNormalGL(solid, sideIndex);
+    int triIndex = 0;
+    for (int row = 0; row < cells; row++)
+    {
+        for (int col = 0; col < cells; col++)
+        {
+            int tl = row * gridSize + col;
+            int tr = row * gridSize + col + 1;
+            int bl = (row + 1) * gridSize + col;
+            int br = (row + 1) * gridSize + col + 1;
+
+            UpdateOneTriangleTag(disp, triIndex++, gridPos[tl], gridPos[bl], gridPos[tr], faceNormalGL);
+            UpdateOneTriangleTag(disp, triIndex++, gridPos[tr], gridPos[bl], gridPos[br], faceNormalGL);
+        }
+    }
 }
 
 BrushMesh BuildBrushMesh(const VmfSolid& solid)

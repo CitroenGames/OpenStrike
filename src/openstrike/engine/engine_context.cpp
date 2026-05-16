@@ -1,6 +1,8 @@
 #include "openstrike/engine/engine_context.hpp"
 
 #include "openstrike/core/log.hpp"
+#include "openstrike/game/game_mode.hpp"
+#include "openstrike/game/team_system.hpp"
 
 #include <algorithm>
 #include <charconv>
@@ -222,6 +224,8 @@ void register_default_variables(ConsoleVariables& variables, const RuntimeConfig
     variables.register_variable("net_status", "disconnected", "Current client network connection state.");
     variables.register_variable("game_content_root", config.content_root.string(), "Root directory for mounted game content.");
     variables.register_variable("game_ui_document", config.rml_document.generic_string(), "Initial RmlUi document.");
+    register_game_mode_variables(variables);
+    register_team_variables(variables);
     AudioSystem::register_variables(variables);
     NavigationSystem::register_variables(variables);
 }
@@ -237,6 +241,8 @@ bool load_host_map(const std::string& map_name, ConsoleCommandContext& context)
     {
         context.loading_screen->set_progress(0.14F, "Retrieving game data...");
     }
+
+    execute_game_mode_cfgs(context);
 
     if (!context.world->load_map(map_name, *context.filesystem))
     {
@@ -308,9 +314,15 @@ bool run_changelevel_command(const CommandInvocation& invocation, ConsoleCommand
         return false;
     }
 
+    if (invocation.args.size() >= 2 && !apply_game_mode_alias(context.variables, invocation.args[1], *context.filesystem, *map_name))
+    {
+        log_warning("unknown game mode alias '{}'", invocation.args[1]);
+        return false;
+    }
+
     if (context.loading_screen != nullptr)
     {
-        context.loading_screen->open_for_map(*map_name, "Changing Level", default_loading_description(), default_loading_tip());
+        context.loading_screen->open_for_map(*map_name, current_game_mode_display_name(context.variables), default_loading_description(), default_loading_tip());
     }
 
     return load_host_map(*map_name, context);
@@ -341,9 +353,15 @@ bool run_map_command(const CommandInvocation& invocation, ConsoleCommandContext&
         return false;
     }
 
+    if (invocation.args.size() >= 2 && !apply_game_mode_alias(context.variables, invocation.args[1], *context.filesystem, *map_name))
+    {
+        log_warning("unknown game mode alias '{}'", invocation.args[1]);
+        return false;
+    }
+
     if (context.loading_screen != nullptr)
     {
-        context.loading_screen->open_for_map(*map_name);
+        context.loading_screen->open_for_map(*map_name, current_game_mode_display_name(context.variables), default_loading_description(), default_loading_tip());
     }
 
     if (!load_host_map(*map_name, context))
@@ -570,6 +588,8 @@ void register_default_commands(CommandRegistry& commands)
     commands.register_command("net_listen", "Start a UDP listen server.", net_listen_command);
     commands.register_command("net_status", "Print client/server network state.", net_status_command);
     commands.register_command("net_say", "Send a text message through the active network session.", net_say_command);
+    register_game_mode_commands(commands);
+    register_team_commands(commands);
     AudioSystem::register_commands(commands);
     NavigationSystem::register_commands(commands);
 
@@ -673,6 +693,7 @@ ConsoleCommandContext EngineContext::console_context()
         .filesystem = &filesystem,
         .world = &world,
         .network = &network,
+        .teams = &teams,
         .audio = &audio,
         .navigation = &navigation,
         .loading_screen = &loading_screen,

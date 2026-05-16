@@ -5,6 +5,7 @@
 #include "openstrike/network/network_socket.hpp"
 
 #include <cstdint>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -27,6 +28,8 @@ enum class NetworkEventType
     ConnectedToServer,
     DisconnectedFromServer,
     TextReceived,
+    UserCommandReceived,
+    SnapshotReceived,
     PacketDropped,
     SocketError
 };
@@ -36,7 +39,9 @@ struct NetworkEvent
     NetworkEventType type = NetworkEventType::PacketDropped;
     NetworkAddress remote;
     std::uint32_t connection_id = 0;
+    std::uint64_t tick = 0;
     std::string text;
+    std::vector<unsigned char> payload;
 };
 
 struct NetworkStats
@@ -66,6 +71,8 @@ public:
 
     bool send_text(const NetworkAddress& address, std::string_view text, std::uint64_t tick);
     void broadcast_text(std::string_view text, std::uint64_t tick);
+    bool send_snapshot(const NetworkAddress& address, std::span<const unsigned char> payload, std::uint64_t tick);
+    void broadcast_snapshot(std::span<const unsigned char> payload, std::uint64_t tick);
 
     [[nodiscard]] bool is_running() const;
     [[nodiscard]] std::uint16_t local_port() const;
@@ -93,6 +100,7 @@ public:
     void disconnect(std::uint64_t tick);
     void poll(std::uint64_t tick);
     bool send_text(std::string_view text, std::uint64_t tick);
+    bool send_user_command(std::span<const unsigned char> payload, std::uint64_t tick);
 
     [[nodiscard]] NetworkConnectionState state() const;
     [[nodiscard]] bool is_connected() const;

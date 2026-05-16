@@ -1,160 +1,22 @@
 #include "openstrike/material/material_system.hpp"
 
 #include "openstrike/source/source_asset_store.hpp"
+#include "openstrike/source/source_keyvalues.hpp"
+#include "openstrike/source/source_paths.hpp"
 
 #include <algorithm>
 #include <array>
-#include <cctype>
 #include <cstdlib>
 #include <optional>
 #include <sstream>
 #include <string>
 #include <string_view>
-#include <vector>
+#include <utility>
 
 namespace openstrike
 {
 namespace
 {
-std::string lower_copy(std::string_view text)
-{
-    std::string result(text);
-    std::transform(result.begin(), result.end(), result.begin(), [](unsigned char ch) {
-        return static_cast<char>(std::tolower(ch));
-    });
-    return result;
-}
-
-void normalize_slashes(std::string& path)
-{
-    std::replace(path.begin(), path.end(), '\\', '/');
-}
-
-std::string trim_copy(std::string_view text)
-{
-    std::size_t first = 0;
-    while (first < text.size() && std::isspace(static_cast<unsigned char>(text[first])) != 0)
-    {
-        ++first;
-    }
-
-    std::size_t last = text.size();
-    while (last > first && std::isspace(static_cast<unsigned char>(text[last - 1])) != 0)
-    {
-        --last;
-    }
-
-    return std::string(text.substr(first, last - first));
-}
-
-std::string normalize_source_texture_name(std::string texture_name)
-{
-    texture_name = trim_copy(texture_name);
-    normalize_slashes(texture_name);
-    texture_name = lower_copy(texture_name);
-    if (texture_name.rfind("materials/", 0) == 0)
-    {
-        texture_name.erase(0, 10);
-    }
-    if (texture_name.size() >= 4 && texture_name.ends_with(".vtf"))
-    {
-        texture_name.resize(texture_name.size() - 4);
-    }
-    return texture_name;
-}
-
-std::string normalize_source_material_name(std::string material_name)
-{
-    material_name = trim_copy(material_name);
-    normalize_slashes(material_name);
-    material_name = lower_copy(material_name);
-    if (material_name.rfind("materials/", 0) == 0)
-    {
-        material_name.erase(0, 10);
-    }
-    if (material_name.size() >= 4 && material_name.ends_with(".vmt"))
-    {
-        material_name.resize(material_name.size() - 4);
-    }
-    return material_name;
-}
-
-std::string normalize_vmt_asset_path(std::string path)
-{
-    path = trim_copy(path);
-    normalize_slashes(path);
-    path = lower_copy(path);
-    if (path.rfind("materials/", 0) != 0)
-    {
-        path = "materials/" + path;
-    }
-    if (path.size() < 4 || !path.ends_with(".vmt"))
-    {
-        path += ".vmt";
-    }
-    return path;
-}
-
-std::vector<std::string> tokenize_vmt(std::string_view text)
-{
-    std::vector<std::string> tokens;
-    std::size_t cursor = 0;
-    while (cursor < text.size())
-    {
-        while (cursor < text.size() && std::isspace(static_cast<unsigned char>(text[cursor])) != 0)
-        {
-            ++cursor;
-        }
-        if (cursor >= text.size())
-        {
-            break;
-        }
-
-        if (cursor + 1 < text.size() && text[cursor] == '/' && text[cursor + 1] == '/')
-        {
-            cursor = text.find('\n', cursor);
-            if (cursor == std::string_view::npos)
-            {
-                break;
-            }
-            continue;
-        }
-
-        if (text[cursor] == '{' || text[cursor] == '}')
-        {
-            ++cursor;
-            continue;
-        }
-
-        std::string token;
-        if (text[cursor] == '"')
-        {
-            ++cursor;
-            while (cursor < text.size() && text[cursor] != '"')
-            {
-                token.push_back(text[cursor++]);
-            }
-            if (cursor < text.size() && text[cursor] == '"')
-            {
-                ++cursor;
-            }
-        }
-        else
-        {
-            while (cursor < text.size() && std::isspace(static_cast<unsigned char>(text[cursor])) == 0 && text[cursor] != '{' && text[cursor] != '}')
-            {
-                token.push_back(text[cursor++]);
-            }
-        }
-
-        if (!token.empty())
-        {
-            tokens.push_back(std::move(token));
-        }
-    }
-    return tokens;
-}
-
 std::uint32_t hash_string(std::string_view text)
 {
     std::uint32_t hash = 2166136261U;
@@ -168,13 +30,13 @@ std::uint32_t hash_string(std::string_view text)
 
 bool parse_bool_token(std::string_view token)
 {
-    const std::string value = lower_copy(trim_copy(token));
+    const std::string value = source_lower_copy(source_trim_copy(token));
     return !(value.empty() || value == "0" || value == "false" || value == "no");
 }
 
 std::optional<float> parse_float_token(std::string_view token)
 {
-    const std::string value = trim_copy(token);
+    const std::string value = source_trim_copy(token);
     char* end = nullptr;
     const float parsed = std::strtof(value.c_str(), &end);
     if (end == value.c_str())
@@ -182,30 +44,6 @@ std::optional<float> parse_float_token(std::string_view token)
         return std::nullopt;
     }
     return parsed;
-}
-
-std::string collect_vector_value(const std::vector<std::string>& tokens, std::size_t value_index, std::size_t& consumed)
-{
-    consumed = 1;
-    if (value_index >= tokens.size())
-    {
-        return {};
-    }
-
-    std::string value = tokens[value_index];
-    const auto needs_more = [](std::string_view text) {
-        return (!text.empty() && (text.front() == '[' || text.front() == '{')) &&
-               (text.find(']') == std::string_view::npos && text.find('}') == std::string_view::npos);
-    };
-
-    while (needs_more(value) && value_index + consumed < tokens.size())
-    {
-        value += ' ';
-        value += tokens[value_index + consumed];
-        ++consumed;
-    }
-
-    return value;
 }
 
 bool parse_color(std::string value, float (&output)[4])
@@ -245,8 +83,8 @@ bool parse_color(std::string value, float (&output)[4])
 
 void mark_name_flags(MaterialDefinition& definition)
 {
-    const std::string material_name = lower_copy(definition.name);
-    const std::string shader = lower_copy(definition.shader);
+    const std::string material_name = source_lower_copy(definition.name);
+    const std::string shader = source_lower_copy(definition.shader);
     if (material_name.rfind("tools/", 0) == 0)
     {
         definition.constants.flags |= MaterialFlags::Tool;
@@ -267,88 +105,93 @@ void mark_name_flags(MaterialDefinition& definition)
     }
 }
 
-void apply_vmt_tokens(MaterialDefinition& definition, const std::vector<std::string>& tokens)
+void apply_vmt_property(MaterialDefinition& definition, std::string_view property_key, std::string_view property_value)
 {
-    for (std::size_t index = 0; index + 1 < tokens.size(); ++index)
+    const std::string key = source_lower_copy(property_key);
+    if (key == "$basetexture" || key == "%tooltexture")
     {
-        const std::string key = lower_copy(tokens[index]);
-        const std::string& value = tokens[index + 1];
+        definition.base_texture = normalize_source_texture_name(property_value);
+    }
+    else if (key == "$bumpmap" || key == "$normalmap")
+    {
+        definition.normal_texture = normalize_source_texture_name(property_value);
+        if (!definition.normal_texture.empty())
+        {
+            definition.constants.flags |= MaterialFlags::NormalMap;
+        }
+    }
+    else if (key == "$translucent" || key == "$vertexalpha")
+    {
+        if (parse_bool_token(property_value))
+        {
+            definition.constants.flags |= MaterialFlags::Translucent;
+        }
+    }
+    else if (key == "$alphatest")
+    {
+        if (parse_bool_token(property_value))
+        {
+            definition.constants.flags |= MaterialFlags::AlphaTest;
+        }
+    }
+    else if (key == "$selfillum")
+    {
+        if (parse_bool_token(property_value))
+        {
+            definition.constants.flags |= MaterialFlags::Unlit;
+        }
+    }
+    else if (key == "$nocull")
+    {
+        if (parse_bool_token(property_value))
+        {
+            definition.constants.flags |= MaterialFlags::Translucent;
+        }
+    }
+    else if (key == "$alpha")
+    {
+        if (const std::optional<float> alpha = parse_float_token(property_value))
+        {
+            definition.constants.base_color[3] = std::clamp(*alpha, 0.0F, 1.0F);
+            if (definition.constants.base_color[3] < 1.0F)
+            {
+                definition.constants.flags |= MaterialFlags::Translucent;
+            }
+        }
+    }
+    else if (key == "$alphatestreference")
+    {
+        if (const std::optional<float> cutoff = parse_float_token(property_value))
+        {
+            definition.constants.alpha_cutoff = std::clamp(*cutoff, 0.0F, 1.0F);
+        }
+    }
+    else if (key == "$color" || key == "$color2")
+    {
+        parse_color(std::string(property_value), definition.constants.base_color);
+    }
+}
 
-        if (key == "$basetexture" || key == "%tooltexture")
+void apply_vmt_node(MaterialDefinition& definition, const SourceKeyValueNode& node)
+{
+    for (const auto& child : node.children)
+    {
+        if (child->is_block())
         {
-            definition.base_texture = normalize_source_texture_name(value);
+            apply_vmt_node(definition, *child);
         }
-        else if (key == "$bumpmap" || key == "$normalmap")
+        else
         {
-            definition.normal_texture = normalize_source_texture_name(value);
-            if (!definition.normal_texture.empty())
-            {
-                definition.constants.flags |= MaterialFlags::NormalMap;
-            }
-        }
-        else if (key == "$translucent" || key == "$vertexalpha")
-        {
-            if (parse_bool_token(value))
-            {
-                definition.constants.flags |= MaterialFlags::Translucent;
-            }
-        }
-        else if (key == "$alphatest")
-        {
-            if (parse_bool_token(value))
-            {
-                definition.constants.flags |= MaterialFlags::AlphaTest;
-            }
-        }
-        else if (key == "$selfillum")
-        {
-            if (parse_bool_token(value))
-            {
-                definition.constants.flags |= MaterialFlags::Unlit;
-            }
-        }
-        else if (key == "$nocull")
-        {
-            if (parse_bool_token(value))
-            {
-                definition.constants.flags |= MaterialFlags::Translucent;
-            }
-        }
-        else if (key == "$alpha")
-        {
-            if (const std::optional<float> alpha = parse_float_token(value))
-            {
-                definition.constants.base_color[3] = std::clamp(*alpha, 0.0F, 1.0F);
-                if (definition.constants.base_color[3] < 1.0F)
-                {
-                    definition.constants.flags |= MaterialFlags::Translucent;
-                }
-            }
-        }
-        else if (key == "$alphatestreference")
-        {
-            if (const std::optional<float> cutoff = parse_float_token(value))
-            {
-                definition.constants.alpha_cutoff = std::clamp(*cutoff, 0.0F, 1.0F);
-            }
-        }
-        else if (key == "$color" || key == "$color2")
-        {
-            std::size_t consumed = 0;
-            parse_color(collect_vector_value(tokens, index + 1, consumed), definition.constants.base_color);
+            apply_vmt_property(definition, child->key, child->value);
         }
     }
 }
 
-std::optional<std::string> token_value(const std::vector<std::string>& tokens, std::string_view wanted_token)
+std::optional<std::string> node_value(const SourceKeyValueNode& node, std::string_view wanted_token)
 {
-    const std::string wanted = lower_copy(wanted_token);
-    for (std::size_t index = 0; index + 1 < tokens.size(); ++index)
+    if (const std::optional<std::string_view> value = source_kv_find_value_ci(node, wanted_token))
     {
-        if (lower_copy(tokens[index]) == wanted)
-        {
-            return tokens[index + 1];
-        }
+        return std::string(*value);
     }
     return std::nullopt;
 }
@@ -361,23 +204,24 @@ std::optional<MaterialDefinition> load_source_material_recursive(const SourceAss
     }
 
     const std::string normalized_name = normalize_source_material_name(material_name);
-    const std::optional<std::string> vmt = assets.read_text(normalize_vmt_asset_path(normalized_name));
+    const std::optional<std::string> vmt = assets.read_text(normalize_source_material_asset_path(normalized_name));
     if (!vmt)
     {
         return std::nullopt;
     }
 
-    const std::vector<std::string> tokens = tokenize_vmt(*vmt);
-    if (tokens.empty())
+    SourceKeyValueParseResult parsed = parse_source_keyvalues(*vmt);
+    if (!parsed.ok || parsed.roots.empty())
     {
         return std::nullopt;
     }
 
-    const std::string shader = lower_copy(tokens[0]);
+    const SourceKeyValueNode& root = *parsed.roots.front();
+    const std::string shader = source_lower_copy(root.key);
     MaterialDefinition definition;
     if (shader == "patch")
     {
-        if (const std::optional<std::string> include = token_value(tokens, "include"))
+        if (const std::optional<std::string> include = node_value(root, "include"))
         {
             if (std::optional<MaterialDefinition> included = load_source_material_recursive(assets, *include, depth + 1))
             {
@@ -392,7 +236,7 @@ std::optional<MaterialDefinition> load_source_material_recursive(const SourceAss
         definition.shader = shader;
     }
     definition.found_source_material = true;
-    apply_vmt_tokens(definition, tokens);
+    apply_vmt_node(definition, root);
     mark_name_flags(definition);
     return definition;
 }
@@ -446,7 +290,7 @@ SourceTexture MaterialSystem::fallback_texture(std::string_view material_name) c
 LoadedMaterial MaterialSystem::load_world_material(std::string_view material_name) const
 {
     LoadedMaterial loaded;
-    const std::string normalized_name = normalize_source_material_name(std::string(material_name));
+    const std::string normalized_name = normalize_source_material_name(material_name);
     if (std::optional<MaterialDefinition> resolved = resolve_source_material(normalized_name))
     {
         loaded.definition = std::move(*resolved);
@@ -461,7 +305,7 @@ LoadedMaterial MaterialSystem::load_world_material(std::string_view material_nam
     }
 
     std::string texture_name = loaded.definition.base_texture.empty() ? loaded.definition.name : loaded.definition.base_texture;
-    texture_name = normalize_source_texture_name(std::move(texture_name));
+    texture_name = normalize_source_texture_name(texture_name);
     if (!texture_name.empty() && (loaded.definition.constants.flags & MaterialFlags::NoDraw) == 0)
     {
         if (const std::optional<std::vector<unsigned char>> vtf = assets_.read_binary("materials/" + texture_name + ".vtf"))

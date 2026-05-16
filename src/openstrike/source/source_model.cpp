@@ -1,9 +1,9 @@
 #include "openstrike/source/source_model.hpp"
 
 #include "openstrike/source/source_asset_store.hpp"
+#include "openstrike/source/source_paths.hpp"
 
 #include <algorithm>
-#include <cctype>
 #include <cmath>
 #include <cstring>
 #include <limits>
@@ -187,36 +187,10 @@ bool valid_relative_count_range(
     return checked_byte_count(count, stride, byte_count) && valid_range(bytes, offset, byte_count);
 }
 
-std::string lower_copy(std::string_view text)
-{
-    std::string result(text);
-    std::transform(result.begin(), result.end(), result.begin(), [](unsigned char ch) {
-        return static_cast<char>(std::tolower(ch));
-    });
-    return result;
-}
-
-std::string trim_copy(std::string_view text)
-{
-    std::size_t first = 0;
-    while (first < text.size() && std::isspace(static_cast<unsigned char>(text[first])) != 0)
-    {
-        ++first;
-    }
-
-    std::size_t last = text.size();
-    while (last > first && std::isspace(static_cast<unsigned char>(text[last - 1])) != 0)
-    {
-        --last;
-    }
-
-    return std::string(text.substr(first, last - first));
-}
-
 std::string normalize_material_fragment(std::string text)
 {
-    text = lower_copy(trim_copy(text));
-    std::replace(text.begin(), text.end(), '\\', '/');
+    text = source_lower_copy(source_trim_copy(text));
+    source_normalize_slashes(text);
     while (!text.empty() && text.front() == '/')
     {
         text.erase(text.begin());

@@ -129,6 +129,15 @@ void NetworkServer::poll(std::uint64_t tick)
                 });
             }
             break;
+        case NetworkMessageType::UserCommand:
+            push_event(NetworkEvent{
+                .type = NetworkEventType::UserCommandReceived,
+                .remote = peer->address,
+                .connection_id = peer->connection_id,
+                .tick = packet.header.tick,
+                .payload = std::move(packet.payload),
+            });
+            break;
         default:
             break;
         }
@@ -153,6 +162,25 @@ void NetworkServer::broadcast_text(std::string_view text, std::uint64_t tick)
     for (NetworkPeer& peer : clients_)
     {
         send_packet(peer, NetworkMessageType::Text, as_payload(payload), tick);
+    }
+}
+
+bool NetworkServer::send_snapshot(const NetworkAddress& address, std::span<const unsigned char> payload, std::uint64_t tick)
+{
+    NetworkPeer* peer = find_peer(address);
+    if (peer == nullptr)
+    {
+        return false;
+    }
+
+    return send_packet(*peer, NetworkMessageType::Snapshot, payload, tick);
+}
+
+void NetworkServer::broadcast_snapshot(std::span<const unsigned char> payload, std::uint64_t tick)
+{
+    for (NetworkPeer& peer : clients_)
+    {
+        send_packet(peer, NetworkMessageType::Snapshot, payload, tick);
     }
 }
 
@@ -350,6 +378,15 @@ void NetworkClient::poll(std::uint64_t tick)
                 });
             }
             break;
+        case NetworkMessageType::Snapshot:
+            push_event(NetworkEvent{
+                .type = NetworkEventType::SnapshotReceived,
+                .remote = remote_,
+                .connection_id = connection_id_,
+                .tick = packet.header.tick,
+                .payload = std::move(packet.payload),
+            });
+            break;
         default:
             break;
         }
@@ -365,6 +402,16 @@ bool NetworkClient::send_text(std::string_view text, std::uint64_t tick)
 
     const std::vector<unsigned char> payload = make_text_payload(text);
     return send_packet(NetworkMessageType::Text, as_payload(payload), tick);
+}
+
+bool NetworkClient::send_user_command(std::span<const unsigned char> payload, std::uint64_t tick)
+{
+    if (state_ != NetworkConnectionState::Connected)
+    {
+        return false;
+    }
+
+    return send_packet(NetworkMessageType::UserCommand, payload, tick);
 }
 
 NetworkConnectionState NetworkClient::state() const
@@ -467,6 +514,10 @@ std::string_view to_string(NetworkEventType type)
         return "disconnected_from_server";
     case NetworkEventType::TextReceived:
         return "text_received";
+    case NetworkEventType::UserCommandReceived:
+        return "user_command_received";
+    case NetworkEventType::SnapshotReceived:
+        return "snapshot_received";
     case NetworkEventType::PacketDropped:
         return "packet_dropped";
     case NetworkEventType::SocketError:

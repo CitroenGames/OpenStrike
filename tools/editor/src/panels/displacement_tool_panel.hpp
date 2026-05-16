@@ -4,7 +4,9 @@
 
 class VmfDocument;
 
-enum class DispToolMode { Create, Sculpt, Smooth, Paint };
+enum class DispToolMode { Create, Sculpt, Smooth, Paint, TagWalkable, TagBuildable };
+enum class DispPaintAxis { Face, X, Y, Z, Subdivision };
+enum class DispBrushType { Soft, Hard };
 
 class DisplacementToolPanel
 {
@@ -24,6 +26,8 @@ public:
     float GetBrushStrength() const { return m_brushStrength; }
     float GetBrushFalloff() const { return m_brushFalloff; }
     float GetPaintAlpha() const { return m_paintAlpha; }
+    DispPaintAxis GetPaintAxis() const { return m_paintAxis; }
+    DispBrushType GetBrushType() const { return m_brushType; }
 
 private:
     bool m_open = true;
@@ -31,7 +35,9 @@ private:
     DispToolMode m_mode = DispToolMode::Sculpt;
     int m_power = 3;
     float m_brushSize = 64.0f;
-    float m_brushStrength = 0.3f;
-    float m_brushFalloff = 2.0f;
+    float m_brushStrength = 5.0f;
+    float m_brushFalloff = 1.0f;
     float m_paintAlpha = 255.0f;
+    DispPaintAxis m_paintAxis = DispPaintAxis::Face;
+    DispBrushType m_brushType = DispBrushType::Soft;
 };

@@ -12,6 +12,7 @@
 #include <cmath>
 #include <cstring>
 #include <fstream>
+#include <initializer_list>
 #include <iterator>
 #include <limits>
 #include <set>
@@ -591,11 +592,52 @@ std::optional<std::string> find_property(const ParsedEntity& entity, std::string
     return it->second;
 }
 
+std::optional<std::string> find_property_any(
+    const ParsedEntity& entity,
+    std::initializer_list<std::string_view> names)
+{
+    for (std::string_view name : names)
+    {
+        if (std::optional<std::string> value = find_property(entity, name))
+        {
+            return value;
+        }
+    }
+    return std::nullopt;
+}
+
 bool is_spawn_class(std::string_view class_name)
 {
     return class_name == "info_player_start" || class_name == "info_player_deathmatch" ||
            class_name == "info_player_terrorist" || class_name == "info_player_counterterrorist" ||
            class_name == "info_player_teamspawn";
+}
+
+int spawn_team_id(const ParsedEntity& entity, std::string_view class_name)
+{
+    if (class_name == "info_player_terrorist")
+    {
+        return 2;
+    }
+    if (class_name == "info_player_counterterrorist")
+    {
+        return 3;
+    }
+    if (class_name == "info_player_teamspawn")
+    {
+        if (const std::optional<std::string> team = find_property_any(entity, {"TeamNum", "teamnum", "team", "team_id"}))
+        {
+            if (const std::optional<float> parsed = parse_float(*team))
+            {
+                const int team_id = static_cast<int>(*parsed);
+                if (team_id >= 0 && team_id <= 3)
+                {
+                    return team_id;
+                }
+            }
+        }
+    }
+    return 0;
 }
 
 std::vector<WorldSpawnPoint> collect_spawn_points(const std::vector<ParsedEntity>& entities)
@@ -611,6 +653,7 @@ std::vector<WorldSpawnPoint> collect_spawn_points(const std::vector<ParsedEntity
 
         WorldSpawnPoint spawn;
         spawn.class_name = *class_name;
+        spawn.team_id = spawn_team_id(entity, *class_name);
         if (const std::optional<std::string> origin = find_property(entity, "origin"))
         {
             spawn.origin = parse_vec3(*origin).value_or(Vec3{});

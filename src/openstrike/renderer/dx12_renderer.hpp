@@ -40,6 +40,7 @@ class RmlConsoleController;
 class RmlDx12RenderInterface;
 class RmlHudController;
 class RmlLoadingScreenController;
+class RmlTeamMenuController;
 struct LoadedWorld;
 struct ShaderDescriptorRange;
 
@@ -136,6 +137,7 @@ private:
     std::unique_ptr<MainMenuController> main_menu_controller_;
     std::unique_ptr<RmlLoadingScreenController> rml_loading_screen_controller_;
     std::unique_ptr<RmlHudController> rml_hud_controller_;
+    std::unique_ptr<RmlTeamMenuController> rml_team_menu_controller_;
     std::unique_ptr<RmlConsoleController> rml_console_controller_;
     EngineContext* engine_context_ = nullptr;
     Rml::Context* rml_context_ = nullptr;

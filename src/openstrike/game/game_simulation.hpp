@@ -21,8 +21,10 @@ public:
 
 private:
     void sync_world(EngineContext& engine);
+    void sync_team_state(EngineContext& engine);
     void update_camera(EngineContext& engine) const;
     void update_hud(EngineContext& engine) const;
+    [[nodiscard]] bool local_player_active(EngineContext& engine) const;
 
     PlayerState local_player_;
     MovementTuning movement_;
@@ -31,5 +33,6 @@ private:
     PhysicsWorld physics_;
     InputCommand input_;
     std::uint64_t observed_world_generation_ = 0;
+    std::uint64_t observed_team_revision_ = 0;
 };
 }

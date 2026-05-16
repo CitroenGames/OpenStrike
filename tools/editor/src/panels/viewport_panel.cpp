@@ -11,6 +11,7 @@
 #include <imgui.h>
 #include <ImGuizmo.h>
 #include <SDL3/SDL.h>
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -1887,32 +1888,21 @@ bool ViewportPanel::RayPickBrushFace(const Vec3& rayOrigin, const Vec3& rayDir, 
     for (int si = 0; si < (int)solids.size(); si++)
     {
         const VmfSolid& solid = solids[si];
-        BrushMesh mesh = BuildBrushMesh(solid);
-
-        int faceIdx = 0;
         for (int sideIdx = 0; sideIdx < (int)solid.sides.size(); sideIdx++)
         {
-            // Skip displacement faces - we want flat brush faces only
             if (solid.sides[sideIdx].dispinfo.has_value())
                 continue;
 
-            // Find the BrushFace(s) for this side by matching material
-            // Since non-displacement faces are 1:1 with sides, we can iterate
-            // the mesh faces and find matching ones
-        }
+            std::vector<Vec3> poly = ComputeSidePolygon(solid, sideIdx);
+            if (poly.size() < 3)
+                continue;
 
-        // Simpler approach: test all non-displacement mesh faces
-        for (const auto& face : mesh.faces)
-        {
-            if (face.vertices.size() < 3) continue;
-
-            // Fan-triangulate the face polygon
-            for (size_t vi = 1; vi + 1 < face.vertices.size(); vi++)
+            for (size_t vi = 1; vi + 1 < poly.size(); vi++)
             {
                 float t;
                 Vec3 hp;
                 if (RayIntersectTriangle(rayOrigin, rayDir,
-                    face.vertices[0].pos, face.vertices[vi].pos, face.vertices[vi + 1].pos,
+                    poly[0], poly[vi], poly[vi + 1],
                     t, hp))
                 {
                     if (t < bestT)
@@ -1922,18 +1912,7 @@ bool ViewportPanel::RayPickBrushFace(const Vec3& rayOrigin, const Vec3& rayDir, 
                         hit.hitPos = hp;
                         hit.t = t;
                         hit.solidIndex = si;
-
-                        // Find the side index by matching material
-                        hit.sideIndex = 0;
-                        for (int s = 0; s < (int)solid.sides.size(); s++)
-                        {
-                            if (solid.sides[s].material == face.material &&
-                                !solid.sides[s].dispinfo.has_value())
-                            {
-                                hit.sideIndex = s;
-                                break;
-                            }
-                        }
+                        hit.sideIndex = sideIdx;
                     }
                 }
             }
@@ -1967,6 +1946,8 @@ bool ViewportPanel::RayPickDisplacement(const Vec3& rayOrigin, const Vec3& rayDi
 
             int gridSize = solid.sides[sideIdx].dispinfo->GridSize();
             int cells = gridSize - 1;
+            Vec3 faceNormalGL = ComputeDispFaceNormalGL(solid, sideIdx);
+            int triIndex = 0;
 
             for (int row = 0; row < cells; row++)
             {
@@ -1977,6 +1958,41 @@ bool ViewportPanel::RayPickDisplacement(const Vec3& rayOrigin, const Vec3& rayDi
                     int bl = (row + 1) * gridSize + col;
                     int br = (row + 1) * gridSize + col + 1;
 
+                    auto recordHit = [&](int aIdx, int bIdx, int cIdx, int currentTriIndex, float t, const Vec3& hp) {
+                        if (t >= bestT)
+                            return;
+
+                        int nearest = aIdx;
+                        float nearestDist = Dot(gridPos[aIdx] - hp, gridPos[aIdx] - hp);
+                        float bDist = Dot(gridPos[bIdx] - hp, gridPos[bIdx] - hp);
+                        if (bDist < nearestDist)
+                        {
+                            nearest = bIdx;
+                            nearestDist = bDist;
+                        }
+                        float cDist = Dot(gridPos[cIdx] - hp, gridPos[cIdx] - hp);
+                        if (cDist < nearestDist)
+                        {
+                            nearest = cIdx;
+                        }
+
+                        Vec3 normal = Normalize(Cross(gridPos[bIdx] - gridPos[aIdx], gridPos[cIdx] - gridPos[aIdx]));
+                        if (Dot(normal, faceNormalGL) < 0.0f)
+                            normal = -normal;
+
+                        bestT = t;
+                        found = true;
+                        hit.solidIndex = si;
+                        hit.sideIndex = sideIdx;
+                        hit.triIndex = currentTriIndex;
+                        hit.vertexIndex = nearest;
+                        hit.hitPos = hp;
+                        hit.vertexPos = gridPos[nearest];
+                        hit.hitNormal = normal;
+                        hit.hitPosSource = GLToSource(hp);
+                        hit.t = t;
+                    };
+
                     float t;
                     Vec3 hp;
 
@@ -1984,39 +2000,101 @@ bool ViewportPanel::RayPickDisplacement(const Vec3& rayOrigin, const Vec3& rayDi
                     if (RayIntersectTriangle(rayOrigin, rayDir,
                         gridPos[tl], gridPos[bl], gridPos[tr], t, hp))
                     {
-                        if (t < bestT)
-                        {
-                            bestT = t;
-                            found = true;
-                            hit.solidIndex = si;
-                            hit.sideIndex = sideIdx;
-                            hit.hitPos = hp;
-                            hit.hitPosSource = GLToSource(hp);
-                            hit.t = t;
-                        }
+                        recordHit(tl, bl, tr, triIndex, t, hp);
                     }
+                    triIndex++;
 
                     // Triangle 2: tr, bl, br
                     if (RayIntersectTriangle(rayOrigin, rayDir,
                         gridPos[tr], gridPos[bl], gridPos[br], t, hp))
                     {
-                        if (t < bestT)
-                        {
-                            bestT = t;
-                            found = true;
-                            hit.solidIndex = si;
-                            hit.sideIndex = sideIdx;
-                            hit.hitPos = hp;
-                            hit.hitPosSource = GLToSource(hp);
-                            hit.t = t;
-                        }
+                        recordHit(tr, bl, br, triIndex, t, hp);
                     }
+                    triIndex++;
                 }
             }
         }
     }
 
     return found;
+}
+
+static float DispBrushWeight(float distSq, float radius, float falloff, DispBrushType brushType)
+{
+    float radiusSq = radius * radius;
+    if (distSq >= radiusSq)
+        return 0.0f;
+
+    if (brushType == DispBrushType::Hard)
+        return 1.0f;
+
+    float value = 1.0f - (distSq / radiusSq);
+    if (value < 0.0f)
+        value = 0.0f;
+    return powf(value, falloff);
+}
+
+static Vec3 DispPaintAxisGL(
+    const VmfSolid& solid,
+    int sideIndex,
+    int vertexIndex,
+    DispPaintAxis axis,
+    const Vec3& facePaintAxisGL)
+{
+    switch (axis)
+    {
+    case DispPaintAxis::X:
+        return {1, 0, 0};
+    case DispPaintAxis::Y:
+        return SourceToGL({0, 1, 0});
+    case DispPaintAxis::Z:
+        return SourceToGL({0, 0, 1});
+    case DispPaintAxis::Subdivision:
+        if (sideIndex >= 0 && sideIndex < (int)solid.sides.size() && solid.sides[sideIndex].dispinfo.has_value())
+        {
+            const VmfDispInfo& disp = solid.sides[sideIndex].dispinfo.value();
+            if (vertexIndex >= 0 && vertexIndex < (int)disp.offsetNormals.size())
+            {
+                Vec3 subdivNormal = Normalize(SourceToGL(disp.offsetNormals[vertexIndex]));
+                if (Length(subdivNormal) > 0.0001f)
+                    return subdivNormal;
+            }
+        }
+        return Normalize(facePaintAxisGL);
+    case DispPaintAxis::Face:
+    default:
+        return Normalize(facePaintAxisGL);
+    }
+}
+
+static void ToggleDisplacementTriangleTag(VmfDispInfo& disp, int triIndex, bool buildable, bool clearForced)
+{
+    if (triIndex < 0 || triIndex >= (int)disp.triangleTags.size())
+        return;
+
+    int forceBit = buildable ? DISP_TRI_TAG_FORCE_BUILDABLE_BIT : DISP_TRI_TAG_FORCE_WALKABLE_BIT;
+    int forceVal = buildable ? DISP_TRI_TAG_FORCE_BUILDABLE_VAL : DISP_TRI_TAG_FORCE_WALKABLE_VAL;
+    int baseBit = buildable ? DISP_TRI_TAG_BUILDABLE : DISP_TRI_TAG_WALKABLE;
+
+    int& tag = disp.triangleTags[triIndex];
+    if (clearForced)
+    {
+        tag &= ~(forceBit | forceVal);
+        return;
+    }
+
+    if ((tag & forceBit) != 0)
+    {
+        tag ^= forceVal;
+    }
+    else
+    {
+        tag |= forceBit;
+        if ((tag & baseBit) == 0)
+            tag |= forceVal;
+        else
+            tag &= ~forceVal;
+    }
 }
 
 // ---- Displacement tool interaction ----
@@ -2056,101 +2134,194 @@ void ViewportPanel::HandleDisplacementTool()
     }
     else
     {
-        // Sculpt / Smooth / Paint modes
+        // Sculpt / Smooth / Paint / Tag modes
         RayDispHit dispHit;
         if (RayPickDisplacement(rayOrigin, rayDir, dispHit))
         {
-            m_dispBrushPos = dispHit.hitPos;
+            m_dispBrushPos = dispHit.vertexPos;
             m_dispBrushVisible = true;
-
-            // Compute approximate surface normal at hit point
-            const auto& solid = m_doc->GetWorld().solids[dispHit.solidIndex];
-            const auto& side = solid.sides[dispHit.sideIndex];
-            Vec3 e1 = SourceToGL(side.planePoints[1].x, side.planePoints[1].y, side.planePoints[1].z) -
-                       SourceToGL(side.planePoints[0].x, side.planePoints[0].y, side.planePoints[0].z);
-            Vec3 e2 = SourceToGL(side.planePoints[2].x, side.planePoints[2].y, side.planePoints[2].z) -
-                       SourceToGL(side.planePoints[0].x, side.planePoints[0].y, side.planePoints[0].z);
-            m_dispBrushNormal = Normalize(Cross(e1, e2));
+            m_dispBrushNormal = dispHit.hitNormal;
 
             float brushRadius = m_dispTool->GetBrushSize();
             m_renderer.SetDispBrushCursor(m_dispBrushPos, m_dispBrushNormal, brushRadius);
 
-            // Apply sculpt/smooth/paint while LMB is held
-            if (ImGui::IsMouseDown(ImGuiMouseButton_Left))
+            if (mode == DispToolMode::TagWalkable || mode == DispToolMode::TagBuildable)
             {
-                VmfSolid& solidMut = m_doc->GetWorldMut().solids[dispHit.solidIndex];
-                VmfSide& sideMut = solidMut.sides[dispHit.sideIndex];
-                VmfDispInfo& disp = sideMut.dispinfo.value();
-                int gridSize = disp.GridSize();
-
-                float strength = m_dispTool->GetBrushStrength() * io.DeltaTime * 200.0f;
-                float falloff = m_dispTool->GetBrushFalloff();
-                bool invert = io.KeyShift;
-
-                // Compute grid positions in Source space for distance comparison
-                std::vector<Vec3> gridPosGL = ComputeDispGridPositions(solidMut, dispHit.sideIndex);
-
-                for (int row = 0; row < gridSize; row++)
+                bool leftClicked = ImGui::IsMouseClicked(ImGuiMouseButton_Left);
+                bool rightClicked = ImGui::IsMouseClicked(ImGuiMouseButton_Right);
+                if (leftClicked || rightClicked)
                 {
-                    for (int col = 0; col < gridSize; col++)
+                    VmfSolid& solidMut = m_doc->GetWorldMut().solids[dispHit.solidIndex];
+                    VmfDispInfo& disp = solidMut.sides[dispHit.sideIndex].dispinfo.value();
+                    ToggleDisplacementTriangleTag(
+                        disp,
+                        dispHit.triIndex,
+                        mode == DispToolMode::TagBuildable,
+                        rightClicked);
+                    m_doc->MarkDirty();
+                    m_renderer.MarkDirty();
+                    if (m_sceneChanged) m_sceneChanged();
+                }
+                return;
+            }
+
+            // Apply sculpt/smooth/paint while either mouse button is held.
+            if (ImGui::IsMouseDown(ImGuiMouseButton_Left) || ImGui::IsMouseDown(ImGuiMouseButton_Right))
+            {
+                struct DispSurfaceSnapshot
+                {
+                    int solidIndex = -1;
+                    int sideIndex = -1;
+                    std::vector<Vec3> positionsGL;
+                };
+
+                std::vector<DispSurfaceSnapshot> surfaces;
+                std::vector<Vec3> allVertices;
+                const auto& solids = m_doc->GetWorld().solids;
+                const auto& selection = m_doc->GetSelection();
+                int activeSolidIndex = dispHit.solidIndex;
+                if (selection.type == SelectionType::WorldSolid &&
+                    selection.index >= 0 &&
+                    selection.index < (int)solids.size())
+                {
+                    bool selectionHasDisplacement = false;
+                    for (const VmfSide& side : solids[selection.index].sides)
                     {
-                        int idx = row * gridSize + col;
-                        if (idx >= (int)gridPosGL.size()) continue;
-
-                        Vec3 vertPosSource = GLToSource(gridPosGL[idx]);
-                        Vec3 diff = vertPosSource - dispHit.hitPosSource;
-                        float dist = Length(diff);
-
-                        if (dist < brushRadius)
+                        if (side.dispinfo.has_value())
                         {
-                            float weight = powf(1.0f - dist / brushRadius, falloff);
-
-                            if (mode == DispToolMode::Sculpt)
-                            {
-                                disp.distances[idx] += weight * strength * (invert ? -1.0f : 1.0f);
-                            }
-                            else if (mode == DispToolMode::Smooth)
-                            {
-                                // Average neighbor distances
-                                float avg = 0.0f;
-                                int count = 0;
-                                for (int dr = -1; dr <= 1; dr++)
-                                {
-                                    for (int dc = -1; dc <= 1; dc++)
-                                    {
-                                        int nr = row + dr;
-                                        int nc = col + dc;
-                                        if (nr >= 0 && nr < gridSize && nc >= 0 && nc < gridSize)
-                                        {
-                                            avg += disp.distances[nr * gridSize + nc];
-                                            count++;
-                                        }
-                                    }
-                                }
-                                if (count > 0)
-                                {
-                                    avg /= (float)count;
-                                    float blend = weight * strength * 0.1f;
-                                    if (blend > 1.0f) blend = 1.0f;
-                                    disp.distances[idx] += (avg - disp.distances[idx]) * blend;
-                                }
-                            }
-                            else if (mode == DispToolMode::Paint)
-                            {
-                                float target = invert ? 0.0f : m_dispTool->GetPaintAlpha();
-                                float blend = weight * strength * 0.1f;
-                                if (blend > 1.0f) blend = 1.0f;
-                                disp.alphas[idx] += (target - disp.alphas[idx]) * blend;
-                                if (disp.alphas[idx] < 0.0f) disp.alphas[idx] = 0.0f;
-                                if (disp.alphas[idx] > 255.0f) disp.alphas[idx] = 255.0f;
-                            }
+                            selectionHasDisplacement = true;
+                            break;
                         }
+                    }
+                    if (selectionHasDisplacement)
+                        activeSolidIndex = selection.index;
+                }
+
+                for (int si = 0; si < (int)solids.size(); si++)
+                {
+                    if (si != activeSolidIndex)
+                        continue;
+
+                    const VmfSolid& solid = solids[si];
+                    for (int sideIdx = 0; sideIdx < (int)solid.sides.size(); sideIdx++)
+                    {
+                        if (!solid.sides[sideIdx].dispinfo.has_value())
+                            continue;
+
+                        std::vector<Vec3> positions = ComputeDispGridPositions(solid, sideIdx);
+                        if (positions.empty())
+                            continue;
+
+                        DispSurfaceSnapshot snapshot;
+                        snapshot.solidIndex = si;
+                        snapshot.sideIndex = sideIdx;
+                        snapshot.positionsGL = std::move(positions);
+                        allVertices.insert(allVertices.end(), snapshot.positionsGL.begin(), snapshot.positionsGL.end());
+                        surfaces.push_back(std::move(snapshot));
                     }
                 }
 
-                m_renderer.MarkDirty();
-                if (m_sceneChanged) m_sceneChanged();
-                m_dispSculpting = true;
+                float frameScale = io.DeltaTime > 0.0f ? io.DeltaTime * 20.0f : 1.0f;
+                if (frameScale > 1.0f) frameScale = 1.0f;
+                float strength = m_dispTool->GetBrushStrength() * frameScale;
+                float falloff = m_dispTool->GetBrushFalloff();
+                bool invert = io.KeyShift || ImGui::IsMouseDown(ImGuiMouseButton_Right);
+                DispBrushType brushType = m_dispTool->GetBrushType();
+                DispPaintAxis paintAxis = m_dispTool->GetPaintAxis();
+                Vec3 paintAxisGL = Normalize(dispHit.hitNormal);
+                float radiusSq = brushRadius * brushRadius;
+                bool changed = false;
+
+                for (const DispSurfaceSnapshot& surface : surfaces)
+                {
+                    bool surfaceChanged = false;
+                    VmfSolid& solidMut = m_doc->GetWorldMut().solids[surface.solidIndex];
+                    VmfDispInfo& disp = solidMut.sides[surface.sideIndex].dispinfo.value();
+
+                    for (int idx = 0; idx < (int)surface.positionsGL.size(); idx++)
+                    {
+                        Vec3 diff = surface.positionsGL[idx] - dispHit.vertexPos;
+                        float distSq = Dot(diff, diff);
+                        if (distSq >= radiusSq)
+                            continue;
+
+                        float weight = DispBrushWeight(distSq, brushRadius, falloff, brushType);
+                        if (weight <= 0.0f)
+                            continue;
+
+                        if (mode == DispToolMode::Sculpt)
+                        {
+                            Vec3 axis = DispPaintAxisGL(solidMut, surface.sideIndex, idx, paintAxis, paintAxisGL);
+                            Vec3 target = surface.positionsGL[idx] + axis * (weight * strength * (invert ? -1.0f : 1.0f));
+                            if (SetDispVertexPositionGL(solidMut, surface.sideIndex, idx, target))
+                                surfaceChanged = true;
+                        }
+                        else if (mode == DispToolMode::Smooth)
+                        {
+                            float localRadiusFactor = 1.0f - (distSq / radiusSq);
+                            float localRadiusSq = (brushRadius * localRadiusFactor) * (brushRadius * localRadiusFactor);
+                            if (localRadiusSq <= 0.0001f)
+                                continue;
+
+                            Vec3 axis = DispPaintAxisGL(solidMut, surface.sideIndex, idx, paintAxis, paintAxisGL);
+                            float paintDist = Dot(axis, surface.positionsGL[idx]);
+                            float smoothDist = 0.0f;
+                            float totalWeight = 0.0f;
+
+                            for (const Vec3& sample : allVertices)
+                            {
+                                Vec3 sampleDiff = sample - surface.positionsGL[idx];
+                                float sampleDistSq = Dot(sampleDiff, sampleDiff);
+                                if (sampleDistSq >= localRadiusSq)
+                                    continue;
+
+                                float sampleRatio = sampleDistSq / localRadiusSq;
+                                float sampleWeight = 1.0f / expf(sampleRatio);
+                                if (sampleWeight != 1.0f)
+                                    sampleWeight *= 1.0f / (m_dispTool->GetBrushStrength() * 2.0f);
+
+                                smoothDist += (Dot(sample, axis) - paintDist) * sampleWeight;
+                                totalWeight += sampleWeight;
+                            }
+
+                            if (totalWeight > 0.0001f)
+                            {
+                                smoothDist /= totalWeight;
+                                Vec3 target = surface.positionsGL[idx] + axis * smoothDist;
+                                if (SetDispVertexPositionGL(solidMut, surface.sideIndex, idx, target))
+                                    surfaceChanged = true;
+                            }
+                        }
+                        else if (mode == DispToolMode::Paint)
+                        {
+                            if (idx >= (int)disp.alphas.size())
+                                disp.alphas.resize(surface.positionsGL.size(), 0.0f);
+
+                            float target = invert ? 0.0f : m_dispTool->GetPaintAlpha();
+                            float blend = weight * std::max(0.01f, strength / 32.0f);
+                            if (blend > 1.0f) blend = 1.0f;
+                            disp.alphas[idx] += (target - disp.alphas[idx]) * blend;
+                            if (disp.alphas[idx] < 0.0f) disp.alphas[idx] = 0.0f;
+                            if (disp.alphas[idx] > 255.0f) disp.alphas[idx] = 255.0f;
+                            surfaceChanged = true;
+                        }
+                    }
+
+                    if (surfaceChanged)
+                    {
+                        if (mode == DispToolMode::Sculpt || mode == DispToolMode::Smooth)
+                            UpdateDispTriangleTags(solidMut, surface.sideIndex);
+                        changed = true;
+                    }
+                }
+
+                if (changed)
+                {
+                    m_doc->MarkDirty();
+                    m_renderer.MarkDirty();
+                    if (m_sceneChanged) m_sceneChanged();
+                }
+                m_dispSculpting = changed;
             }
             else
             {

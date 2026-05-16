@@ -17,6 +17,7 @@ class WorldManager;
 class AudioSystem;
 class NavigationSystem;
 class LoadingScreenState;
+class TeamManager;
 
 struct ConsoleVariable
 {
@@ -27,6 +28,12 @@ struct ConsoleVariable
     std::uint32_t flags = 0;
 };
 
+enum ConsoleVariableFlags : std::uint32_t
+{
+    ConsoleVariableFlagNone = 0,
+    ConsoleVariableFlagGameRule = 1U << 0,
+};
+
 class ConsoleVariables
 {
 public:
@@ -35,6 +42,8 @@ public:
     [[nodiscard]] const ConsoleVariable* find(std::string_view name) const;
 
     bool set(std::string_view name, std::string value);
+    bool reset(std::string_view name);
+    void reset_with_flags(std::uint32_t flags);
     [[nodiscard]] std::string get_string(std::string_view name, std::string_view fallback = {}) const;
     [[nodiscard]] bool get_bool(std::string_view name, bool fallback = false) const;
     [[nodiscard]] int get_int(std::string_view name, int fallback = 0) const;
@@ -63,6 +72,7 @@ struct ConsoleCommandContext
     ContentFileSystem* filesystem = nullptr;
     WorldManager* world = nullptr;
     NetworkSystem* network = nullptr;
+    TeamManager* teams = nullptr;
     AudioSystem* audio = nullptr;
     NavigationSystem* navigation = nullptr;
     LoadingScreenState* loading_screen = nullptr;

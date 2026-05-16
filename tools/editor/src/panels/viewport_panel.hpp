@@ -101,7 +101,11 @@ private:
     struct RayDispHit {
         int solidIndex;
         int sideIndex;
+        int triIndex;
+        int vertexIndex;
         Vec3 hitPos;        // GL space
+        Vec3 vertexPos;     // GL-space nearest displacement vertex
+        Vec3 hitNormal;     // GL-space triangle normal
         Vec3 hitPosSource;  // Source space
         float t;
     };

@@ -3,6 +3,7 @@
 #include "openstrike/network/network_session.hpp"
 
 #include <cstdint>
+#include <span>
 #include <string_view>
 #include <vector>
 
@@ -18,6 +19,9 @@ public:
     void poll(std::uint64_t tick);
     bool send_client_text(std::string_view text, std::uint64_t tick);
     void broadcast_server_text(std::string_view text, std::uint64_t tick);
+    bool send_client_user_command(std::span<const unsigned char> payload, std::uint64_t tick);
+    bool send_server_snapshot(const NetworkAddress& address, std::span<const unsigned char> payload, std::uint64_t tick);
+    void broadcast_server_snapshot(std::span<const unsigned char> payload, std::uint64_t tick);
 
     [[nodiscard]] NetworkServer& server();
     [[nodiscard]] NetworkClient& client();

@@ -2,6 +2,7 @@
 
 #include "openstrike/core/log.hpp"
 #include "openstrike/engine/engine_context.hpp"
+#include "openstrike/game/team_system.hpp"
 #include "openstrike/network/network_session.hpp"
 
 namespace openstrike
@@ -32,6 +33,12 @@ void log_network_event(const NetworkEvent& event)
         break;
     case NetworkEventType::TextReceived:
         log_info("network text from {}: {}", event.remote.to_string(), event.text);
+        break;
+    case NetworkEventType::UserCommandReceived:
+        log_info("network user command from {} tick={} bytes={}", event.remote.to_string(), event.tick, event.payload.size());
+        break;
+    case NetworkEventType::SnapshotReceived:
+        log_info("network snapshot from {} tick={} bytes={}", event.remote.to_string(), event.tick, event.payload.size());
         break;
     case NetworkEventType::PacketDropped:
         log_warning("dropped network packet from {}", event.remote.to_string());
@@ -65,6 +72,7 @@ void ClientModule::on_frame(const FrameContext& context, EngineContext& engine)
     engine.variables.set("net_status", std::string(to_string(engine.network.client().state())));
     for (const NetworkEvent& event : engine.network.drain_events())
     {
+        handle_team_network_event(engine, event);
         log_network_event(event);
     }
 }

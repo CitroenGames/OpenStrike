@@ -2,9 +2,9 @@
 
 #include "openstrike/core/content_filesystem.hpp"
 #include "openstrike/core/log.hpp"
+#include "openstrike/source/source_paths.hpp"
 
 #include <algorithm>
-#include <cctype>
 #include <format>
 #include <fstream>
 #include <sstream>
@@ -17,31 +17,6 @@ namespace
 {
 constexpr std::uint32_t kVpkSignature = 0x55AA1234U;
 constexpr std::uint16_t kVpkDirArchiveIndex = 0x7FFFU;
-
-std::string lower_copy(std::string_view text)
-{
-    std::string result(text);
-    std::transform(result.begin(), result.end(), result.begin(), [](unsigned char ch) {
-        return static_cast<char>(std::tolower(ch));
-    });
-    return result;
-}
-
-void normalize_slashes(std::string& path)
-{
-    std::replace(path.begin(), path.end(), '\\', '/');
-}
-
-std::string normalize_asset_path(const std::filesystem::path& path)
-{
-    std::string normalized = path.generic_string();
-    normalize_slashes(normalized);
-    while (!normalized.empty() && normalized.front() == '/')
-    {
-        normalized.erase(normalized.begin());
-    }
-    return lower_copy(normalized);
-}
 
 std::uint32_t read_u32_le(const std::vector<unsigned char>& bytes, std::size_t offset)
 {
@@ -131,8 +106,8 @@ std::string vpk_entry_path(std::string_view directory, std::string_view filename
         result += '.';
         result += extension;
     }
-    normalize_slashes(result);
-    return lower_copy(result);
+    source_normalize_slashes(result);
+    return source_lower_copy(result);
 }
 
 }
@@ -148,7 +123,7 @@ SourceAssetStore::SourceAssetStore(
 
 std::optional<std::vector<unsigned char>> SourceAssetStore::read_binary(const std::filesystem::path& relative_path, std::string_view path_id) const
 {
-    const std::string normalized = normalize_asset_path(relative_path);
+    const std::string normalized = normalize_source_asset_path(relative_path);
     if (normalized.empty())
     {
         return std::nullopt;
@@ -212,7 +187,7 @@ void SourceAssetStore::mount_vpks(const ContentFileSystem& filesystem)
                 continue;
             }
 
-            const std::string filename = lower_copy(it->path().filename().string());
+            const std::string filename = source_lower_copy(it->path().filename().string());
             if (filename.size() >= 8 && filename.ends_with("_dir.vpk"))
             {
                 candidates.push_back(it->path());
@@ -277,7 +252,7 @@ void SourceAssetStore::mount_vpk_directory(const std::filesystem::path& dir_path
         std::filesystem::path archive_prefix = dir_path.parent_path() / dir_path.stem();
         std::string prefix = archive_prefix.string();
         const std::string suffix = "_dir";
-        if (prefix.size() >= suffix.size() && lower_copy(prefix.substr(prefix.size() - suffix.size())) == suffix)
+        if (prefix.size() >= suffix.size() && source_lower_copy(prefix.substr(prefix.size() - suffix.size())) == suffix)
         {
             prefix.resize(prefix.size() - suffix.size());
             archive_prefix = prefix;
