@@ -15,6 +15,8 @@ class ContentFileSystem;
 class NetworkSystem;
 class WorldManager;
 class AudioSystem;
+class NavigationSystem;
+class LoadingScreenState;
 
 struct ConsoleVariable
 {
@@ -62,6 +64,8 @@ struct ConsoleCommandContext
     WorldManager* world = nullptr;
     NetworkSystem* network = nullptr;
     AudioSystem* audio = nullptr;
+    NavigationSystem* navigation = nullptr;
+    LoadingScreenState* loading_screen = nullptr;
     std::function<void()> request_quit;
 };
 

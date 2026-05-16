@@ -5,7 +5,9 @@
 #include "openstrike/core/content_filesystem.hpp"
 #include "openstrike/engine/hud_state.hpp"
 #include "openstrike/engine/input.hpp"
+#include "openstrike/engine/loading_screen_state.hpp"
 #include "openstrike/engine/runtime_config.hpp"
+#include "openstrike/nav/navigation.hpp"
 #include "openstrike/network/network_system.hpp"
 #include "openstrike/world/world.hpp"
 
@@ -21,6 +23,8 @@ public:
     WorldManager world;
     NetworkSystem network;
     AudioSystem audio;
+    NavigationSystem navigation;
+    LoadingScreenState loading_screen;
     InputState input;
     HudState hud;
     CameraState camera;

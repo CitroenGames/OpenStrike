@@ -139,7 +139,7 @@ void MainMenuController::set_open_console_callback(std::function<void()> callbac
     open_console_callback_ = std::move(callback);
 }
 
-void MainMenuController::set_launch_map_callback(std::function<void(std::string)> callback)
+void MainMenuController::set_launch_map_callback(std::function<void(std::string, std::string)> callback)
 {
     launch_map_callback_ = std::move(callback);
 }
@@ -389,11 +389,11 @@ void MainMenuController::execute_go()
         return;
     }
 
-    const std::string mode = play_mode_ == "bots" ? "Bot game" : "Matchmaking";
+    const std::string mode = play_mode_ == "bots" ? "Practice With Bots" : "Competitive";
     if (launch_map_callback_)
     {
         set_status("Loading " + selected_map_ + "...", true);
-        launch_map_callback_(std::string(selected_map_));
+        launch_map_callback_(std::string(selected_map_), mode);
     }
     else
     {

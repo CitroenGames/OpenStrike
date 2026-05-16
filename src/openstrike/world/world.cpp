@@ -33,18 +33,49 @@ constexpr std::size_t kEntitiesLump = 0;
 constexpr std::size_t kPlanesLump = 1;
 constexpr std::size_t kTexDataLump = 2;
 constexpr std::size_t kVerticesLump = 3;
+constexpr std::size_t kNodesLump = 5;
 constexpr std::size_t kTexInfoLump = 6;
 constexpr std::size_t kFacesLump = 7;
+constexpr std::size_t kLightingLump = 8;
+constexpr std::size_t kLeavesLump = 10;
 constexpr std::size_t kEdgesLump = 12;
 constexpr std::size_t kSurfEdgesLump = 13;
+constexpr std::size_t kModelsLump = 14;
+constexpr std::size_t kLeafBrushesLump = 17;
+constexpr std::size_t kBrushesLump = 18;
+constexpr std::size_t kBrushSidesLump = 19;
 constexpr std::size_t kGameLump = 35;
 constexpr std::size_t kPakFileLump = 40;
 constexpr std::size_t kTexDataStringDataLump = 43;
 constexpr std::size_t kTexDataStringTableLump = 44;
+constexpr std::size_t kLightingHdrLump = 53;
+constexpr std::size_t kFacesHdrLump = 58;
+constexpr std::size_t kMapFlagsLump = 59;
 constexpr std::uint32_t kSurfaceSky2D = 0x0002;
 constexpr std::uint32_t kSurfaceSky = 0x0004;
+constexpr std::uint32_t kSurfaceWarp = 0x0008;
 constexpr std::uint32_t kSurfaceNoDraw = 0x0080;
 constexpr std::uint32_t kSurfaceSkip = 0x0200;
+constexpr std::uint8_t kSolidNone = 0;
+constexpr std::uint8_t kSolidBbox = 2;
+constexpr std::uint8_t kSolidVPhysics = 6;
+constexpr std::uint32_t kSurfaceBumpLight = 0x0800;
+constexpr std::uint32_t kContentsSolid = 0x00000001;
+constexpr std::uint32_t kContentsWindow = 0x00000002;
+constexpr std::uint32_t kContentsGrate = 0x00000008;
+constexpr std::uint32_t kContentsWater = 0x00000020;
+constexpr std::uint32_t kContentsMoveable = 0x00004000;
+constexpr std::uint32_t kContentsPlayerClip = 0x00010000;
+constexpr std::uint32_t kContentsMonsterClip = 0x00020000;
+constexpr std::uint32_t kContentsMonster = 0x02000000;
+constexpr std::uint32_t kMaskSolid = kContentsSolid | kContentsMoveable | kContentsWindow | kContentsMonster | kContentsGrate;
+constexpr std::uint32_t kMaskPlayerSolid = kMaskSolid | kContentsPlayerClip;
+constexpr std::uint32_t kBspWorldStaticCollisionMask = kMaskSolid | kContentsPlayerClip | kContentsMonsterClip;
+constexpr std::uint32_t kMapFlagLightstylesWithCsm = 0x00000040;
+constexpr std::uint8_t kUnusedLightStyle = 255;
+constexpr std::size_t kMaxLightStyles = 4;
+constexpr std::size_t kBumpLightmapCount = 4;
+constexpr std::uint32_t kMaxLightmapAtlasDimension = 8192;
 
 struct BspLump
 {
@@ -63,9 +94,55 @@ struct BspEdge
     std::uint16_t vertices[2]{};
 };
 
+struct BspPlane
+{
+    Vec3 normal;
+    float dist = 0.0F;
+    std::int32_t type = 0;
+};
+
+struct BspNode
+{
+    std::array<std::int32_t, 2> children{};
+};
+
+struct BspLeaf
+{
+    std::uint32_t contents = 0;
+    std::uint16_t first_leaf_brush = 0;
+    std::uint16_t leaf_brush_count = 0;
+};
+
+struct BspModel
+{
+    Vec3 mins;
+    Vec3 maxs;
+    Vec3 origin;
+    std::int32_t head_node = 0;
+    std::int32_t first_face = 0;
+    std::int32_t face_count = 0;
+};
+
+struct BspBrushSide
+{
+    std::uint16_t plane = 0;
+    std::int16_t texinfo = -1;
+    std::int16_t dispinfo = -1;
+    std::uint8_t bevel = 0;
+    std::uint8_t thin = 0;
+};
+
+struct BspBrush
+{
+    std::int32_t first_side = 0;
+    std::int32_t side_count = 0;
+    std::uint32_t contents = 0;
+};
+
 struct BspTexInfo
 {
     std::array<std::array<float, 4>, 2> texture_vecs{};
+    std::array<std::array<float, 4>, 2> lightmap_vecs{};
     std::uint32_t flags = 0;
     std::int32_t texdata = -1;
 };
@@ -84,12 +161,40 @@ struct BspFace
     std::int32_t first_edge = 0;
     std::int16_t edge_count = 0;
     std::int16_t texinfo = -1;
+    std::int16_t dispinfo = -1;
+    std::array<std::uint8_t, kMaxLightStyles> styles{kUnusedLightStyle, kUnusedLightStyle, kUnusedLightStyle, kUnusedLightStyle};
+    std::int32_t light_offset = -1;
+    std::array<std::int32_t, 2> lightmap_mins{};
+    std::array<std::int32_t, 2> lightmap_size{};
 };
 
 struct RenderMeshChunk
 {
     std::vector<WorldMeshVertex> vertices;
     std::vector<std::uint32_t> indices;
+};
+
+struct FaceLightmapPlacement
+{
+    std::uint32_t x = 0;
+    std::uint32_t y = 0;
+    std::uint32_t width = 1;
+    std::uint32_t height = 1;
+    bool valid = false;
+};
+
+struct BspLightmapData
+{
+    std::span<const unsigned char> bytes;
+    bool has_lighting = false;
+    bool prefer_hdr_faces = false;
+    bool lightstyles_with_csm = false;
+};
+
+struct BspLightmapBuildResult
+{
+    WorldLightmapAtlas atlas;
+    std::vector<FaceLightmapPlacement> placements;
 };
 
 std::string lower_copy(std::string_view text)
@@ -407,6 +512,26 @@ std::optional<float> parse_float(std::string_view text)
     return value;
 }
 
+std::optional<std::uint8_t> parse_u8(std::string_view text)
+{
+    const std::optional<float> parsed = parse_float(text);
+    if (!parsed || !std::isfinite(*parsed) || *parsed < 0.0F || *parsed > 255.0F)
+    {
+        return std::nullopt;
+    }
+    return static_cast<std::uint8_t>(*parsed);
+}
+
+std::optional<float> parse_prop_scale(std::string_view text)
+{
+    const std::optional<float> parsed = parse_float(text);
+    if (!parsed || !std::isfinite(*parsed) || *parsed <= 0.0F)
+    {
+        return std::nullopt;
+    }
+    return std::clamp(*parsed, 0.001F, 1024.0F);
+}
+
 std::optional<Vec3> parse_vec3(std::string_view text)
 {
     std::istringstream stream{std::string(text)};
@@ -509,11 +634,38 @@ std::vector<WorldSpawnPoint> collect_spawn_points(const std::vector<ParsedEntity
     return spawns;
 }
 
+std::vector<WorldEntity> collect_world_entities(const std::vector<ParsedEntity>& entities)
+{
+    std::vector<WorldEntity> world_entities;
+    world_entities.reserve(entities.size());
+    for (const ParsedEntity& entity : entities)
+    {
+        WorldEntity world_entity;
+        world_entity.properties = entity.properties;
+        if (const std::optional<std::string> class_name = find_property(entity, "classname"))
+        {
+            world_entity.class_name = *class_name;
+        }
+        world_entities.push_back(std::move(world_entity));
+    }
+    return world_entities;
+}
+
 bool is_entity_prop_class(std::string_view class_name)
 {
     const std::string lower = lower_copy(class_name);
-    return lower == "prop_static" || lower == "prop_dynamic" || lower == "prop_dynamic_override" ||
+    return lower == "static_prop" || lower == "prop_static" || lower == "prop_dynamic" || lower == "prop_dynamic_override" ||
            lower == "prop_physics" || lower == "prop_physics_multiplayer" || lower == "prop_detail";
+}
+
+std::uint8_t default_entity_prop_solid(std::string_view class_name)
+{
+    const std::string lower = lower_copy(class_name);
+    if (lower == "static_prop" || lower == "prop_static")
+    {
+        return kSolidVPhysics;
+    }
+    return kSolidNone;
 }
 
 bool is_point_light_class(std::string_view class_name)
@@ -632,6 +784,7 @@ std::vector<WorldProp> collect_entity_props(const std::vector<ParsedEntity>& ent
         prop.class_name = *class_name;
         prop.model_path = *model;
         normalize_slashes(prop.model_path);
+        prop.solid = default_entity_prop_solid(*class_name);
         if (const std::optional<std::string> origin = find_property(entity, "origin"))
         {
             prop.origin = parse_vec3(*origin).value_or(Vec3{});
@@ -644,6 +797,14 @@ std::vector<WorldProp> collect_entity_props(const std::vector<ParsedEntity>& ent
             {
                 prop.skin = static_cast<std::int32_t>(*parsed);
             }
+        }
+        if (const std::optional<std::string> solid = find_property(entity, "solid"))
+        {
+            prop.solid = parse_u8(*solid).value_or(prop.solid);
+        }
+        if (const std::optional<std::string> scale = find_property(entity, "modelscale"))
+        {
+            prop.scale = parse_prop_scale(*scale).value_or(prop.scale);
         }
         props.push_back(std::move(prop));
     }
@@ -757,8 +918,36 @@ bool should_render_surface(std::uint32_t flags)
 
 bool should_collide_surface(std::uint32_t flags)
 {
-    constexpr std::uint32_t skip_flags = kSurfaceSky2D | kSurfaceSky | kSurfaceSkip;
+    constexpr std::uint32_t skip_flags = kSurfaceSky2D | kSurfaceSky | kSurfaceWarp | kSurfaceSkip;
     return !has_any_surface_flag(flags, skip_flags);
+}
+
+bool should_collide_brush(std::uint32_t contents)
+{
+    // Matches UrbanStrike/Source world VPhysics static brush groups:
+    // MASK_SOLID without grates, CONTENTS_GRATE, CONTENTS_PLAYERCLIP, CONTENTS_MONSTERCLIP.
+    // Water/slime are separate fluid models in Source and must not become solid world collision here.
+    return (contents & kBspWorldStaticCollisionMask) != 0;
+}
+
+bool triangle_blocks_player_movement(const WorldTriangle& triangle)
+{
+    return triangle.contents == 0 || (triangle.contents & kMaskPlayerSolid) != 0;
+}
+
+std::vector<BspPlane> read_bsp_planes(const std::vector<unsigned char>& bytes)
+{
+    return read_lump_array<BspPlane>(bytes, read_lump(bytes, kPlanesLump), 20, "planes", [&](std::size_t offset) {
+        return BspPlane{
+            .normal = {
+                read_f32_le(bytes, offset),
+                read_f32_le(bytes, offset + 4),
+                read_f32_le(bytes, offset + 8),
+            },
+            .dist = read_f32_le(bytes, offset + 12),
+            .type = read_s32_le(bytes, offset + 16),
+        };
+    });
 }
 
 std::vector<Vec3> read_bsp_vertices(const std::vector<unsigned char>& bytes)
@@ -772,6 +961,16 @@ std::vector<Vec3> read_bsp_vertices(const std::vector<unsigned char>& bytes)
     });
 }
 
+std::vector<BspNode> read_bsp_nodes(const std::vector<unsigned char>& bytes)
+{
+    return read_lump_array<BspNode>(bytes, read_lump(bytes, kNodesLump), 32, "nodes", [&](std::size_t offset) {
+        return BspNode{{
+            read_s32_le(bytes, offset + 4),
+            read_s32_le(bytes, offset + 8),
+        }};
+    });
+}
+
 std::vector<BspEdge> read_bsp_edges(const std::vector<unsigned char>& bytes)
 {
     return read_lump_array<BspEdge>(bytes, read_lump(bytes, kEdgesLump), 4, "edges", [&](std::size_t offset) {
@@ -779,6 +978,76 @@ std::vector<BspEdge> read_bsp_edges(const std::vector<unsigned char>& bytes)
             read_u16_le(bytes, offset),
             read_u16_le(bytes, offset + 2),
         }};
+    });
+}
+
+std::vector<BspLeaf> read_bsp_leaves(const std::vector<unsigned char>& bytes)
+{
+    const BspLump lump = read_lump(bytes, kLeavesLump);
+    const std::size_t stride = lump.version == 0 && lump.length != 0 && (lump.length % 56U) == 0 ? 56U : 32U;
+    return read_lump_array<BspLeaf>(bytes, lump, stride, "leaves", [&](std::size_t offset) {
+        return BspLeaf{
+            .contents = read_u32_le(bytes, offset),
+            .first_leaf_brush = read_u16_le(bytes, offset + 24),
+            .leaf_brush_count = read_u16_le(bytes, offset + 26),
+        };
+    });
+}
+
+std::vector<BspModel> read_bsp_models(const std::vector<unsigned char>& bytes)
+{
+    return read_lump_array<BspModel>(bytes, read_lump(bytes, kModelsLump), 48, "models", [&](std::size_t offset) {
+        return BspModel{
+            .mins = {
+                read_f32_le(bytes, offset),
+                read_f32_le(bytes, offset + 4),
+                read_f32_le(bytes, offset + 8),
+            },
+            .maxs = {
+                read_f32_le(bytes, offset + 12),
+                read_f32_le(bytes, offset + 16),
+                read_f32_le(bytes, offset + 20),
+            },
+            .origin = {
+                read_f32_le(bytes, offset + 24),
+                read_f32_le(bytes, offset + 28),
+                read_f32_le(bytes, offset + 32),
+            },
+            .head_node = read_s32_le(bytes, offset + 36),
+            .first_face = read_s32_le(bytes, offset + 40),
+            .face_count = read_s32_le(bytes, offset + 44),
+        };
+    });
+}
+
+std::vector<BspBrushSide> read_bsp_brush_sides(const std::vector<unsigned char>& bytes)
+{
+    return read_lump_array<BspBrushSide>(bytes, read_lump(bytes, kBrushSidesLump), 8, "brush sides", [&](std::size_t offset) {
+        return BspBrushSide{
+            .plane = read_u16_le(bytes, offset),
+            .texinfo = read_s16_le(bytes, offset + 2),
+            .dispinfo = read_s16_le(bytes, offset + 4),
+            .bevel = bytes[offset + 6],
+            .thin = bytes[offset + 7],
+        };
+    });
+}
+
+std::vector<BspBrush> read_bsp_brushes(const std::vector<unsigned char>& bytes)
+{
+    return read_lump_array<BspBrush>(bytes, read_lump(bytes, kBrushesLump), 12, "brushes", [&](std::size_t offset) {
+        return BspBrush{
+            .first_side = read_s32_le(bytes, offset),
+            .side_count = read_s32_le(bytes, offset + 4),
+            .contents = read_u32_le(bytes, offset + 8),
+        };
+    });
+}
+
+std::vector<std::uint16_t> read_bsp_leaf_brushes(const std::vector<unsigned char>& bytes)
+{
+    return read_lump_array<std::uint16_t>(bytes, read_lump(bytes, kLeafBrushesLump), 2, "leaf brushes", [&](std::size_t offset) {
+        return read_u16_le(bytes, offset);
     });
 }
 
@@ -798,6 +1067,13 @@ std::vector<BspTexInfo> read_bsp_texinfo(const std::vector<unsigned char>& bytes
             for (std::size_t component = 0; component < 4; ++component)
             {
                 texinfo.texture_vecs[axis][component] = read_f32_le(bytes, offset + (axis * 16) + (component * 4));
+            }
+        }
+        for (std::size_t axis = 0; axis < 2; ++axis)
+        {
+            for (std::size_t component = 0; component < 4; ++component)
+            {
+                texinfo.lightmap_vecs[axis][component] = read_f32_le(bytes, offset + 32 + (axis * 16) + (component * 4));
             }
         }
         texinfo.flags = read_u32_le(bytes, offset + 64);
@@ -1128,22 +1404,76 @@ std::vector<WorldProp> read_static_props(const std::vector<unsigned char>& bytes
     return props;
 }
 
-std::vector<BspFace> read_bsp_faces(const std::vector<unsigned char>& bytes)
+BspLightmapData read_bsp_lightmap_data(const std::vector<unsigned char>& bytes)
+{
+    BspLightmapData data;
+    bool selected_hdr_lighting = false;
+
+    const BspLump hdr_lump = read_lump(bytes, kLightingHdrLump);
+    if (hdr_lump.length > 0)
+    {
+        validate_lump_range(bytes, hdr_lump, "HDR lighting");
+        data.bytes = std::span<const unsigned char>(bytes.data() + hdr_lump.offset, hdr_lump.length);
+        data.has_lighting = true;
+        selected_hdr_lighting = true;
+    }
+    else
+    {
+        const BspLump ldr_lump = read_lump(bytes, kLightingLump);
+        if (ldr_lump.length > 0)
+        {
+            validate_lump_range(bytes, ldr_lump, "lighting");
+            data.bytes = std::span<const unsigned char>(bytes.data() + ldr_lump.offset, ldr_lump.length);
+            data.has_lighting = true;
+        }
+    }
+
+    const BspLump hdr_faces = read_lump(bytes, kFacesHdrLump);
+    if (hdr_faces.length > 0)
+    {
+        validate_lump_range(bytes, hdr_faces, "HDR faces");
+    }
+    data.prefer_hdr_faces = selected_hdr_lighting && hdr_faces.length > 0;
+
+    const BspLump map_flags = read_lump(bytes, kMapFlagsLump);
+    if (map_flags.length > 0)
+    {
+        validate_lump_range(bytes, map_flags, "map flags");
+        if (map_flags.length >= 4)
+        {
+            data.lightstyles_with_csm = (read_u32_le(bytes, map_flags.offset) & kMapFlagLightstylesWithCsm) != 0;
+        }
+    }
+
+    return data;
+}
+
+std::vector<BspFace> read_bsp_faces(const std::vector<unsigned char>& bytes, bool prefer_hdr_faces)
 {
     BspLump lump = read_lump(bytes, kFacesLump);
-    if (const BspLump hdr_faces = read_lump(bytes, 58); hdr_faces.length > 0)
+    if (prefer_hdr_faces)
     {
-        lump = hdr_faces;
+        lump = read_lump(bytes, kFacesHdrLump);
     }
 
     return read_lump_array<BspFace>(bytes, lump, 56, "faces", [&](std::size_t offset) {
-        return BspFace{
-            .plane = read_u16_le(bytes, offset),
-            .side = bytes[offset + 2],
-            .first_edge = read_s32_le(bytes, offset + 4),
-            .edge_count = read_s16_le(bytes, offset + 8),
-            .texinfo = read_s16_le(bytes, offset + 10),
-        };
+        BspFace face;
+        face.plane = read_u16_le(bytes, offset);
+        face.side = bytes[offset + 2];
+        face.first_edge = read_s32_le(bytes, offset + 4);
+        face.edge_count = read_s16_le(bytes, offset + 8);
+        face.texinfo = read_s16_le(bytes, offset + 10);
+        face.dispinfo = read_s16_le(bytes, offset + 12);
+        for (std::size_t style = 0; style < kMaxLightStyles; ++style)
+        {
+            face.styles[style] = bytes[offset + 16 + style];
+        }
+        face.light_offset = read_s32_le(bytes, offset + 20);
+        face.lightmap_mins[0] = read_s32_le(bytes, offset + 28);
+        face.lightmap_mins[1] = read_s32_le(bytes, offset + 32);
+        face.lightmap_size[0] = read_s32_le(bytes, offset + 36);
+        face.lightmap_size[1] = read_s32_le(bytes, offset + 40);
+        return face;
     });
 }
 
@@ -1177,6 +1507,312 @@ Vec2 texture_coordinate(Vec3 point, const BspTexInfo& texinfo, const WorldMateri
         ((point.x * s[0]) + (point.y * s[1]) + (point.z * s[2]) + s[3]) / width,
         ((point.x * t[0]) + (point.y * t[1]) + (point.z * t[2]) + t[3]) / height,
     };
+}
+
+std::uint32_t next_power_of_two(std::uint32_t value)
+{
+    std::uint32_t result = 1;
+    while (result < value && result < kMaxLightmapAtlasDimension)
+    {
+        result *= 2;
+    }
+    return std::max<std::uint32_t>(result, 1);
+}
+
+std::size_t light_style_count(const BspFace& face)
+{
+    std::size_t count = 0;
+    for (const std::uint8_t style : face.styles)
+    {
+        if (style != kUnusedLightStyle)
+        {
+            ++count;
+        }
+    }
+    return count;
+}
+
+std::uint32_t lightmap_width(const BspFace& face)
+{
+    return face.lightmap_size[0] >= 0 ? static_cast<std::uint32_t>(face.lightmap_size[0]) + 1U : 0U;
+}
+
+std::uint32_t lightmap_height(const BspFace& face)
+{
+    return face.lightmap_size[1] >= 0 ? static_cast<std::uint32_t>(face.lightmap_size[1]) + 1U : 0U;
+}
+
+std::uint64_t lightmap_required_bytes(const BspFace& face, const BspTexInfo& texinfo, const BspLightmapData& lighting)
+{
+    const std::uint32_t width = lightmap_width(face);
+    const std::uint32_t height = lightmap_height(face);
+    const std::size_t style_count = light_style_count(face);
+    if (width == 0 || height == 0 || style_count == 0)
+    {
+        return 0;
+    }
+
+    const std::uint64_t sample_count = static_cast<std::uint64_t>(width) * height;
+    const std::uint64_t bump_factor = (texinfo.flags & kSurfaceBumpLight) != 0 ? kBumpLightmapCount : 1U;
+    const std::uint64_t groups_per_style = bump_factor + (lighting.lightstyles_with_csm ? 1U : 0U);
+    const std::uint64_t group_count = static_cast<std::uint64_t>(style_count) * groups_per_style;
+    if (group_count == 0 || sample_count > (std::numeric_limits<std::uint64_t>::max() / (group_count * 4U)))
+    {
+        return 0;
+    }
+    return sample_count * group_count * 4U;
+}
+
+bool face_has_valid_lightmap(const BspFace& face, const BspTexInfo& texinfo, const BspLightmapData& lighting)
+{
+    if (!lighting.has_lighting || face.light_offset < 0)
+    {
+        return false;
+    }
+
+    const std::uint32_t width = lightmap_width(face);
+    const std::uint32_t height = lightmap_height(face);
+    if (width == 0 || height == 0 || width > kMaxLightmapAtlasDimension || height > kMaxLightmapAtlasDimension)
+    {
+        return false;
+    }
+
+    const std::uint64_t required = lightmap_required_bytes(face, texinfo, lighting);
+    const std::uint64_t begin = static_cast<std::uint64_t>(face.light_offset);
+    const std::uint64_t end = begin + required;
+    return required > 0 && end <= lighting.bytes.size() && end >= begin;
+}
+
+float tex_light_to_linear(std::uint8_t value, std::int8_t exponent)
+{
+    return std::ldexp(static_cast<float>(value) / 255.0F, exponent);
+}
+
+std::array<float, 4> decode_lightmap_sample(const BspLightmapData& lighting, const BspFace& face, std::uint32_t width, std::uint32_t x, std::uint32_t y)
+{
+    const std::uint64_t sample_index = (static_cast<std::uint64_t>(y) * width) + x;
+    const std::uint64_t sample_offset = static_cast<std::uint64_t>(face.light_offset) + (sample_index * 4U);
+    if (sample_offset + 4U > lighting.bytes.size())
+    {
+        return {1.0F, 1.0F, 1.0F, 1.0F};
+    }
+
+    const std::int8_t exponent = static_cast<std::int8_t>(lighting.bytes[static_cast<std::size_t>(sample_offset + 3U)]);
+    return {
+        tex_light_to_linear(lighting.bytes[static_cast<std::size_t>(sample_offset + 0U)], exponent),
+        tex_light_to_linear(lighting.bytes[static_cast<std::size_t>(sample_offset + 1U)], exponent),
+        tex_light_to_linear(lighting.bytes[static_cast<std::size_t>(sample_offset + 2U)], exponent),
+        1.0F,
+    };
+}
+
+BspLightmapBuildResult build_lightmap_atlas(
+    const std::vector<BspFace>& faces,
+    const std::vector<BspTexInfo>& texinfo,
+    const BspLightmapData& lighting)
+{
+    BspLightmapBuildResult result;
+    result.placements.resize(faces.size());
+
+    struct RectRequest
+    {
+        std::size_t face_index = 0;
+        std::uint32_t width = 1;
+        std::uint32_t height = 1;
+        std::uint32_t padded_width = 3;
+        std::uint32_t padded_height = 3;
+    };
+
+    std::vector<RectRequest> requests;
+    std::uint32_t widest_rect = 1;
+    std::uint64_t total_area = 0;
+    for (std::size_t face_index = 0; face_index < faces.size(); ++face_index)
+    {
+        const BspFace& face = faces[face_index];
+        const BspTexInfo* face_texinfo = texinfo_for_face(face, texinfo);
+        if (face_texinfo == nullptr || !should_render_surface(face_texinfo->flags) || !face_has_valid_lightmap(face, *face_texinfo, lighting))
+        {
+            continue;
+        }
+
+        const std::uint32_t width = lightmap_width(face);
+        const std::uint32_t height = lightmap_height(face);
+        RectRequest request{
+            .face_index = face_index,
+            .width = width,
+            .height = height,
+            .padded_width = width + 2U,
+            .padded_height = height + 2U,
+        };
+        widest_rect = std::max(widest_rect, request.padded_width);
+        total_area += static_cast<std::uint64_t>(request.padded_width) * request.padded_height;
+        requests.push_back(request);
+    }
+
+    if (requests.empty())
+    {
+        return result;
+    }
+
+    std::sort(requests.begin(), requests.end(), [](const RectRequest& lhs, const RectRequest& rhs) {
+        if (lhs.padded_height != rhs.padded_height)
+        {
+            return lhs.padded_height > rhs.padded_height;
+        }
+        return lhs.padded_width > rhs.padded_width;
+    });
+
+    std::uint32_t desired_width = next_power_of_two(static_cast<std::uint32_t>(std::ceil(std::sqrt(static_cast<double>(total_area)))));
+    desired_width = std::max(desired_width, next_power_of_two(widest_rect));
+    desired_width = std::max<std::uint32_t>(desired_width, 64U);
+
+    std::uint32_t atlas_width = 0;
+    std::uint32_t atlas_height = 0;
+    std::vector<FaceLightmapPlacement> packed_placements;
+    const auto try_pack = [&](std::uint32_t width) -> bool {
+        packed_placements.assign(faces.size(), {});
+        std::uint32_t cursor_x = 0;
+        std::uint32_t cursor_y = 0;
+        std::uint32_t row_height = 0;
+        for (const RectRequest& request : requests)
+        {
+            if (request.padded_width > width)
+            {
+                return false;
+            }
+
+            if (cursor_x > 0 && cursor_x + request.padded_width > width)
+            {
+                cursor_y += row_height;
+                cursor_x = 0;
+                row_height = 0;
+            }
+
+            if (cursor_y + request.padded_height > kMaxLightmapAtlasDimension)
+            {
+                return false;
+            }
+
+            packed_placements[request.face_index] = FaceLightmapPlacement{
+                .x = cursor_x,
+                .y = cursor_y,
+                .width = request.width,
+                .height = request.height,
+                .valid = true,
+            };
+            cursor_x += request.padded_width;
+            row_height = std::max(row_height, request.padded_height);
+        }
+
+        atlas_width = width;
+        atlas_height = next_power_of_two(std::max<std::uint32_t>(cursor_y + row_height, 1U));
+        return atlas_height <= kMaxLightmapAtlasDimension;
+    };
+
+    for (std::uint32_t width = desired_width; width <= kMaxLightmapAtlasDimension; width *= 2U)
+    {
+        if (try_pack(width))
+        {
+            break;
+        }
+        if (width == kMaxLightmapAtlasDimension)
+        {
+            break;
+        }
+    }
+
+    if (atlas_width == 0 || atlas_height == 0 || packed_placements.empty())
+    {
+        log_warning("BSP lightmaps exceed the maximum {}x{} atlas; static baked lighting disabled",
+            kMaxLightmapAtlasDimension,
+            kMaxLightmapAtlasDimension);
+        return result;
+    }
+
+    result.placements = std::move(packed_placements);
+    result.atlas.width = atlas_width;
+    result.atlas.height = atlas_height;
+    result.atlas.rgba.assign(static_cast<std::size_t>(atlas_width) * atlas_height * 4U, 1.0F);
+    result.atlas.has_baked_samples = true;
+
+    const auto write_pixel = [&](std::uint32_t x, std::uint32_t y, const std::array<float, 4>& color) {
+        const std::size_t offset = ((static_cast<std::size_t>(y) * atlas_width) + x) * 4U;
+        result.atlas.rgba[offset + 0] = color[0];
+        result.atlas.rgba[offset + 1] = color[1];
+        result.atlas.rgba[offset + 2] = color[2];
+        result.atlas.rgba[offset + 3] = color[3];
+    };
+
+    for (const RectRequest& request : requests)
+    {
+        const FaceLightmapPlacement& placement = result.placements[request.face_index];
+        if (!placement.valid)
+        {
+            continue;
+        }
+
+        const BspFace& face = faces[request.face_index];
+        for (std::uint32_t y = 0; y < request.padded_height; ++y)
+        {
+            const std::uint32_t sample_y = std::clamp<std::uint32_t>(y == 0 ? 0U : y - 1U, 0U, request.height - 1U);
+            for (std::uint32_t x = 0; x < request.padded_width; ++x)
+            {
+                const std::uint32_t sample_x = std::clamp<std::uint32_t>(x == 0 ? 0U : x - 1U, 0U, request.width - 1U);
+                write_pixel(placement.x + x,
+                    placement.y + y,
+                    decode_lightmap_sample(lighting, face, request.width, sample_x, sample_y));
+            }
+        }
+    }
+
+    log_info("built BSP lightmap atlas {}x{} for {} face(s)", result.atlas.width, result.atlas.height, requests.size());
+    return result;
+}
+
+Vec2 lightmap_coordinate(
+    Vec3 point,
+    const BspTexInfo& texinfo,
+    const BspFace& face,
+    const FaceLightmapPlacement& placement,
+    const WorldLightmapAtlas& atlas)
+{
+    if (!placement.valid || atlas.width == 0 || atlas.height == 0)
+    {
+        return {0.5F, 0.5F};
+    }
+
+    const auto& s = texinfo.lightmap_vecs[0];
+    const auto& t = texinfo.lightmap_vecs[1];
+    const float luxel_s = (point.x * s[0]) + (point.y * s[1]) + (point.z * s[2]) + s[3] - static_cast<float>(face.lightmap_mins[0]) + 0.5F;
+    const float luxel_t = (point.x * t[0]) + (point.y * t[1]) + (point.z * t[2]) + t[3] - static_cast<float>(face.lightmap_mins[1]) + 0.5F;
+    Vec2 uv{
+        (static_cast<float>(placement.x + 1U) + luxel_s) / static_cast<float>(atlas.width),
+        (static_cast<float>(placement.y + 1U) + luxel_t) / static_cast<float>(atlas.height),
+    };
+    uv.x = std::clamp(uv.x, 0.0F, 1.0F);
+    uv.y = std::clamp(uv.y, 0.0F, 1.0F);
+    return uv;
+}
+
+WorldMeshVertex make_world_vertex(
+    Vec3 point,
+    Vec3 normal,
+    const BspTexInfo& texinfo,
+    const WorldMaterial& material,
+    const BspFace& face,
+    const FaceLightmapPlacement* placement,
+    const WorldLightmapAtlas& atlas)
+{
+    WorldMeshVertex vertex;
+    vertex.position = point;
+    vertex.normal = normal;
+    vertex.texcoord = texture_coordinate(point, texinfo, material);
+    if (placement != nullptr && placement->valid && atlas.has_baked_samples)
+    {
+        vertex.lightmap_texcoord = lightmap_coordinate(point, texinfo, face, *placement, atlas);
+        vertex.lightmap_weight = 1.0F;
+    }
+    return vertex;
 }
 
 std::uint32_t material_index_for_texinfo(
@@ -1266,18 +1902,205 @@ Vec3 polygon_normal(const std::vector<Vec3>& polygon)
     return normalize(normal);
 }
 
-void append_render_triangle(RenderMeshChunk& chunk, Vec3 a, Vec3 b, Vec3 c, Vec3 normal, const BspTexInfo& texinfo, const WorldMaterial& material)
+std::vector<Vec3> base_winding_for_plane(Vec3 normal, float dist)
+{
+    normal = normalize(normal);
+    const Vec3 origin = normal * dist;
+    const Vec3 up = std::fabs(normal.z) < 0.999F ? Vec3{0.0F, 0.0F, 1.0F} : Vec3{0.0F, 1.0F, 0.0F};
+    const Vec3 tangent = normalize(cross(up, normal));
+    const Vec3 bitangent = cross(normal, tangent);
+    constexpr float extent = 131072.0F;
+
+    return {
+        origin - (tangent * extent) - (bitangent * extent),
+        origin + (tangent * extent) - (bitangent * extent),
+        origin + (tangent * extent) + (bitangent * extent),
+        origin - (tangent * extent) + (bitangent * extent),
+    };
+}
+
+std::vector<Vec3> clip_polygon_to_plane(const std::vector<Vec3>& polygon, Vec3 normal, float dist)
+{
+    constexpr float epsilon = 0.01F;
+    if (polygon.empty())
+    {
+        return {};
+    }
+
+    std::vector<Vec3> clipped;
+    clipped.reserve(polygon.size() + 1);
+    Vec3 previous = polygon.back();
+    float previous_distance = dot(normal, previous) - dist;
+    bool previous_inside = previous_distance <= epsilon;
+
+    for (const Vec3 current : polygon)
+    {
+        const float current_distance = dot(normal, current) - dist;
+        const bool current_inside = current_distance <= epsilon;
+        if (current_inside != previous_inside)
+        {
+            const float denominator = previous_distance - current_distance;
+            if (std::fabs(denominator) > 0.00001F)
+            {
+                const float t = std::clamp(previous_distance / denominator, 0.0F, 1.0F);
+                clipped.push_back(previous + ((current - previous) * t));
+            }
+        }
+
+        if (current_inside)
+        {
+            clipped.push_back(current);
+        }
+
+        previous = current;
+        previous_distance = current_distance;
+        previous_inside = current_inside;
+    }
+
+    return clipped;
+}
+
+void collect_world_model_brushes_r(
+    std::int32_t node_index,
+    const std::vector<BspNode>& nodes,
+    const std::vector<BspLeaf>& leaves,
+    const std::vector<std::uint16_t>& leaf_brushes,
+    std::vector<bool>& referenced)
+{
+    if (node_index < 0)
+    {
+        const std::int32_t leaf_index = -1 - node_index;
+        if (leaf_index < 0 || static_cast<std::size_t>(leaf_index) >= leaves.size())
+        {
+            return;
+        }
+
+        const BspLeaf& leaf = leaves[static_cast<std::size_t>(leaf_index)];
+        const std::size_t first = leaf.first_leaf_brush;
+        const std::size_t count = leaf.leaf_brush_count;
+        if (first + count > leaf_brushes.size())
+        {
+            return;
+        }
+
+        for (std::size_t index = first; index < first + count; ++index)
+        {
+            const std::uint16_t brush_index = leaf_brushes[index];
+            if (brush_index < referenced.size())
+            {
+                referenced[brush_index] = true;
+            }
+        }
+        return;
+    }
+
+    if (static_cast<std::size_t>(node_index) >= nodes.size())
+    {
+        return;
+    }
+
+    const BspNode& node = nodes[static_cast<std::size_t>(node_index)];
+    collect_world_model_brushes_r(node.children[0], nodes, leaves, leaf_brushes, referenced);
+    collect_world_model_brushes_r(node.children[1], nodes, leaves, leaf_brushes, referenced);
+}
+
+std::vector<bool> collect_world_model_brushes(
+    const std::vector<BspBrush>& brushes,
+    const std::vector<BspModel>& models,
+    const std::vector<BspNode>& nodes,
+    const std::vector<BspLeaf>& leaves,
+    const std::vector<std::uint16_t>& leaf_brushes)
+{
+    std::vector<bool> referenced(brushes.size(), false);
+    if (brushes.empty())
+    {
+        return referenced;
+    }
+
+    if (models.empty() || leaves.empty() || leaf_brushes.empty())
+    {
+        std::fill(referenced.begin(), referenced.end(), true);
+        return referenced;
+    }
+
+    collect_world_model_brushes_r(models.front().head_node, nodes, leaves, leaf_brushes, referenced);
+    return referenced;
+}
+
+std::optional<std::vector<Vec3>> polygon_for_brush_side(
+    const BspBrush& brush,
+    std::size_t side_offset,
+    const std::vector<BspBrushSide>& brush_sides,
+    const std::vector<BspPlane>& planes)
+{
+    if (brush.first_side < 0 || brush.side_count <= 0)
+    {
+        return std::nullopt;
+    }
+
+    const std::size_t first_side = static_cast<std::size_t>(brush.first_side);
+    const std::size_t side_count = static_cast<std::size_t>(brush.side_count);
+    if (first_side + side_count > brush_sides.size() || side_offset >= side_count)
+    {
+        return std::nullopt;
+    }
+
+    const BspBrushSide& source_side = brush_sides[first_side + side_offset];
+    if (source_side.plane >= planes.size() || source_side.bevel != 0)
+    {
+        return std::nullopt;
+    }
+
+    const BspPlane& source_plane = planes[source_side.plane];
+    std::vector<Vec3> polygon = base_winding_for_plane(source_plane.normal, source_plane.dist);
+    for (std::size_t clip_offset = 0; clip_offset < side_count && polygon.size() >= 3; ++clip_offset)
+    {
+        if (clip_offset == side_offset)
+        {
+            continue;
+        }
+
+        const BspBrushSide& clip_side = brush_sides[first_side + clip_offset];
+        if (clip_side.plane >= planes.size() || clip_side.bevel != 0)
+        {
+            continue;
+        }
+
+        const BspPlane& clip_plane = planes[clip_side.plane];
+        polygon = clip_polygon_to_plane(polygon, clip_plane.normal, clip_plane.dist);
+    }
+
+    if (polygon.size() < 3)
+    {
+        return std::nullopt;
+    }
+
+    return polygon;
+}
+
+void append_render_triangle(
+    RenderMeshChunk& chunk,
+    Vec3 a,
+    Vec3 b,
+    Vec3 c,
+    Vec3 normal,
+    const BspTexInfo& texinfo,
+    const WorldMaterial& material,
+    const BspFace& face,
+    const FaceLightmapPlacement* placement,
+    const WorldLightmapAtlas& atlas)
 {
     const std::uint32_t first_index = static_cast<std::uint32_t>(chunk.vertices.size());
-    chunk.vertices.push_back(WorldMeshVertex{a, normal, texture_coordinate(a, texinfo, material)});
-    chunk.vertices.push_back(WorldMeshVertex{b, normal, texture_coordinate(b, texinfo, material)});
-    chunk.vertices.push_back(WorldMeshVertex{c, normal, texture_coordinate(c, texinfo, material)});
+    chunk.vertices.push_back(make_world_vertex(a, normal, texinfo, material, face, placement, atlas));
+    chunk.vertices.push_back(make_world_vertex(b, normal, texinfo, material, face, placement, atlas));
+    chunk.vertices.push_back(make_world_vertex(c, normal, texinfo, material, face, placement, atlas));
     chunk.indices.push_back(first_index);
     chunk.indices.push_back(first_index + 1);
     chunk.indices.push_back(first_index + 2);
 }
 
-void append_collision_triangle(WorldMesh& mesh, Vec3 a, Vec3 b, Vec3 c, Vec3 normal, std::uint32_t surface_flags)
+void append_collision_triangle(
+    WorldMesh& mesh, Vec3 a, Vec3 b, Vec3 c, Vec3 normal, std::uint32_t surface_flags, std::uint32_t contents = 0)
 {
     WorldTriangle triangle;
     triangle.points[0] = a;
@@ -1285,7 +2108,79 @@ void append_collision_triangle(WorldMesh& mesh, Vec3 a, Vec3 b, Vec3 c, Vec3 nor
     triangle.points[2] = c;
     triangle.normal = normal;
     triangle.surface_flags = surface_flags;
+    triangle.contents = contents;
     mesh.collision_triangles.push_back(triangle);
+}
+
+std::size_t append_bsp_brush_collision(
+    WorldMesh& mesh,
+    const std::vector<BspPlane>& planes,
+    const std::vector<BspTexInfo>& texinfo,
+    const std::vector<BspBrushSide>& brush_sides,
+    const std::vector<BspBrush>& brushes,
+    const std::vector<bool>& referenced_brushes)
+{
+    const std::size_t before = mesh.collision_triangles.size();
+    for (std::size_t brush_index = 0; brush_index < brushes.size(); ++brush_index)
+    {
+        if (brush_index >= referenced_brushes.size() || !referenced_brushes[brush_index])
+        {
+            continue;
+        }
+
+        const BspBrush& brush = brushes[brush_index];
+        if (!should_collide_brush(brush.contents) || brush.first_side < 0 || brush.side_count <= 0)
+        {
+            continue;
+        }
+
+        const std::size_t first_side = static_cast<std::size_t>(brush.first_side);
+        const std::size_t side_count = static_cast<std::size_t>(brush.side_count);
+        if (first_side + side_count > brush_sides.size())
+        {
+            continue;
+        }
+
+        for (std::size_t side_offset = 0; side_offset < side_count; ++side_offset)
+        {
+            const BspBrushSide& side = brush_sides[first_side + side_offset];
+            if (side.bevel != 0 || side.plane >= planes.size())
+            {
+                continue;
+            }
+
+            const BspPlane& plane = planes[side.plane];
+            std::optional<std::vector<Vec3>> polygon = polygon_for_brush_side(brush, side_offset, brush_sides, planes);
+            if (!polygon || polygon->size() < 3)
+            {
+                continue;
+            }
+
+            const Vec3 normal = normalize(plane.normal);
+            const std::uint32_t surface_flags =
+                side.texinfo >= 0 && static_cast<std::size_t>(side.texinfo) < texinfo.size() ? texinfo[static_cast<std::size_t>(side.texinfo)].flags : 0;
+            for (std::size_t vertex = 1; vertex + 1 < polygon->size(); ++vertex)
+            {
+                Vec3 a = (*polygon)[0];
+                Vec3 b = (*polygon)[vertex];
+                Vec3 c = (*polygon)[vertex + 1];
+                const Vec3 area = cross(b - a, c - a);
+                if (length(area) <= 0.001F)
+                {
+                    continue;
+                }
+
+                if (dot(area, normal) < 0.0F)
+                {
+                    std::swap(b, c);
+                }
+
+                append_collision_triangle(mesh, a, b, c, normal, surface_flags, brush.contents);
+            }
+        }
+    }
+
+    return mesh.collision_triangles.size() - before;
 }
 
 void flatten_render_chunks(WorldMesh& mesh, const std::vector<RenderMeshChunk>& chunks)
@@ -1350,6 +2245,8 @@ void resolve_prop_model_info(std::vector<WorldProp>& props, const SourceAssetSto
 
 Vec3 transform_prop_point(const WorldProp& prop, Vec3 point)
 {
+    point = point * std::max(prop.scale, 0.0F);
+
     const float pitch = prop.angles.x * (3.14159265358979323846F / 180.0F);
     const float yaw = prop.angles.y * (3.14159265358979323846F / 180.0F);
     const float roll = prop.angles.z * (3.14159265358979323846F / 180.0F);
@@ -1464,6 +2361,118 @@ void append_prop_box(WorldMesh& mesh, RenderMeshChunk& chunk, const WorldProp& p
     }
 }
 
+bool append_prop_collision_triangle(WorldMesh& mesh, Vec3 a, Vec3 b, Vec3 c)
+{
+    const Vec3 area = cross(b - a, c - a);
+    if (length(area) <= 0.001F)
+    {
+        return false;
+    }
+
+    WorldTriangle triangle;
+    triangle.points[0] = a;
+    triangle.points[1] = b;
+    triangle.points[2] = c;
+    triangle.normal = normalize(area);
+    triangle.contents = kContentsSolid;
+    mesh.collision_triangles.push_back(triangle);
+    return true;
+}
+
+void append_prop_collision_box(WorldMesh& mesh, const WorldProp& prop)
+{
+    const Vec3 mins = prop.bounds_min;
+    const Vec3 maxs = prop.bounds_max;
+    std::array<Vec3, 8> corners{{
+        {mins.x, mins.y, mins.z},
+        {maxs.x, mins.y, mins.z},
+        {maxs.x, maxs.y, mins.z},
+        {mins.x, maxs.y, mins.z},
+        {mins.x, mins.y, maxs.z},
+        {maxs.x, mins.y, maxs.z},
+        {maxs.x, maxs.y, maxs.z},
+        {mins.x, maxs.y, maxs.z},
+    }};
+
+    for (Vec3& corner : corners)
+    {
+        corner = transform_prop_point(prop, corner);
+    }
+
+    constexpr std::array<std::array<std::uint8_t, 4>, 6> faces{{
+        {{0, 1, 2, 3}},
+        {{4, 7, 6, 5}},
+        {{0, 4, 5, 1}},
+        {{1, 5, 6, 2}},
+        {{2, 6, 7, 3}},
+        {{3, 7, 4, 0}},
+    }};
+
+    for (const auto& face : faces)
+    {
+        append_prop_collision_triangle(mesh, corners[face[0]], corners[face[1]], corners[face[2]]);
+        append_prop_collision_triangle(mesh, corners[face[0]], corners[face[2]], corners[face[3]]);
+    }
+}
+
+bool append_prop_collision_model_meshes(WorldMesh& mesh, const WorldProp& prop, const SourceModelInfo& model)
+{
+    bool appended = false;
+    for (const SourceModelMesh& source_mesh : model.meshes)
+    {
+        for (std::size_t index = 0; index + 2 < source_mesh.indices.size(); index += 3)
+        {
+            const std::uint32_t ia = source_mesh.indices[index];
+            const std::uint32_t ib = source_mesh.indices[index + 1];
+            const std::uint32_t ic = source_mesh.indices[index + 2];
+            if (ia >= source_mesh.vertices.size() || ib >= source_mesh.vertices.size() || ic >= source_mesh.vertices.size())
+            {
+                continue;
+            }
+
+            appended = append_prop_collision_triangle(mesh,
+                transform_prop_point(prop, source_mesh.vertices[ia].position),
+                transform_prop_point(prop, source_mesh.vertices[ib].position),
+                transform_prop_point(prop, source_mesh.vertices[ic].position)) || appended;
+        }
+    }
+    return appended;
+}
+
+void append_prop_collision_meshes(WorldMesh& mesh, const std::vector<WorldProp>& props, const SourceModelInfoCache& model_cache)
+{
+    for (const WorldProp& prop : props)
+    {
+        if (prop.solid == kSolidNone || prop.model_path.empty())
+        {
+            continue;
+        }
+
+        if (prop.solid == kSolidBbox)
+        {
+            if (prop.model_bounds_loaded)
+            {
+                append_prop_collision_box(mesh, prop);
+            }
+            continue;
+        }
+
+        if (prop.solid == kSolidVPhysics)
+        {
+            const auto model = model_cache.find(lower_copy(prop.model_path));
+            if (model != model_cache.end() && model->second && append_prop_collision_model_meshes(mesh, prop, *model->second))
+            {
+                continue;
+            }
+
+            if (prop.model_bounds_loaded)
+            {
+                append_prop_collision_box(mesh, prop);
+            }
+        }
+    }
+}
+
 bool append_prop_model_meshes(
     WorldMesh& world_mesh,
     std::vector<RenderMeshChunk>& chunks,
@@ -1487,25 +2496,41 @@ bool append_prop_model_meshes(
 
         const std::uint32_t material_index = material_index_for_prop(world_mesh, chunks, material_to_index, std::move(material_name));
         RenderMeshChunk& chunk = chunks[material_index];
-        const std::uint32_t first_vertex = static_cast<std::uint32_t>(chunk.vertices.size());
-        for (const std::uint32_t source_index : source_mesh.indices)
+        const std::size_t first_vertex = chunk.vertices.size();
+        if (first_vertex > static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max()) ||
+            source_mesh.vertices.size() > static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max()) - first_vertex)
         {
-            if (source_index >= source_mesh.vertices.size())
-            {
-                continue;
-            }
+            continue;
+        }
+        const std::uint32_t first_vertex_index = static_cast<std::uint32_t>(first_vertex);
 
-            const SourceModelVertex& source_vertex = source_mesh.vertices[source_index];
+        chunk.vertices.reserve(chunk.vertices.size() + source_mesh.vertices.size());
+        for (const SourceModelVertex& source_vertex : source_mesh.vertices)
+        {
             const Vec3 position = transform_prop_point(prop, source_vertex.position);
             chunk.vertices.push_back(WorldMeshVertex{
                 .position = position,
                 .normal = rotate_prop_vector(prop, source_vertex.normal),
                 .texcoord = source_vertex.texcoord,
             });
-            chunk.indices.push_back(first_vertex + static_cast<std::uint32_t>(chunk.vertices.size() - first_vertex - 1));
             include_bounds(world_mesh, position);
-            appended = true;
         }
+
+        const std::size_t first_index = chunk.indices.size();
+        for (const std::uint32_t source_index : source_mesh.indices)
+        {
+            if (source_index < source_mesh.vertices.size())
+            {
+                chunk.indices.push_back(first_vertex_index + source_index);
+            }
+        }
+
+        if (chunk.indices.size() == first_index)
+        {
+            chunk.vertices.resize(first_vertex);
+            continue;
+        }
+        appended = true;
     }
     return appended;
 }
@@ -1524,6 +2549,7 @@ void append_prop_render_meshes(WorldMesh& mesh, const std::vector<WorldProp>& pr
         material_to_index.emplace(lower_copy(mesh.materials[index].name), index);
     }
 
+    std::size_t skipped_models = 0;
     for (const WorldProp& prop : props)
     {
         const auto model = model_cache.find(lower_copy(prop.model_path));
@@ -1532,11 +2558,13 @@ void append_prop_render_meshes(WorldMesh& mesh, const std::vector<WorldProp>& pr
             continue;
         }
 
-        const std::string material_name = prop.material_name.empty() ? prop.model_path : prop.material_name;
-        const std::uint32_t material_index = material_index_for_prop(mesh, chunks, material_to_index, material_name);
-        append_prop_box(mesh, chunks[material_index], prop);
+        ++skipped_models;
     }
 
+    if (skipped_models > 0)
+    {
+        log_warning("skipped {} prop model(s) without loadable Source studio meshes", skipped_models);
+    }
     flatten_render_chunks(mesh, chunks);
 }
 
@@ -1547,14 +2575,20 @@ WorldMesh build_bsp_world_mesh(const std::vector<unsigned char>& bytes)
     const std::vector<std::int32_t> surfedges = read_bsp_surfedges(bytes);
     const std::vector<BspTexData> texdata = read_bsp_texdata(bytes);
     const std::vector<BspTexInfo> texinfo = read_bsp_texinfo(bytes);
-    const std::vector<BspFace> faces = read_bsp_faces(bytes);
+    const BspLightmapData lightmap_data = read_bsp_lightmap_data(bytes);
+    const std::vector<BspFace> faces = read_bsp_faces(bytes, lightmap_data.prefer_hdr_faces);
+    BspLightmapBuildResult lightmaps = build_lightmap_atlas(faces, texinfo, lightmap_data);
+    const bool has_brush_collision_lumps =
+        read_lump(bytes, kPlanesLump).length > 0 && read_lump(bytes, kBrushesLump).length > 0 && read_lump(bytes, kBrushSidesLump).length > 0;
 
     WorldMesh mesh;
+    mesh.lightmap_atlas = std::move(lightmaps.atlas);
     std::vector<RenderMeshChunk> render_chunks;
     std::unordered_map<std::int32_t, std::uint32_t> texdata_to_material;
     std::size_t skipped_faces = 0;
-    for (const BspFace& face : faces)
+    for (std::size_t face_index = 0; face_index < faces.size(); ++face_index)
     {
+        const BspFace& face = faces[face_index];
         const std::uint32_t surface_flags = surface_flags_for_face(face, texinfo);
         if (has_any_surface_flag(surface_flags, kSurfaceSky2D | kSurfaceSky))
         {
@@ -1563,7 +2597,7 @@ WorldMesh build_bsp_world_mesh(const std::vector<unsigned char>& bytes)
 
         const BspTexInfo* face_texinfo = texinfo_for_face(face, texinfo);
         const bool render_surface = should_render_surface(surface_flags);
-        const bool collide_surface = should_collide_surface(surface_flags);
+        const bool collide_surface = (!has_brush_collision_lumps || face.dispinfo >= 0) && should_collide_surface(surface_flags);
         if (!render_surface && !collide_surface)
         {
             continue;
@@ -1595,19 +2629,46 @@ WorldMesh build_bsp_world_mesh(const std::vector<unsigned char>& bytes)
             if (render_surface)
             {
                 const std::uint32_t material_index = material_index_for_texinfo(mesh, render_chunks, texdata_to_material, face_texinfo, texdata);
+                const BspTexInfo fallback_texinfo{};
+                const BspTexInfo& resolved_texinfo = face_texinfo != nullptr ? *face_texinfo : fallback_texinfo;
+                const FaceLightmapPlacement* placement =
+                    face_index < lightmaps.placements.size() && lightmaps.placements[face_index].valid ? &lightmaps.placements[face_index] : nullptr;
                 append_render_triangle(render_chunks[material_index],
                     a,
                     b,
                     c,
                     normal,
-                    face_texinfo != nullptr ? *face_texinfo : BspTexInfo{},
-                    mesh.materials[material_index]);
+                    resolved_texinfo,
+                    mesh.materials[material_index],
+                    face,
+                    placement,
+                    mesh.lightmap_atlas);
             }
 
             if (collide_surface)
             {
                 append_collision_triangle(mesh, a, b, c, normal, surface_flags);
             }
+        }
+    }
+
+    if (has_brush_collision_lumps)
+    {
+        const std::vector<BspPlane> planes = read_bsp_planes(bytes);
+        const std::vector<BspBrushSide> brush_sides = read_bsp_brush_sides(bytes);
+        const std::vector<BspBrush> brushes = read_bsp_brushes(bytes);
+        const std::vector<BspModel> models = read_bsp_models(bytes);
+        const std::vector<BspNode> nodes = read_bsp_nodes(bytes);
+        const std::vector<BspLeaf> leaves = read_bsp_leaves(bytes);
+        const std::vector<std::uint16_t> leaf_brushes = read_bsp_leaf_brushes(bytes);
+        const std::vector<bool> referenced_brushes = collect_world_model_brushes(brushes, models, nodes, leaves, leaf_brushes);
+        const std::size_t brush_collision_count =
+            append_bsp_brush_collision(mesh, planes, texinfo, brush_sides, brushes, referenced_brushes);
+        if (brush_collision_count == 0 && std::any_of(brushes.begin(), brushes.end(), [](const BspBrush& brush) {
+                return should_collide_brush(brush.contents);
+            }))
+        {
+            log_warning("BSP contains Source collision brush contents but no brush collision triangles were generated");
         }
     }
 
@@ -1652,6 +2713,7 @@ LoadedWorld load_source_bsp(
     const std::string entities_text = entity_lump_text(bytes, entities_lump);
     const std::vector<ParsedEntity> entities = parse_entity_lump(entities_text);
     world.entity_count = entities.size();
+    world.entities = collect_world_entities(entities);
 
     for (const ParsedEntity& entity : entities)
     {
@@ -1673,6 +2735,7 @@ LoadedWorld load_source_bsp(
     SourceModelInfoCache source_model_cache;
     resolve_prop_model_info(world.props, source_assets, source_model_cache);
     world.mesh = build_bsp_world_mesh(bytes);
+    append_prop_collision_meshes(world.mesh, world.props, source_model_cache);
     append_prop_render_meshes(world.mesh, world.props, source_model_cache);
     return world;
 }
@@ -1779,6 +2842,11 @@ LoadedWorld load_openstrike_level(std::string name, std::filesystem::path relati
     world.byte_size = text.size();
     world.entity_count = count_level_entities(text);
 
+    WorldEntity worldspawn;
+    worldspawn.class_name = "worldspawn";
+    worldspawn.properties["classname"] = worldspawn.class_name;
+    world.entities.push_back(std::move(worldspawn));
+
     const std::size_t player_entity = text.find("\"name\": \"player\"");
     if (const std::optional<Vec3> origin = extract_json_position(text, player_entity == std::string_view::npos ? 0 : player_entity))
     {
@@ -1786,6 +2854,12 @@ LoadedWorld load_openstrike_level(std::string name, std::filesystem::path relati
             .class_name = "openstrike_spawn",
             .origin = *origin,
         });
+        WorldEntity spawn_entity;
+        spawn_entity.class_name = "openstrike_spawn";
+        spawn_entity.properties["classname"] = spawn_entity.class_name;
+        spawn_entity.properties["origin"] =
+            std::to_string(origin->x) + " " + std::to_string(origin->y) + " " + std::to_string(origin->z);
+        world.entities.push_back(std::move(spawn_entity));
     }
 
     return world;
@@ -1959,6 +3033,11 @@ std::optional<float> find_floor_z(const LoadedWorld& world, Vec3 origin, float m
 
     for (const WorldTriangle& triangle : world.mesh.collision_triangles)
     {
+        if (!triangle_blocks_player_movement(triangle))
+        {
+            continue;
+        }
+
         if (std::fabs(triangle.normal.z) < kWalkableNormalZ)
         {
             continue;

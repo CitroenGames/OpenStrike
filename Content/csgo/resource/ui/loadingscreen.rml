@@ -6,36 +6,29 @@ body {
     display: block;
     width: 100%;
     height: 100%;
-    background-color: rgba(8, 8, 12, 255);
+    background-color: rgba(8, 9, 13, 255);
+    color: #ffffff;
 }
 
-/* ── Fullscreen background image ── */
 #loading-bg {
     position: absolute;
     top: 0;
     left: 0;
     width: 100%;
     height: 100%;
-    opacity: 0.3;
+    background-color: rgba(18, 24, 33, 255);
 }
 
-#loading-bg-img {
-    width: 100%;
-    height: 100%;
-}
-
-/* ── Dark overlay (fades out as loading progresses) ── */
 #loading-overlay {
     position: absolute;
     top: 0;
     left: 0;
     width: 100%;
     height: 100%;
-    background-color: rgba(8, 8, 12, 255);
-    opacity: 0.8;
+    background-color: rgba(6, 7, 10, 255);
+    opacity: 0.82;
 }
 
-/* ── Center content panel ── */
 #loading-content {
     position: absolute;
     top: 50%;
@@ -44,26 +37,86 @@ body {
     margin-left: -440dp;
     width: 880dp;
     height: 560dp;
-    background-color: rgba(30, 32, 38, 220);
+    background-color: rgba(28, 31, 37, 232);
+    border-color: rgba(95, 108, 125, 150);
+    border-width: 1dp;
     border-radius: 4dp;
     display: flex;
     flex-direction: row;
 }
 
-/* Left side — map overview */
 #loading-map-area {
     width: 560dp;
     height: 100%;
-    background-color: rgba(20, 22, 28, 255);
+    background-color: rgba(15, 18, 24, 255);
     border-radius: 4dp 0 0 4dp;
 }
 
-/* Right side — map info */
+#loading-map-grid {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 560dp;
+    height: 100%;
+    background-color: rgba(22, 29, 40, 255);
+}
+
+#loading-map-grid-line-v1,
+#loading-map-grid-line-v2,
+#loading-map-grid-line-h1,
+#loading-map-grid-line-h2 {
+    position: absolute;
+    background-color: rgba(88, 108, 132, 62);
+}
+
+#loading-map-grid-line-v1 {
+    left: 160dp;
+    top: 0;
+    width: 1dp;
+    height: 100%;
+}
+
+#loading-map-grid-line-v2 {
+    left: 360dp;
+    top: 0;
+    width: 1dp;
+    height: 100%;
+}
+
+#loading-map-grid-line-h1 {
+    left: 0;
+    top: 170dp;
+    width: 100%;
+    height: 1dp;
+}
+
+#loading-map-grid-line-h2 {
+    left: 0;
+    top: 390dp;
+    width: 100%;
+    height: 1dp;
+}
+
+#loading-map-area-name {
+    position: absolute;
+    left: 28dp;
+    bottom: 24dp;
+    font-size: 22dp;
+    font-weight: bold;
+    color: rgba(228, 235, 244, 230);
+}
+
 #loading-info {
     flex: 1;
     padding: 28dp;
     display: flex;
     flex-direction: column;
+}
+
+#loading-title {
+    font-size: 13dp;
+    color: #d4a843;
+    margin-bottom: 12dp;
 }
 
 #loading-map-name {
@@ -75,25 +128,24 @@ body {
 
 #loading-game-mode {
     font-size: 14dp;
-    color: #a0a8b8;
+    color: #aeb8c8;
     margin-bottom: 24dp;
 }
 
 #loading-description {
     font-size: 13dp;
-    color: #8890a0;
+    color: #8f99aa;
     line-height: 20dp;
     flex: 1;
 }
 
-/* ── Tip bar (bottom, above progress) ── */
 #loading-tip-bar {
     position: absolute;
     left: 0;
     right: 0;
-    bottom: 48dp;
+    bottom: 50dp;
     padding: 14dp 32dp;
-    background-color: rgba(30, 32, 38, 180);
+    background-color: rgba(22, 25, 32, 210);
     display: flex;
     flex-direction: row;
     align-items: center;
@@ -102,7 +154,7 @@ body {
 #loading-tip-icon {
     width: 24dp;
     height: 24dp;
-    background-color: rgba(52, 152, 219, 200);
+    background-color: rgba(212, 168, 67, 220);
     border-radius: 12dp;
     margin-right: 16dp;
 }
@@ -113,72 +165,70 @@ body {
     flex: 1;
 }
 
-/* ── Progress bar (very bottom) ── */
 #loading-progress-track {
     position: absolute;
-    left: 0;
-    right: 0;
-    bottom: 20dp;
+    left: 32dp;
+    right: 32dp;
+    bottom: 22dp;
     height: 4dp;
-    background-color: rgba(40, 44, 55, 200);
-    margin-left: 32dp;
-    margin-right: 32dp;
+    background-color: rgba(45, 50, 62, 230);
 }
 
 #loading-progress-fill {
     height: 100%;
-    width: 0;
-    background-color: rgba(52, 152, 219, 255);
+    width: 0%;
+    background-color: rgba(212, 168, 67, 255);
 }
 
-/* ── Status text ── */
 #loading-status {
     position: absolute;
     left: 32dp;
     bottom: 4dp;
     font-size: 11dp;
-    color: #585e6e;
+    color: #747d8c;
+}
+
+#loading-progress-percent {
+    position: absolute;
+    right: 32dp;
+    bottom: 4dp;
+    font-size: 11dp;
+    color: #747d8c;
 }
 </style>
 </head>
 <body>
-
-<!-- Fullscreen map background -->
 <div id="loading-bg"></div>
-
-<!-- Dark overlay for blur-to-focus effect -->
 <div id="loading-overlay"></div>
 
-<!-- Center content panel -->
 <div id="loading-content">
-    <!-- Left: map overview area (placeholder) -->
-    <div id="loading-map-area"></div>
-
-    <!-- Right: map info -->
-    <div id="loading-info">
-        <div id="loading-map-name"></div>
-        <div id="loading-game-mode"></div>
-        <div id="loading-description">
-            Settings:
-            - Friendly fire is OFF
-            - Team collision is OFF
+    <div id="loading-map-area">
+        <div id="loading-map-grid">
+            <div id="loading-map-grid-line-v1"></div>
+            <div id="loading-map-grid-line-v2"></div>
+            <div id="loading-map-grid-line-h1"></div>
+            <div id="loading-map-grid-line-h2"></div>
         </div>
+        <div id="loading-map-area-name">MAP</div>
+    </div>
+
+    <div id="loading-info">
+        <div id="loading-title">LOADING</div>
+        <div id="loading-map-name">de_dust2</div>
+        <div id="loading-game-mode">Competitive</div>
+        <div id="loading-description">Settings:<br/>- Friendly fire is OFF<br/>- Team collision is OFF</div>
     </div>
 </div>
 
-<!-- Tip bar -->
 <div id="loading-tip-bar">
     <div id="loading-tip-icon"></div>
     <div id="loading-tip-text">You are more accurate when you stand still. Crouching makes you the most accurate.</div>
 </div>
 
-<!-- Progress bar -->
 <div id="loading-progress-track">
     <div id="loading-progress-fill"></div>
 </div>
-
-<!-- Status text -->
 <div id="loading-status">Retrieving game data...</div>
-
+<div id="loading-progress-percent">0%</div>
 </body>
 </rml>

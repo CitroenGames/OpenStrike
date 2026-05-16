@@ -20,6 +20,7 @@
 
 #include <algorithm>
 #include <cstdarg>
+#include <cstdint>
 #include <cstdio>
 #include <mutex>
 #include <utility>
@@ -46,6 +47,19 @@ constexpr JPH::uint Count = 2;
 
 constexpr float kSourceUnitsToMeters = 0.0254F;
 constexpr float kMetersToSourceUnits = 1.0F / kSourceUnitsToMeters;
+constexpr std::uint32_t kContentsSolid = 0x00000001;
+constexpr std::uint32_t kContentsWindow = 0x00000002;
+constexpr std::uint32_t kContentsGrate = 0x00000008;
+constexpr std::uint32_t kContentsMoveable = 0x00004000;
+constexpr std::uint32_t kContentsPlayerClip = 0x00010000;
+constexpr std::uint32_t kContentsMonster = 0x02000000;
+constexpr std::uint32_t kPlayerSolidMask =
+    kContentsSolid | kContentsMoveable | kContentsWindow | kContentsMonster | kContentsGrate | kContentsPlayerClip;
+
+bool triangle_blocks_player_movement(const WorldTriangle& triangle)
+{
+    return triangle.contents == 0 || (triangle.contents & kPlayerSolidMask) != 0;
+}
 
 class ObjectLayerPairFilter final : public JPH::ObjectLayerPairFilter
 {
@@ -232,8 +246,17 @@ public:
         triangles.reserve(world.mesh.collision_triangles.size() * 2);
         for (const WorldTriangle& triangle : world.mesh.collision_triangles)
         {
+            if (!triangle_blocks_player_movement(triangle))
+            {
+                continue;
+            }
+
             triangles.push_back(make_triangle(triangle.points[0], triangle.points[1], triangle.points[2]));
             triangles.push_back(make_triangle(triangle.points[2], triangle.points[1], triangle.points[0]));
+        }
+        if (triangles.empty())
+        {
+            return true;
         }
 
         JPH::MeshShapeSettings shape_settings(triangles);

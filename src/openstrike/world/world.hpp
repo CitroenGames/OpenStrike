@@ -28,6 +28,12 @@ struct WorldSpawnPoint
     Vec3 angles;
 };
 
+struct WorldEntity
+{
+    std::string class_name;
+    std::unordered_map<std::string, std::string> properties;
+};
+
 enum class WorldPropKind
 {
     StaticProp,
@@ -41,6 +47,7 @@ struct WorldProp
     std::string model_path;
     Vec3 origin;
     Vec3 angles;
+    float scale = 1.0F;
     Vec3 bounds_min{-16.0F, -16.0F, 0.0F};
     Vec3 bounds_max{16.0F, 16.0F, 32.0F};
     Vec3 lighting_origin;
@@ -74,6 +81,8 @@ struct WorldMeshVertex
     Vec3 position;
     Vec3 normal;
     Vec2 texcoord;
+    Vec2 lightmap_texcoord{0.5F, 0.5F};
+    float lightmap_weight = 0.0F;
 };
 
 struct WorldTriangle
@@ -81,6 +90,7 @@ struct WorldTriangle
     Vec3 points[3];
     Vec3 normal;
     std::uint32_t surface_flags = 0;
+    std::uint32_t contents = 0;
 };
 
 struct WorldMaterial
@@ -97,6 +107,14 @@ struct WorldMeshBatch
     std::uint32_t index_count = 0;
 };
 
+struct WorldLightmapAtlas
+{
+    std::uint32_t width = 1;
+    std::uint32_t height = 1;
+    std::vector<float> rgba{1.0F, 1.0F, 1.0F, 1.0F};
+    bool has_baked_samples = false;
+};
+
 struct WorldMesh
 {
     std::vector<WorldMeshVertex> vertices;
@@ -104,6 +122,7 @@ struct WorldMesh
     std::vector<WorldMaterial> materials;
     std::vector<WorldMeshBatch> batches;
     std::vector<WorldTriangle> collision_triangles;
+    WorldLightmapAtlas lightmap_atlas;
     Vec3 bounds_min;
     Vec3 bounds_max;
     bool has_bounds = false;
@@ -123,6 +142,7 @@ struct LoadedWorld
     std::size_t entity_count = 0;
     std::unordered_map<std::string, std::string> worldspawn;
     std::unordered_map<std::string, std::vector<unsigned char>> embedded_assets;
+    std::vector<WorldEntity> entities;
     std::vector<WorldSpawnPoint> spawn_points;
     std::vector<WorldProp> props;
     std::vector<WorldLight> lights;

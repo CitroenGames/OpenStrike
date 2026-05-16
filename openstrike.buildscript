@@ -37,12 +37,14 @@ sources = {
     src/openstrike/engine/engine_context.cpp
     src/openstrike/engine/engine.cpp
     src/openstrike/engine/fixed_timestep.cpp
+    src/openstrike/engine/loading_screen_state.cpp
     src/openstrike/engine/runtime_config.cpp
     src/openstrike/engine/sdl_input.cpp
     src/openstrike/game/fps_controller.cpp
     src/openstrike/game/game_simulation.cpp
     src/openstrike/game/movement.cpp
     src/openstrike/material/material_system.cpp
+    src/openstrike/nav/navigation.cpp
     src/openstrike/network/network_address.cpp
     src/openstrike/network/network_protocol.cpp
     src/openstrike/network/network_session.cpp
@@ -64,6 +66,7 @@ sources = {
     src/openstrike/ui/main_menu_controller.cpp
     src/openstrike/ui/rml_console_controller.cpp
     src/openstrike/ui/rml_hud_controller.cpp
+    src/openstrike/ui/rml_loading_screen_controller.cpp
     src/openstrike/world/world.cpp
 }
 headers = src/openstrike/**/*.hpp

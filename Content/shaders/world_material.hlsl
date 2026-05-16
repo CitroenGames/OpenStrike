@@ -12,7 +12,9 @@ cbuffer WorldConstants : register(b0)
 };
 
 Texture2D world_texture : register(t0);
+Texture2D world_lightmap : register(t1);
 SamplerState world_sampler : register(s0);
+SamplerState world_lightmap_sampler : register(s1);
 
 struct ForwardPlusTile
 {
@@ -28,9 +30,9 @@ struct ForwardPlusLight
     float4 color_intensity;
 };
 
-StructuredBuffer<ForwardPlusTile> forward_plus_tiles : register(t1);
-StructuredBuffer<uint> forward_plus_light_indices : register(t2);
-StructuredBuffer<ForwardPlusLight> forward_plus_lights : register(t3);
+StructuredBuffer<ForwardPlusTile> forward_plus_tiles : register(t2);
+StructuredBuffer<uint> forward_plus_light_indices : register(t3);
+StructuredBuffer<ForwardPlusLight> forward_plus_lights : register(t4);
 
 cbuffer MaterialConstants : register(b1)
 {
@@ -45,15 +47,55 @@ struct VSInput
     float3 position : POSITION;
     float3 normal : NORMAL;
     float2 texcoord : TEXCOORD0;
+    float2 lightmap_texcoord : TEXCOORD1;
+    float lightmap_weight : TEXCOORD2;
 };
 
 struct PSInput
 {
     float4 position : SV_POSITION;
-    float3 world_position : TEXCOORD1;
-    float3 normal : NORMAL;
     float2 texcoord : TEXCOORD0;
+    float2 lightmap_texcoord : TEXCOORD1;
+    float3 world_position : TEXCOORD2;
+    float lightmap_weight : TEXCOORD3;
+    float3 normal : NORMAL;
 };
+
+float SrgbToLinearChannel(float value)
+{
+    value = saturate(value);
+    if (value <= 0.04045f)
+    {
+        return value / 12.92f;
+    }
+    return pow((value + 0.055f) / 1.055f, 2.4f);
+}
+
+float3 SrgbToLinear(float3 value)
+{
+    return float3(
+        SrgbToLinearChannel(value.r),
+        SrgbToLinearChannel(value.g),
+        SrgbToLinearChannel(value.b));
+}
+
+float LinearToSrgbChannel(float value)
+{
+    value = max(value, 0.0f);
+    if (value <= 0.0031308f)
+    {
+        return value * 12.92f;
+    }
+    return (1.055f * pow(value, 1.0f / 2.4f)) - 0.055f;
+}
+
+float3 LinearToSrgb(float3 value)
+{
+    return float3(
+        LinearToSrgbChannel(value.r),
+        LinearToSrgbChannel(value.g),
+        LinearToSrgbChannel(value.b));
+}
 
 PSInput VSMain(VSInput input)
 {
@@ -62,6 +104,8 @@ PSInput VSMain(VSInput input)
     output.world_position = input.position;
     output.normal = input.normal;
     output.texcoord = input.texcoord;
+    output.lightmap_texcoord = input.lightmap_texcoord;
+    output.lightmap_weight = input.lightmap_weight;
     return output;
 }
 
@@ -125,10 +169,10 @@ float4 PSMain(PSInput input) : SV_TARGET
         discard;
     }
 
-    const float3 base_color = saturate(texel.rgb * material_base_color.rgb);
+    const float3 base_color = SrgbToLinear(texel.rgb) * saturate(material_base_color.rgb);
     if ((material_flags & MATERIAL_FLAG_UNLIT) != 0u)
     {
-        return float4(base_color, alpha);
+        return float4(saturate(LinearToSrgb(base_color)), alpha);
     }
 
     const float3 normal = normalize(input.normal);
@@ -136,6 +180,9 @@ float4 PSMain(PSInput input) : SV_TARGET
     const float ambient = saturate(world_light_direction_ambient.w);
     const float diffuse = saturate(dot(normal, light_direction)) * max(world_light_color_intensity.w, 0.0f);
     const float3 forward_plus_lighting = ForwardPlusLighting(input.world_position, normal, input.position);
-    const float3 lit_color = base_color * (ambient + (world_light_color_intensity.rgb * diffuse) + forward_plus_lighting);
-    return float4(saturate(lit_color), alpha);
+    const float3 fallback_lighting = ambient + (world_light_color_intensity.rgb * diffuse);
+    const float3 baked_lighting = world_lightmap.Sample(world_lightmap_sampler, input.lightmap_texcoord).rgb;
+    const float3 static_lighting = lerp(fallback_lighting, baked_lighting, saturate(input.lightmap_weight));
+    const float3 lit_color = base_color * (static_lighting + forward_plus_lighting);
+    return float4(saturate(LinearToSrgb(lit_color)), alpha);
 }

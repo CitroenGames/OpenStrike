@@ -5,12 +5,14 @@
 #include "openstrike/engine/engine.hpp"
 #include "openstrike/engine/engine_context.hpp"
 #include "openstrike/engine/fixed_timestep.hpp"
+#include "openstrike/engine/loading_screen_state.hpp"
 #include "openstrike/engine/runtime_config.hpp"
 #include "openstrike/engine/sdl_input.hpp"
 #include "openstrike/game/fps_controller.hpp"
 #include "openstrike/game/game_simulation.hpp"
 #include "openstrike/game/movement.hpp"
 #include "openstrike/material/material_system.hpp"
+#include "openstrike/nav/navigation.hpp"
 #include "openstrike/network/network_protocol.hpp"
 #include "openstrike/network/network_session.hpp"
 #include "openstrike/network/network_stream.hpp"
@@ -104,6 +106,11 @@ void write_lump(std::vector<unsigned char>& bytes, std::size_t lump, std::size_t
     write_u32_le(bytes, 12 + (lump * 16), static_cast<std::uint32_t>(length));
 }
 
+void write_lump_version(std::vector<unsigned char>& bytes, std::size_t lump, std::uint32_t version)
+{
+    write_u32_le(bytes, 16 + (lump * 16), version);
+}
+
 void append_stored_zip_file(std::vector<unsigned char>& bytes, const std::string& name, const std::string& contents)
 {
     append_u32_le(bytes, 0x04034B50U);
@@ -191,10 +198,20 @@ void write_zero_string(std::vector<unsigned char>& bytes, std::size_t offset, st
     bytes[offset + value.size()] = 0;
 }
 
-void write_minimal_source_model(const std::filesystem::path& path, openstrike::Vec3 mins, openstrike::Vec3 maxs)
+void write_minimal_source_model(
+    const std::filesystem::path& path,
+    openstrike::Vec3 mins,
+    openstrike::Vec3 maxs,
+    std::uint32_t vertex_count = 3)
 {
     std::filesystem::create_directories(path.parent_path());
     constexpr std::uint32_t checksum = 0x12345678U;
+    vertex_count = std::clamp(vertex_count, 3U, 65535U);
+    vertex_count -= vertex_count % 3U;
+    if (vertex_count < 3U)
+    {
+        vertex_count = 3U;
+    }
 
     std::vector<unsigned char> bytes(1024, 0);
     bytes[0] = 'I';
@@ -235,17 +252,17 @@ void write_minimal_source_model(const std::filesystem::path& path, openstrike::V
     write_f32_le(bytes, model + 68, 16.0F);
     write_u32_le(bytes, model + 72, 1);
     write_u32_le(bytes, model + 76, 148);
-    write_u32_le(bytes, model + 80, 3);
+    write_u32_le(bytes, model + 80, vertex_count);
     write_u32_le(bytes, model + 84, 0);
     const std::size_t mesh = model + 148;
     write_u32_le(bytes, mesh, 0);
-    write_u32_le(bytes, mesh + 8, 3);
+    write_u32_le(bytes, mesh + 8, vertex_count);
     write_u32_le(bytes, mesh + 12, 0);
 
     std::ofstream file(path, std::ios::binary);
     file.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
 
-    std::vector<unsigned char> vvd(64 + (3 * 48), 0);
+    std::vector<unsigned char> vvd(64 + (static_cast<std::size_t>(vertex_count) * 48U), 0);
     vvd[0] = 'I';
     vvd[1] = 'D';
     vvd[2] = 'S';
@@ -253,7 +270,7 @@ void write_minimal_source_model(const std::filesystem::path& path, openstrike::V
     write_u32_le(vvd, 4, 4);
     write_u32_le(vvd, 8, checksum);
     write_u32_le(vvd, 12, 1);
-    write_u32_le(vvd, 16, 3);
+    write_u32_le(vvd, 16, vertex_count);
     write_u32_le(vvd, 56, 64);
     auto write_vertex = [&](std::size_t index, openstrike::Vec3 position, openstrike::Vec3 normal, openstrike::Vec2 texcoord) {
         const std::size_t vertex = 64 + (index * 48);
@@ -262,17 +279,36 @@ void write_minimal_source_model(const std::filesystem::path& path, openstrike::V
         write_vec3_le(vvd, vertex + 28, normal);
         write_vec2_le(vvd, vertex + 40, texcoord);
     };
-    write_vertex(0, {0.0F, 0.0F, 0.0F}, {0.0F, 0.0F, 1.0F}, {0.0F, 0.0F});
-    write_vertex(1, {8.0F, 0.0F, 0.0F}, {0.0F, 0.0F, 1.0F}, {1.0F, 0.0F});
-    write_vertex(2, {0.0F, 0.0F, 16.0F}, {0.0F, 0.0F, 1.0F}, {0.0F, 1.0F});
+    for (std::uint32_t vertex = 0; vertex < vertex_count; ++vertex)
+    {
+        const std::uint32_t corner = vertex % 3U;
+        if (corner == 0)
+        {
+            write_vertex(vertex, {0.0F, 0.0F, 0.0F}, {0.0F, 0.0F, 1.0F}, {0.0F, 0.0F});
+        }
+        else if (corner == 1)
+        {
+            write_vertex(vertex, {8.0F, 0.0F, 0.0F}, {0.0F, 0.0F, 1.0F}, {1.0F, 0.0F});
+        }
+        else
+        {
+            write_vertex(vertex, {0.0F, 0.0F, 16.0F}, {0.0F, 0.0F, 1.0F}, {0.0F, 1.0F});
+        }
+    }
     std::ofstream vvd_file(path.parent_path() / (path.stem().string() + ".vvd"), std::ios::binary);
     vvd_file.write(reinterpret_cast<const char*>(vvd.data()), static_cast<std::streamsize>(vvd.size()));
 
-    std::vector<unsigned char> vtx(174, 0);
+    const std::uint32_t index_count = vertex_count;
+    const std::size_t strip_group = 73;
+    const std::size_t vertex_table = 33;
+    const std::size_t index_table = vertex_table + (static_cast<std::size_t>(vertex_count) * 9U);
+    const std::size_t strip_table = index_table + (static_cast<std::size_t>(index_count) * 2U);
+    const std::size_t strip = strip_group + strip_table;
+    std::vector<unsigned char> vtx(strip + 35U, 0);
     write_u32_le(vtx, 0, 7);
     write_u16_le(vtx, 8, 32);
     write_u16_le(vtx, 10, 3);
-    write_u32_le(vtx, 12, 3);
+    write_u32_le(vtx, 12, vertex_count);
     write_u32_le(vtx, 16, checksum);
     write_u32_le(vtx, 20, 1);
     write_u32_le(vtx, 28, 1);
@@ -285,28 +321,29 @@ void write_minimal_source_model(const std::filesystem::path& path, openstrike::V
     write_u32_le(vtx, 56, 12);
     write_u32_le(vtx, 64, 1);
     write_u32_le(vtx, 68, 9);
-    const std::size_t strip_group = 73;
-    write_u32_le(vtx, strip_group, 3);
-    write_u32_le(vtx, strip_group + 4, 33);
-    write_u32_le(vtx, strip_group + 8, 3);
-    write_u32_le(vtx, strip_group + 12, 60);
+    write_u32_le(vtx, strip_group, vertex_count);
+    write_u32_le(vtx, strip_group + 4, static_cast<std::uint32_t>(vertex_table));
+    write_u32_le(vtx, strip_group + 8, index_count);
+    write_u32_le(vtx, strip_group + 12, static_cast<std::uint32_t>(index_table));
     write_u32_le(vtx, strip_group + 16, 1);
-    write_u32_le(vtx, strip_group + 20, 66);
-    write_u16_le(vtx, strip_group + 33 + 4, 0);
-    write_u16_le(vtx, strip_group + 42 + 4, 1);
-    write_u16_le(vtx, strip_group + 51 + 4, 2);
-    write_u16_le(vtx, strip_group + 60, 0);
-    write_u16_le(vtx, strip_group + 62, 1);
-    write_u16_le(vtx, strip_group + 64, 2);
-    const std::size_t strip = strip_group + 66;
-    write_u32_le(vtx, strip, 3);
-    write_u32_le(vtx, strip + 8, 3);
+    write_u32_le(vtx, strip_group + 20, static_cast<std::uint32_t>(strip_table));
+    for (std::uint32_t vertex = 0; vertex < vertex_count; ++vertex)
+    {
+        write_u16_le(vtx, strip_group + vertex_table + (static_cast<std::size_t>(vertex) * 9U) + 4U, static_cast<std::uint16_t>(vertex));
+    }
+    for (std::uint32_t index = 0; index < index_count; ++index)
+    {
+        write_u16_le(vtx, strip_group + index_table + (static_cast<std::size_t>(index) * 2U), static_cast<std::uint16_t>(index));
+    }
+    write_u32_le(vtx, strip, index_count);
+    write_u32_le(vtx, strip + 4, 0);
+    write_u32_le(vtx, strip + 8, vertex_count);
     vtx[strip + 18] = 0x01;
     std::ofstream vtx_file(path.parent_path() / (path.stem().string() + ".dx90.vtx"), std::ios::binary);
     vtx_file.write(reinterpret_cast<const char*>(vtx.data()), static_cast<std::streamsize>(vtx.size()));
 }
 
-void write_static_prop_bsp(const std::filesystem::path& path, const std::string& entities)
+void write_static_prop_bsp(const std::filesystem::path& path, const std::string& entities, std::uint8_t solid = 6)
 {
     constexpr std::size_t lump_count = 64;
     constexpr std::size_t header_size = 8 + (lump_count * 16) + 4;
@@ -338,7 +375,7 @@ void write_static_prop_bsp(const std::filesystem::path& path, const std::string&
     write_vec3_le(static_prop_data, record + 0, {100.0F, 200.0F, 64.0F});
     write_vec3_le(static_prop_data, record + 12, {0.0F, 90.0F, 0.0F});
     write_u16_le(static_prop_data, record + 24, 0);
-    static_prop_data[record + 30] = 6;
+    static_prop_data[record + 30] = solid;
     static_prop_data[record + 31] = 0;
     write_u32_le(static_prop_data, record + 32, 2);
     write_vec3_le(static_prop_data, record + 44, {100.0F, 200.0F, 80.0F});
@@ -365,7 +402,32 @@ void write_static_prop_bsp(const std::filesystem::path& path, const std::string&
     file.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
 }
 
-void write_square_bsp(const std::filesystem::path& path, const std::string& entities, std::uint32_t surface_flags = 0)
+enum class TestLightmapMode
+{
+    None,
+    Ldr,
+    Hdr,
+};
+
+std::vector<unsigned char> make_test_lightmap(std::uint8_t red, std::uint8_t green, std::uint8_t blue, std::int8_t exponent)
+{
+    std::vector<unsigned char> bytes;
+    bytes.reserve(4 * 4);
+    for (std::size_t index = 0; index < 4; ++index)
+    {
+        bytes.push_back(red);
+        bytes.push_back(green);
+        bytes.push_back(blue);
+        bytes.push_back(static_cast<unsigned char>(exponent));
+    }
+    return bytes;
+}
+
+void write_square_bsp(
+    const std::filesystem::path& path,
+    const std::string& entities,
+    std::uint32_t surface_flags = 0,
+    TestLightmapMode lightmap_mode = TestLightmapMode::None)
 {
     constexpr std::size_t lump_count = 64;
     constexpr std::size_t header_size = 8 + (lump_count * 16) + 4;
@@ -411,6 +473,10 @@ void write_square_bsp(const std::filesystem::path& path, const std::string& enti
     write_f32_le(texinfo, 12, 64.0F);
     write_f32_le(texinfo, 20, 1.0F);
     write_f32_le(texinfo, 28, 64.0F);
+    write_f32_le(texinfo, 32, 1.0F / 128.0F);
+    write_f32_le(texinfo, 44, 0.5F);
+    write_f32_le(texinfo, 52, 1.0F / 128.0F);
+    write_f32_le(texinfo, 60, 0.5F);
     write_u32_le(texinfo, 64, surface_flags);
     append_lump(6, texinfo);
 
@@ -452,8 +518,27 @@ void write_square_bsp(const std::filesystem::path& path, const std::string& enti
     write_s16_le(faces, 10, 0);
     write_s16_le(faces, 12, -1);
     std::fill(faces.begin() + 16, faces.begin() + 20, static_cast<unsigned char>(0xFF));
+    if (lightmap_mode != TestLightmapMode::None)
+    {
+        faces[16] = 0;
+        write_s32_le(faces, 20, 0);
+        write_s32_le(faces, 28, 0);
+        write_s32_le(faces, 32, 0);
+        write_s32_le(faces, 36, 1);
+        write_s32_le(faces, 40, 1);
+    }
     write_f32_le(faces, 24, 128.0F * 128.0F);
     append_lump(7, faces);
+
+    if (lightmap_mode != TestLightmapMode::None)
+    {
+        append_lump(8, make_test_lightmap(64, 128, 192, 0));
+        if (lightmap_mode == TestLightmapMode::Hdr)
+        {
+            append_lump(53, make_test_lightmap(200, 150, 100, 0));
+            append_lump(58, faces);
+        }
+    }
 
     std::vector<unsigned char> pakfile;
     append_stored_zip_file(pakfile, "materials/test/floor.vmt", "\"LightmappedGeneric\" { \"$basetexture\" \"test/floor\" }");
@@ -461,6 +546,135 @@ void write_square_bsp(const std::filesystem::path& path, const std::string& enti
 
     std::ofstream file(path, std::ios::binary);
     file.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+}
+
+constexpr std::uint32_t kTestContentsSolid = 0x00000001;
+constexpr std::uint32_t kTestContentsWindow = 0x00000002;
+constexpr std::uint32_t kTestContentsGrate = 0x00000008;
+constexpr std::uint32_t kTestContentsWater = 0x00000020;
+constexpr std::uint32_t kTestContentsBlockLos = 0x00000040;
+constexpr std::uint32_t kTestContentsOpaque = 0x00000080;
+constexpr std::uint32_t kTestContentsMoveable = 0x00004000;
+constexpr std::uint32_t kTestContentsPlayerClip = 0x00010000;
+constexpr std::uint32_t kTestContentsMonsterClip = 0x00020000;
+constexpr std::uint32_t kTestContentsMonster = 0x02000000;
+constexpr std::uint32_t kTestSourceSolidMask =
+    kTestContentsSolid | kTestContentsMoveable | kTestContentsWindow | kTestContentsMonster | kTestContentsGrate;
+constexpr std::uint32_t kTestSourceWorldCollisionMask = kTestSourceSolidMask | kTestContentsPlayerClip | kTestContentsMonsterClip;
+
+struct TestBrushBox
+{
+    openstrike::Vec3 mins;
+    openstrike::Vec3 maxs;
+    std::uint32_t contents = kTestContentsSolid;
+};
+
+void append_test_plane(std::vector<unsigned char>& planes, openstrike::Vec3 normal, float dist)
+{
+    const std::size_t offset = planes.size();
+    planes.resize(offset + 20, 0);
+    write_vec3_le(planes, offset, normal);
+    write_f32_le(planes, offset + 12, dist);
+}
+
+void append_test_brush_box(
+    std::vector<unsigned char>& planes,
+    std::vector<unsigned char>& brush_sides,
+    std::vector<unsigned char>& brushes,
+    const TestBrushBox& box)
+{
+    const std::uint32_t first_plane = static_cast<std::uint32_t>(planes.size() / 20U);
+    append_test_plane(planes, {1.0F, 0.0F, 0.0F}, box.maxs.x);
+    append_test_plane(planes, {-1.0F, 0.0F, 0.0F}, -box.mins.x);
+    append_test_plane(planes, {0.0F, 1.0F, 0.0F}, box.maxs.y);
+    append_test_plane(planes, {0.0F, -1.0F, 0.0F}, -box.mins.y);
+    append_test_plane(planes, {0.0F, 0.0F, 1.0F}, box.maxs.z);
+    append_test_plane(planes, {0.0F, 0.0F, -1.0F}, -box.mins.z);
+
+    const std::uint32_t first_side = static_cast<std::uint32_t>(brush_sides.size() / 8U);
+    for (std::uint32_t side = 0; side < 6; ++side)
+    {
+        const std::size_t offset = brush_sides.size();
+        brush_sides.resize(offset + 8, 0);
+        write_u16_le(brush_sides, offset, static_cast<std::uint16_t>(first_plane + side));
+        write_s16_le(brush_sides, offset + 2, -1);
+        write_s16_le(brush_sides, offset + 4, -1);
+    }
+
+    const std::size_t brush = brushes.size();
+    brushes.resize(brush + 12, 0);
+    write_s32_le(brushes, brush, static_cast<std::int32_t>(first_side));
+    write_s32_le(brushes, brush + 4, 6);
+    write_u32_le(brushes, brush + 8, box.contents);
+}
+
+void write_brush_collision_bsp(const std::filesystem::path& path, const std::string& entities, const std::vector<TestBrushBox>& boxes)
+{
+    constexpr std::size_t lump_count = 64;
+    constexpr std::size_t header_size = 8 + (lump_count * 16) + 4;
+    std::vector<unsigned char> bytes(header_size, 0);
+
+    write_u32_le(bytes, 0, 0x50534256U);
+    write_u32_le(bytes, 4, 21);
+    write_u32_le(bytes, 8 + (lump_count * 16), 5);
+
+    auto append_lump = [&](std::size_t lump, const std::vector<unsigned char>& data) {
+        const std::size_t offset = bytes.size();
+        bytes.insert(bytes.end(), data.begin(), data.end());
+        write_lump(bytes, lump, offset, data.size());
+    };
+
+    append_lump(0, std::vector<unsigned char>(entities.begin(), entities.end()));
+
+    std::vector<unsigned char> planes;
+    std::vector<unsigned char> brush_sides;
+    std::vector<unsigned char> brushes;
+    for (const TestBrushBox& box : boxes)
+    {
+        append_test_brush_box(planes, brush_sides, brushes, box);
+    }
+    append_lump(1, planes);
+    append_lump(18, brushes);
+    append_lump(19, brush_sides);
+
+    std::uint32_t union_contents = 0;
+    std::vector<unsigned char> leaf_brushes;
+    for (std::uint32_t index = 0; index < boxes.size(); ++index)
+    {
+        append_u16_le(leaf_brushes, static_cast<std::uint16_t>(index));
+        union_contents |= boxes[index].contents;
+    }
+    append_lump(17, leaf_brushes);
+
+    std::vector<unsigned char> leaves(32, 0);
+    write_u32_le(leaves, 0, union_contents);
+    write_s16_le(leaves, 4, -1);
+    write_u16_le(leaves, 24, 0);
+    write_u16_le(leaves, 26, static_cast<std::uint16_t>(boxes.size()));
+    write_s16_le(leaves, 28, -1);
+    append_lump(10, leaves);
+    write_lump_version(bytes, 10, 1);
+
+    std::vector<unsigned char> models(48, 0);
+    write_s32_le(models, 36, -1);
+    append_lump(14, models);
+
+    std::ofstream file(path, std::ios::binary);
+    file.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+}
+
+bool atlas_contains_color(const openstrike::WorldLightmapAtlas& atlas, float red, float green, float blue)
+{
+    for (std::size_t offset = 0; offset + 3 < atlas.rgba.size(); offset += 4)
+    {
+        if (std::fabs(atlas.rgba[offset + 0] - red) < 0.001F &&
+            std::fabs(atlas.rgba[offset + 1] - green) < 0.001F &&
+            std::fabs(atlas.rgba[offset + 2] - blue) < 0.001F)
+        {
+            return true;
+        }
+    }
+    return false;
 }
 
 VmfSolid make_editor_test_box_solid(const Vec3& mins, const Vec3& maxs, const std::string& material)
@@ -974,6 +1188,34 @@ void test_command_buffer_cvars_and_quit()
     REQUIRE(context.quit_requested);
 }
 
+void test_loading_screen_state_matches_source_map_lifecycle()
+{
+    openstrike::LoadingScreenState state;
+    state.open_for_map("maps/de_dust2.bsp", "Competitive", "Settings:\n- Friendly fire is OFF", "Hold angles with teammates.");
+
+    const std::uint64_t open_revision = state.snapshot().revision;
+    REQUIRE(state.visible());
+    REQUIRE(state.snapshot().map_name == "de_dust2");
+    REQUIRE(state.snapshot().game_mode == "Competitive");
+    REQUIRE(state.snapshot().progress == 0.0F);
+    REQUIRE(!state.snapshot().auto_close);
+
+    state.set_progress(0.55F, "Building game world...");
+    REQUIRE(state.snapshot().revision > open_revision);
+    REQUIRE(std::fabs(state.snapshot().progress - 0.55F) < 0.001F);
+    REQUIRE(state.snapshot().status == "Building game world...");
+
+    state.complete("Sending client info...");
+    REQUIRE(state.snapshot().progress == 1.0F);
+    REQUIRE(state.snapshot().auto_close);
+    REQUIRE(state.visible());
+
+    state.close();
+    REQUIRE(!state.visible());
+    REQUIRE(!state.snapshot().auto_close);
+    REQUIRE(openstrike::loading_screen_map_name("assets/levels/workshop_test.level.json") == "workshop_test");
+}
+
 void test_audio_sound_chars_match_source_prefix_rules()
 {
     REQUIRE(openstrike::AudioSystem::is_sound_char('*'));
@@ -1032,6 +1274,9 @@ void test_world_manager_loads_source_bsp()
     REQUIRE(loaded->asset_version == 21);
     REQUIRE(loaded->map_revision == 3);
     REQUIRE(loaded->entity_count == 3);
+    REQUIRE(loaded->entities.size() == 3);
+    REQUIRE(loaded->entities[0].class_name == "worldspawn");
+    REQUIRE(loaded->entities[1].properties.at("classname") == "info_player_terrorist");
     REQUIRE(loaded->worldspawn.at("mapversion") == "7");
     REQUIRE(loaded->worldspawn.at("skyname") == "sky_openstrike_test");
     REQUIRE(loaded->spawn_points.size() == 1);
@@ -1092,6 +1337,7 @@ void test_world_manager_builds_bsp_mesh_and_floor()
     REQUIRE(loaded->mesh.has_bounds);
     REQUIRE(loaded->mesh.bounds_min.z == 32.0F);
     REQUIRE(loaded->mesh.bounds_max.z == 32.0F);
+    REQUIRE(!loaded->mesh.lightmap_atlas.has_baked_samples);
 
     float min_u = loaded->mesh.vertices[0].texcoord.x;
     float max_u = loaded->mesh.vertices[0].texcoord.x;
@@ -1103,6 +1349,7 @@ void test_world_manager_builds_bsp_mesh_and_floor()
         max_u = std::max(max_u, vertex.texcoord.x);
         min_v = std::min(min_v, vertex.texcoord.y);
         max_v = std::max(max_v, vertex.texcoord.y);
+        REQUIRE(vertex.lightmap_weight == 0.0F);
     }
     REQUIRE(std::abs(min_u - 0.0F) < 0.001F);
     REQUIRE(std::abs(max_u - 1.0F) < 0.001F);
@@ -1112,6 +1359,77 @@ void test_world_manager_builds_bsp_mesh_and_floor()
     const std::optional<float> floor_z = openstrike::find_floor_z(*loaded, openstrike::Vec3{0.0F, 0.0F, 96.0F}, 128.0F);
     REQUIRE(floor_z.has_value());
     REQUIRE(*floor_z == 32.0F);
+
+    std::filesystem::remove_all(root);
+}
+
+void test_world_manager_builds_bsp_static_lightmap()
+{
+    const std::filesystem::path root = std::filesystem::current_path() / "build/test_world_lightmap_content";
+    std::filesystem::remove_all(root);
+    std::filesystem::create_directories(root / "game/maps");
+
+    const std::string entities =
+        "{\n"
+        "\"classname\" \"worldspawn\"\n"
+        "}\n";
+    write_square_bsp(root / "game/maps/lightmap_world.bsp", entities, 0, TestLightmapMode::Ldr);
+
+    openstrike::ContentFileSystem filesystem;
+    filesystem.add_search_path(root / "game", "GAME");
+
+    openstrike::WorldManager world;
+    REQUIRE(world.load_map("lightmap_world", filesystem));
+
+    const openstrike::LoadedWorld* loaded = world.current_world();
+    REQUIRE(loaded != nullptr);
+    REQUIRE(loaded->mesh.lightmap_atlas.has_baked_samples);
+    REQUIRE(loaded->mesh.lightmap_atlas.width >= 4);
+    REQUIRE(loaded->mesh.lightmap_atlas.height >= 4);
+    REQUIRE(loaded->mesh.lightmap_atlas.rgba.size() == static_cast<std::size_t>(loaded->mesh.lightmap_atlas.width) *
+                                                          loaded->mesh.lightmap_atlas.height * 4U);
+    REQUIRE(atlas_contains_color(loaded->mesh.lightmap_atlas, 64.0F / 255.0F, 128.0F / 255.0F, 192.0F / 255.0F));
+
+    bool found_lightmapped_vertex = false;
+    for (const openstrike::WorldMeshVertex& vertex : loaded->mesh.vertices)
+    {
+        if (vertex.lightmap_weight > 0.999F)
+        {
+            found_lightmapped_vertex = true;
+            REQUIRE(vertex.lightmap_texcoord.x > 0.0F);
+            REQUIRE(vertex.lightmap_texcoord.x < 1.0F);
+            REQUIRE(vertex.lightmap_texcoord.y > 0.0F);
+            REQUIRE(vertex.lightmap_texcoord.y < 1.0F);
+        }
+    }
+    REQUIRE(found_lightmapped_vertex);
+
+    std::filesystem::remove_all(root);
+}
+
+void test_world_manager_prefers_hdr_bsp_lightmap()
+{
+    const std::filesystem::path root = std::filesystem::current_path() / "build/test_world_hdr_lightmap_content";
+    std::filesystem::remove_all(root);
+    std::filesystem::create_directories(root / "game/maps");
+
+    const std::string entities =
+        "{\n"
+        "\"classname\" \"worldspawn\"\n"
+        "}\n";
+    write_square_bsp(root / "game/maps/hdr_lightmap_world.bsp", entities, 0, TestLightmapMode::Hdr);
+
+    openstrike::ContentFileSystem filesystem;
+    filesystem.add_search_path(root / "game", "GAME");
+
+    openstrike::WorldManager world;
+    REQUIRE(world.load_map("hdr_lightmap_world", filesystem));
+
+    const openstrike::LoadedWorld* loaded = world.current_world();
+    REQUIRE(loaded != nullptr);
+    REQUIRE(loaded->mesh.lightmap_atlas.has_baked_samples);
+    REQUIRE(atlas_contains_color(loaded->mesh.lightmap_atlas, 200.0F / 255.0F, 150.0F / 255.0F, 100.0F / 255.0F));
+    REQUIRE(!atlas_contains_color(loaded->mesh.lightmap_atlas, 64.0F / 255.0F, 128.0F / 255.0F, 192.0F / 255.0F));
 
     std::filesystem::remove_all(root);
 }
@@ -1142,6 +1460,56 @@ void test_world_manager_tracks_source_sky_surfaces()
     REQUIRE(loaded->mesh.vertices.empty());
     REQUIRE(loaded->mesh.indices.empty());
     REQUIRE(loaded->mesh.collision_triangles.empty());
+
+    std::filesystem::remove_all(root);
+}
+
+void test_world_manager_uses_source_brush_contents_for_collision()
+{
+    const std::filesystem::path root = std::filesystem::current_path() / "build/test_world_brush_contents_collision";
+    std::filesystem::remove_all(root);
+    std::filesystem::create_directories(root / "game/maps");
+
+    const std::string entities =
+        "{\n"
+        "\"classname\" \"worldspawn\"\n"
+        "}\n";
+    const std::vector<TestBrushBox> boxes{
+        {{-16.0F, -16.0F, 0.0F}, {16.0F, 16.0F, 32.0F}, kTestContentsSolid},
+        {{48.0F, -16.0F, 0.0F}, {80.0F, 16.0F, 32.0F}, kTestContentsWindow},
+        {{112.0F, -16.0F, 0.0F}, {144.0F, 16.0F, 32.0F}, kTestContentsGrate},
+        {{176.0F, -16.0F, 0.0F}, {208.0F, 16.0F, 32.0F}, kTestContentsPlayerClip},
+        {{240.0F, -16.0F, 0.0F}, {272.0F, 16.0F, 32.0F}, kTestContentsMonsterClip},
+        {{304.0F, -16.0F, 0.0F}, {336.0F, 16.0F, 32.0F}, kTestContentsOpaque},
+        {{368.0F, -16.0F, 0.0F}, {400.0F, 16.0F, 32.0F}, kTestContentsBlockLos},
+        {{432.0F, -16.0F, 0.0F}, {464.0F, 16.0F, 32.0F}, kTestContentsWater},
+    };
+    write_brush_collision_bsp(root / "game/maps/brush_contents.bsp", entities, boxes);
+
+    openstrike::ContentFileSystem filesystem;
+    filesystem.add_search_path(root / "game", "GAME");
+
+    openstrike::WorldManager world;
+    REQUIRE(world.load_map("brush_contents", filesystem));
+
+    const openstrike::LoadedWorld* loaded = world.current_world();
+    REQUIRE(loaded != nullptr);
+    REQUIRE(loaded->mesh.collision_triangles.size() == 60);
+    for (const openstrike::WorldTriangle& triangle : loaded->mesh.collision_triangles)
+    {
+        REQUIRE((triangle.contents & kTestSourceWorldCollisionMask) != 0);
+        REQUIRE((triangle.contents & (kTestContentsOpaque | kTestContentsBlockLos | kTestContentsWater)) == 0);
+    }
+
+    const std::optional<float> solid_top = openstrike::find_floor_z(*loaded, {0.0F, 0.0F, 64.0F}, 96.0F);
+    REQUIRE(solid_top.has_value());
+    REQUIRE(std::abs(*solid_top - 32.0F) < 0.001F);
+
+    const std::optional<float> opaque_top = openstrike::find_floor_z(*loaded, {320.0F, 0.0F, 64.0F}, 96.0F);
+    REQUIRE(!opaque_top.has_value());
+
+    const std::optional<float> monster_clip_top = openstrike::find_floor_z(*loaded, {256.0F, 0.0F, 64.0F}, 96.0F);
+    REQUIRE(!monster_clip_top.has_value());
 
     std::filesystem::remove_all(root);
 }
@@ -1182,9 +1550,76 @@ void test_world_manager_loads_static_props_and_renders_bounds()
     REQUIRE(loaded->mesh.materials[0].name == "models/test/props/crate_blue");
     REQUIRE(loaded->mesh.vertices.size() == 3);
     REQUIRE(loaded->mesh.indices.size() == 3);
+    REQUIRE(loaded->mesh.collision_triangles.size() == 1);
     REQUIRE(loaded->mesh.batches.size() == 1);
     REQUIRE(loaded->mesh.has_bounds);
     REQUIRE(loaded->mesh.bounds_max.z == 80.0F);
+
+    std::filesystem::remove_all(root);
+}
+
+void test_world_manager_loads_large_static_prop_studio_mesh()
+{
+    const std::filesystem::path root = std::filesystem::current_path() / "build/test_large_static_prop_studio_mesh";
+    std::filesystem::remove_all(root);
+    std::filesystem::create_directories(root / "game/maps");
+
+    const std::string entities =
+        "{\n"
+        "\"classname\" \"worldspawn\"\n"
+        "}\n";
+    write_static_prop_bsp(root / "game/maps/large_static_prop.bsp", entities);
+    write_minimal_source_model(root / "game/models/test/crate.mdl", {-4.0F, -8.0F, 0.0F}, {4.0F, 8.0F, 16.0F}, 4098);
+
+    openstrike::ContentFileSystem filesystem;
+    filesystem.add_search_path(root / "game", "GAME");
+    openstrike::WorldManager manager;
+    REQUIRE(manager.load_map("large_static_prop", filesystem));
+
+    const openstrike::LoadedWorld* loaded = manager.current_world();
+    REQUIRE(loaded != nullptr);
+    REQUIRE(loaded->props.size() == 1);
+    REQUIRE(loaded->props[0].model_mesh_loaded);
+    REQUIRE(loaded->mesh.vertices.size() == 4098);
+    REQUIRE(loaded->mesh.indices.size() == 4098);
+    REQUIRE(loaded->mesh.collision_triangles.size() == 1366);
+    REQUIRE(loaded->mesh.batches.size() == 1);
+    REQUIRE(loaded->mesh.batches[0].index_count == 4098);
+
+    std::filesystem::remove_all(root);
+}
+
+void test_world_manager_loads_bbox_static_prop_collision()
+{
+    const std::filesystem::path root = std::filesystem::current_path() / "build/test_static_prop_bbox_collision";
+    std::filesystem::remove_all(root);
+    std::filesystem::create_directories(root / "game/maps");
+
+    const std::string entities =
+        "{\n"
+        "\"classname\" \"worldspawn\"\n"
+        "}\n";
+    write_static_prop_bsp(root / "game/maps/static_prop_bbox.bsp", entities, 2);
+    write_minimal_source_model(root / "game/models/test/crate.mdl", {-4.0F, -8.0F, 0.0F}, {4.0F, 8.0F, 16.0F});
+
+    openstrike::ContentFileSystem filesystem;
+    filesystem.add_search_path(root / "game", "GAME");
+    openstrike::WorldManager manager;
+    REQUIRE(manager.load_map("static_prop_bbox", filesystem));
+
+    const openstrike::LoadedWorld* loaded = manager.current_world();
+    REQUIRE(loaded != nullptr);
+    REQUIRE(loaded->props.size() == 1);
+    REQUIRE(loaded->props[0].solid == 2);
+    REQUIRE(loaded->mesh.collision_triangles.size() == 12);
+
+    const std::optional<float> prop_top = openstrike::find_floor_z(*loaded, {100.0F, 200.0F, 96.0F}, 64.0F);
+    REQUIRE(prop_top.has_value());
+    REQUIRE(std::abs(*prop_top - 80.0F) < 0.001F);
+
+    openstrike::PhysicsWorld physics;
+    REQUIRE(physics.load_static_world(*loaded));
+    REQUIRE(physics.has_static_world());
 
     std::filesystem::remove_all(root);
 }
@@ -1396,6 +1831,11 @@ void test_map_command_loads_current_world()
     REQUIRE(context.variables.get_string("host_map") == "command_world");
     REQUIRE(context.network.client().state() == openstrike::NetworkConnectionState::Disconnected);
     REQUIRE(context.network.server().is_running());
+    REQUIRE(context.loading_screen.snapshot().visible);
+    REQUIRE(context.loading_screen.snapshot().auto_close);
+    REQUIRE(context.loading_screen.snapshot().map_name == "command_world");
+    REQUIRE(context.loading_screen.snapshot().progress == 1.0F);
+    REQUIRE(context.loading_screen.snapshot().status == "Sending client info...");
 
     context.network.stop_server();
     std::filesystem::remove_all(root);
@@ -1826,14 +2266,226 @@ void test_fps_controller_consumes_mouse_and_clamps_pitch()
     REQUIRE(view.pitch_degrees == settings.max_pitch_degrees);
 }
 
-void add_collision_triangle(openstrike::LoadedWorld& world, openstrike::Vec3 a, openstrike::Vec3 b, openstrike::Vec3 c, openstrike::Vec3 normal)
+void add_collision_triangle(
+    openstrike::LoadedWorld& world,
+    openstrike::Vec3 a,
+    openstrike::Vec3 b,
+    openstrike::Vec3 c,
+    openstrike::Vec3 normal,
+    std::uint32_t contents = 0)
 {
     openstrike::WorldTriangle triangle;
     triangle.points[0] = a;
     triangle.points[1] = b;
     triangle.points[2] = c;
     triangle.normal = normal;
+    triangle.contents = contents;
     world.mesh.collision_triangles.push_back(triangle);
+}
+
+void test_nav_area_geometry_matches_source_semantics()
+{
+    openstrike::NavArea area;
+    area.id = 1;
+    area.build({0.0F, 0.0F, 10.0F}, {100.0F, 0.0F, 20.0F}, {100.0F, 100.0F, 40.0F}, {0.0F, 100.0F, 30.0F});
+
+    REQUIRE(std::abs(area.get_z({50.0F, 50.0F, 0.0F}) - 25.0F) < 0.001F);
+    REQUIRE(area.contains({50.0F, 50.0F, 80.0F}));
+    REQUIRE(!area.contains({50.0F, 50.0F, 100.0F}));
+    REQUIRE(area.closest_point({120.0F, 50.0F, 0.0F}).x == 100.0F);
+    REQUIRE(area.compute_direction({125.0F, 50.0F, 0.0F}) == openstrike::NavDirection::East);
+
+    openstrike::NavArea east;
+    east.id = 2;
+    east.build({100.0F, 20.0F, 40.0F}, {180.0F, 20.0F, 40.0F}, {180.0F, 80.0F, 40.0F}, {100.0F, 80.0F, 40.0F});
+
+    openstrike::Vec3 portal;
+    float half_width = 0.0F;
+    REQUIRE(area.compute_portal(east, openstrike::NavDirection::East, portal, half_width));
+    REQUIRE(portal.x == 100.0F);
+    REQUIRE(portal.y == 50.0F);
+    REQUIRE(std::abs(portal.z - 30.0F) < 0.001F);
+    REQUIRE(std::abs(half_width - 30.0F) < 0.001F);
+
+    area.connect_to(east.id, openstrike::NavDirection::East);
+    REQUIRE(area.is_connected(east.id, openstrike::NavDirection::East));
+    area.disconnect(east.id);
+    REQUIRE(!area.is_connected(east.id));
+}
+
+void test_nav_mesh_pathing_uses_source_costs_blocking_and_ladders()
+{
+    openstrike::NavMesh mesh;
+    openstrike::NavArea* area = mesh.create_area();
+    const std::uint32_t a_id = area->id;
+    area->build({0.0F, 0.0F, 0.0F}, {64.0F, 0.0F, 0.0F}, {64.0F, 64.0F, 0.0F}, {0.0F, 64.0F, 0.0F});
+    area = mesh.create_area();
+    const std::uint32_t b_id = area->id;
+    area->build({64.0F, 0.0F, 0.0F}, {128.0F, 0.0F, 0.0F}, {128.0F, 64.0F, 0.0F}, {64.0F, 64.0F, 0.0F});
+    area->set_attributes(openstrike::NavMeshCrouch);
+    area = mesh.create_area();
+    const std::uint32_t c_id = area->id;
+    area->build({128.0F, 0.0F, 0.0F}, {192.0F, 0.0F, 0.0F}, {192.0F, 64.0F, 0.0F}, {128.0F, 64.0F, 0.0F});
+
+    mesh.area_by_id(a_id)->connect_to(b_id, openstrike::NavDirection::East);
+    mesh.area_by_id(b_id)->connect_to(c_id, openstrike::NavDirection::East);
+
+    openstrike::NavPath path = mesh.build_path({{16.0F, 32.0F, 0.0F}, {176.0F, 32.0F, 0.0F}});
+    REQUIRE(path.reached_goal);
+    REQUIRE(path.segments.size() >= 4);
+    REQUIRE(path.length() > 150.0F);
+    REQUIRE(mesh.travel_distance({16.0F, 32.0F, 0.0F}, {176.0F, 32.0F, 0.0F}) > 150.0F);
+
+    mesh.area_by_id(b_id)->mark_blocked(-1, true);
+    openstrike::NavPath blocked_path = mesh.build_path({{16.0F, 32.0F, 0.0F}, {176.0F, 32.0F, 0.0F}});
+    REQUIRE(!blocked_path.reached_goal);
+
+    openstrike::NavMesh ladder_mesh;
+    openstrike::NavArea* bottom = ladder_mesh.create_area();
+    const std::uint32_t bottom_id = bottom->id;
+    bottom->build({0.0F, 0.0F, 0.0F}, {64.0F, 0.0F, 0.0F}, {64.0F, 64.0F, 0.0F}, {0.0F, 64.0F, 0.0F});
+    openstrike::NavArea* top = ladder_mesh.create_area();
+    const std::uint32_t top_id = top->id;
+    top->build({0.0F, 0.0F, 128.0F}, {64.0F, 0.0F, 128.0F}, {64.0F, 64.0F, 128.0F}, {0.0F, 64.0F, 128.0F});
+
+    openstrike::NavLadder* ladder = ladder_mesh.create_ladder();
+    const std::uint32_t ladder_id = ladder->id;
+    ladder->width = 16.0F;
+    ladder->bottom = {32.0F, 32.0F, 0.0F};
+    ladder->top = {32.0F, 32.0F, 128.0F};
+    ladder->length = 128.0F;
+    ladder->set_direction(openstrike::NavDirection::North);
+    ladder->bottom_area_id = bottom_id;
+    ladder->top_forward_area_id = top_id;
+    ladder_mesh.area_by_id(bottom_id)->add_ladder(ladder_id, true);
+    ladder_mesh.area_by_id(top_id)->add_ladder(ladder_id, false);
+
+    openstrike::NavPath ladder_path = ladder_mesh.build_path({{32.0F, 32.0F, 0.0F}, {32.0F, 32.0F, 128.0F}});
+    REQUIRE(ladder_path.reached_goal);
+    REQUIRE(std::any_of(ladder_path.segments.begin(), ladder_path.segments.end(), [](const openstrike::NavPathSegment& segment) {
+        return segment.how == openstrike::NavTraverseType::GoLadderUp;
+    }));
+}
+
+void test_nav_mesh_round_trips_source_v16_cs_subversion()
+{
+    const std::filesystem::path root = std::filesystem::current_path() / "build/test_nav_roundtrip";
+    std::filesystem::remove_all(root);
+
+    openstrike::NavMesh mesh;
+    openstrike::NavArea* area = mesh.create_area();
+    const std::uint32_t a_id = area->id;
+    area->build({0.0F, 0.0F, 0.0F}, {64.0F, 0.0F, 0.0F}, {64.0F, 64.0F, 0.0F}, {0.0F, 64.0F, 0.0F});
+    area->hiding_spots.push_back({7,
+        {16.0F, 16.0F, 0.0F},
+        static_cast<std::uint8_t>(openstrike::NavHidingSpot::InCover | openstrike::NavHidingSpot::GoodSniperSpot),
+        true});
+
+    area = mesh.create_area();
+    const std::uint32_t b_id = area->id;
+    area->build({64.0F, 0.0F, 0.0F}, {128.0F, 0.0F, 0.0F}, {128.0F, 64.0F, 0.0F}, {64.0F, 64.0F, 0.0F});
+
+    mesh.area_by_id(a_id)->connect_to(b_id, openstrike::NavDirection::East);
+    mesh.area_by_id(a_id)->approach_areas.push_back({a_id, 0, openstrike::NavTraverseType::Count, b_id, openstrike::NavTraverseType::GoEast});
+
+    openstrike::NavLadder* ladder = mesh.create_ladder();
+    const std::uint32_t ladder_id = ladder->id;
+    ladder->width = 16.0F;
+    ladder->bottom = {32.0F, 32.0F, 0.0F};
+    ladder->top = {96.0F, 32.0F, 96.0F};
+    ladder->length = 96.0F;
+    ladder->set_direction(openstrike::NavDirection::East);
+    ladder->bottom_area_id = a_id;
+    ladder->top_forward_area_id = b_id;
+    mesh.area_by_id(a_id)->add_ladder(ladder_id, true);
+    mesh.area_by_id(b_id)->add_ladder(ladder_id, false);
+    mesh.set_analyzed(true);
+
+    const std::filesystem::path nav_path = root / "roundtrip.nav";
+    REQUIRE(mesh.save_file(nav_path, 1234));
+
+    openstrike::NavMesh loaded;
+    REQUIRE(loaded.load_file(nav_path, 1234) == openstrike::NavError::Ok);
+    REQUIRE(loaded.loaded());
+    REQUIRE(!loaded.out_of_date());
+    REQUIRE(loaded.analyzed());
+    REQUIRE(loaded.file_version() == openstrike::kNavCurrentVersion);
+    REQUIRE(loaded.sub_version() == openstrike::kCounterStrikeNavSubVersion);
+    REQUIRE(loaded.areas().size() == 2);
+    REQUIRE(loaded.ladders().size() == 1);
+    REQUIRE(loaded.area_by_id(a_id)->hiding_spots.size() == 1);
+    REQUIRE(loaded.area_by_id(a_id)->approach_areas.size() == 1);
+    REQUIRE(loaded.area_by_id(a_id)->is_connected(b_id, openstrike::NavDirection::East));
+    REQUIRE(loaded.load_file(nav_path, 5678) == openstrike::NavError::Ok);
+    REQUIRE(loaded.out_of_date());
+
+    std::filesystem::remove_all(root);
+}
+
+void test_navigation_system_generates_from_world_collision()
+{
+    openstrike::LoadedWorld world;
+    world.name = "nav_generated";
+    world.byte_size = 512;
+    add_collision_triangle(world, {-64.0F, -64.0F, 0.0F}, {64.0F, -64.0F, 0.0F}, {64.0F, 64.0F, 0.0F}, {0.0F, 0.0F, 1.0F});
+    add_collision_triangle(world, {-64.0F, -64.0F, 0.0F}, {64.0F, 64.0F, 0.0F}, {-64.0F, 64.0F, 0.0F}, {0.0F, 0.0F, 1.0F});
+    add_collision_triangle(world, {-64.0F, -64.0F, 0.0F}, {64.0F, -64.0F, 64.0F}, {64.0F, 64.0F, 64.0F}, {0.0F, 1.0F, 0.0F});
+
+    openstrike::NavigationSystem navigation;
+    REQUIRE(navigation.generate_from_world(world));
+    REQUIRE(navigation.mesh().loaded());
+    REQUIRE(navigation.mesh().analyzed());
+    REQUIRE(navigation.mesh().areas().size() == 1);
+    REQUIRE(navigation.mesh().areas()[0].hiding_spots.size() == 4);
+
+    const std::optional<float> ground = navigation.mesh().ground_height({0.0F, 0.0F, 32.0F});
+    REQUIRE(ground.has_value());
+    REQUIRE(std::abs(*ground) < 0.001F);
+
+    openstrike::NavPath path = navigation.mesh().build_path({{-32.0F, 0.0F, 0.0F}, {32.0F, 0.0F, 0.0F}});
+    REQUIRE(path.reached_goal);
+}
+
+void test_navigation_commands_sync_with_loaded_world()
+{
+    const std::filesystem::path root = std::filesystem::current_path() / "build/test_nav_command_content";
+    std::filesystem::remove_all(root);
+    std::filesystem::create_directories(root / "game/maps");
+
+    const std::string entities =
+        "{\n"
+        "\"classname\" \"worldspawn\"\n"
+        "}\n";
+    write_square_bsp(root / "game/maps/nav_command_world.bsp", entities);
+
+    openstrike::RuntimeConfig config;
+    config.content_root = root / "game";
+
+    openstrike::EngineContext context;
+    openstrike::configure_engine_context(context, config);
+
+    context.command_buffer.add_text("map nav_command_world");
+    openstrike::ConsoleCommandContext console_context = context.console_context();
+    context.command_buffer.execute(context.commands, console_context);
+    REQUIRE(context.world.current_world() != nullptr);
+    REQUIRE(context.navigation.mesh().loaded());
+    REQUIRE(!context.navigation.mesh().areas().empty());
+
+    context.command_buffer.add_text("nav_save");
+    context.command_buffer.execute(context.commands, console_context);
+    REQUIRE(std::filesystem::exists(root / "game/maps/nav_command_world.nav"));
+
+    context.navigation.clear();
+    REQUIRE(!context.navigation.mesh().loaded());
+    context.command_buffer.add_text("nav_load");
+    context.command_buffer.execute(context.commands, console_context);
+    REQUIRE(context.navigation.mesh().loaded());
+
+    context.command_buffer.add_text("disconnect");
+    context.command_buffer.execute(context.commands, console_context);
+    REQUIRE(!context.navigation.mesh().loaded());
+
+    std::filesystem::remove_all(root);
 }
 
 void test_physics_world_blocks_character_against_static_mesh()
@@ -1864,6 +2516,55 @@ void test_physics_world_blocks_character_against_static_mesh()
     REQUIRE(state.on_ground);
     REQUIRE(state.origin.x < 33.0F);
 }
+
+void test_physics_world_uses_source_player_solid_mask()
+{
+    openstrike::LoadedWorld world;
+    world.name = "physics_player_solid_mask";
+
+    add_collision_triangle(world,
+        {-128.0F, -128.0F, 0.0F},
+        {128.0F, -128.0F, 0.0F},
+        {128.0F, 128.0F, 0.0F},
+        {0.0F, 0.0F, 1.0F},
+        kTestContentsSolid);
+    add_collision_triangle(world,
+        {-128.0F, -128.0F, 0.0F},
+        {128.0F, 128.0F, 0.0F},
+        {-128.0F, 128.0F, 0.0F},
+        {0.0F, 0.0F, 1.0F},
+        kTestContentsSolid);
+    add_collision_triangle(world,
+        {48.0F, -128.0F, 0.0F},
+        {48.0F, 128.0F, 0.0F},
+        {48.0F, 128.0F, 128.0F},
+        {-1.0F, 0.0F, 0.0F},
+        kTestContentsMonsterClip);
+    add_collision_triangle(world,
+        {48.0F, -128.0F, 0.0F},
+        {48.0F, 128.0F, 128.0F},
+        {48.0F, -128.0F, 128.0F},
+        {-1.0F, 0.0F, 0.0F},
+        kTestContentsMonsterClip);
+
+    openstrike::PhysicsWorld physics;
+    REQUIRE(physics.load_static_world(world));
+
+    openstrike::PhysicsCharacterConfig config;
+    config.radius = 16.0F;
+    config.height = 72.0F;
+    physics.reset_character({0.0F, 0.0F, 0.0F}, {}, config);
+
+    openstrike::PhysicsCharacterState state = physics.character_state();
+    constexpr float dt = 1.0F / 64.0F;
+    for (int tick = 0; tick < 32; ++tick)
+    {
+        state = physics.move_character_to(state.origin + openstrike::Vec3{4.0F, 0.0F, 0.0F}, {256.0F, 0.0F, 0.0F}, dt);
+    }
+
+    REQUIRE(state.on_ground);
+    REQUIRE(state.origin.x > 96.0F);
+}
 }
 
 int main()
@@ -1882,12 +2583,18 @@ int main()
         test_network_stream_and_protocol_roundtrip();
         test_network_udp_loopback_connects_and_exchanges_text();
         test_command_buffer_cvars_and_quit();
+        test_loading_screen_state_matches_source_map_lifecycle();
         test_audio_sound_chars_match_source_prefix_rules();
         test_audio_source_soundlevel_gain_falls_with_distance();
         test_world_manager_loads_source_bsp();
         test_world_manager_builds_bsp_mesh_and_floor();
+        test_world_manager_builds_bsp_static_lightmap();
+        test_world_manager_prefers_hdr_bsp_lightmap();
         test_world_manager_tracks_source_sky_surfaces();
+        test_world_manager_uses_source_brush_contents_for_collision();
         test_world_manager_loads_static_props_and_renders_bounds();
+        test_world_manager_loads_large_static_prop_studio_mesh();
+        test_world_manager_loads_bbox_static_prop_collision();
         test_source_fgd_loads_classes_and_metadata();
         test_source_fgd_accepts_concatenated_source_strings();
         test_map_command_loads_current_world();
@@ -1906,7 +2613,13 @@ int main()
         test_fps_controller_maps_walk_duck_and_duck_eye_height();
         test_sdl_gameplay_input_adapter_maps_source_style_buttons();
         test_fps_controller_consumes_mouse_and_clamps_pitch();
+        test_nav_area_geometry_matches_source_semantics();
+        test_nav_mesh_pathing_uses_source_costs_blocking_and_ladders();
+        test_nav_mesh_round_trips_source_v16_cs_subversion();
+        test_navigation_system_generates_from_world_collision();
+        test_navigation_commands_sync_with_loaded_world();
         test_physics_world_blocks_character_against_static_mesh();
+        test_physics_world_uses_source_player_solid_mask();
     }
     catch (const std::exception& error)
     {

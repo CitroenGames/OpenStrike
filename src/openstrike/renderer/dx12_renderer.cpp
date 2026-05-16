@@ -11,6 +11,7 @@
 #include "openstrike/ui/main_menu_controller.hpp"
 #include "openstrike/ui/rml_console_controller.hpp"
 #include "openstrike/ui/rml_hud_controller.hpp"
+#include "openstrike/ui/rml_loading_screen_controller.hpp"
 #include "openstrike/world/world.hpp"
 
 #ifndef WIN32_LEAN_AND_MEAN
@@ -71,6 +72,7 @@ constexpr std::uint32_t kSkyboxCommandListIndex = 0;
 constexpr std::uint32_t kWorldCommandListIndex = 1;
 constexpr std::uint32_t kForwardPlusTileSize = 16;
 constexpr std::uint32_t kForwardPlusDescriptorCount = 3;
+constexpr std::uint32_t kWorldLightmapDescriptorCount = 1;
 constexpr std::uint32_t kForwardPlusMaxLights = 1024;
 constexpr std::uint32_t kForwardPlusMaxLightsPerTile = 64;
 constexpr std::uint32_t kShaderDescriptorCapacity = 16384;
@@ -81,6 +83,8 @@ struct WorldDrawVertex
     float position[3]{};
     float normal[3]{};
     float texcoord[2]{};
+    float lightmap_texcoord[2]{};
+    float lightmap_weight = 0.0F;
 };
 
 struct SkyboxDrawVertex
@@ -600,6 +604,117 @@ bool upload_source_texture_to_gpu(
     srv_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
     srv_desc.Texture2D.MostDetailedMip = 0;
     srv_desc.Texture2D.MipLevels = mip_count;
+    srv_desc.Texture2D.ResourceMinLODClamp = 0.0F;
+    device->CreateShaderResourceView(output.resource.Get(), &srv_desc, cpu_handle);
+    return true;
+}
+
+bool upload_world_lightmap_to_gpu(
+    ID3D12Device* device,
+    ID3D12GraphicsCommandList* command_list,
+    const WorldLightmapAtlas& atlas,
+    D3D12_CPU_DESCRIPTOR_HANDLE cpu_handle,
+    TextureGpuResources& output,
+    std::string_view debug_name)
+{
+    if (device == nullptr || command_list == nullptr)
+    {
+        return false;
+    }
+
+    const std::uint32_t width = std::max<std::uint32_t>(atlas.width, 1U);
+    const std::uint32_t height = std::max<std::uint32_t>(atlas.height, 1U);
+    const std::size_t required_floats = static_cast<std::size_t>(width) * height * 4U;
+    std::vector<float> fallback_pixels;
+    const float* pixels = atlas.rgba.size() >= required_floats ? atlas.rgba.data() : nullptr;
+    if (pixels == nullptr)
+    {
+        fallback_pixels.assign(required_floats, 1.0F);
+        pixels = fallback_pixels.data();
+    }
+
+    constexpr DXGI_FORMAT format = DXGI_FORMAT_R32G32B32A32_FLOAT;
+    D3D12_RESOURCE_DESC desc = texture2d_desc(width, height, 1, format);
+    const auto default_heap = heap_properties(D3D12_HEAP_TYPE_DEFAULT);
+    if (!succeeded(device->CreateCommittedResource(&default_heap,
+            D3D12_HEAP_FLAG_NONE,
+            &desc,
+            D3D12_RESOURCE_STATE_COPY_DEST,
+            nullptr,
+            IID_PPV_ARGS(&output.resource)),
+            "ID3D12Device::CreateCommittedResource world lightmap"))
+    {
+        return false;
+    }
+    set_debug_name(output.resource.Get(), debug_name);
+
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT layout{};
+    UINT row_count = 0;
+    UINT64 row_size = 0;
+    UINT64 upload_bytes = 0;
+    device->GetCopyableFootprints(&desc, 0, 1, 0, &layout, &row_count, &row_size, &upload_bytes);
+    (void)row_count;
+    (void)row_size;
+
+    const auto upload_heap = heap_properties(D3D12_HEAP_TYPE_UPLOAD);
+    const auto upload_desc = buffer_desc(upload_bytes);
+    if (!succeeded(device->CreateCommittedResource(&upload_heap,
+            D3D12_HEAP_FLAG_NONE,
+            &upload_desc,
+            D3D12_RESOURCE_STATE_GENERIC_READ,
+            nullptr,
+            IID_PPV_ARGS(&output.upload_buffer)),
+            "ID3D12Device::CreateCommittedResource world lightmap upload"))
+    {
+        return false;
+    }
+    if (!debug_name.empty())
+    {
+        set_debug_name(output.upload_buffer.Get(), std::format("{} Upload", debug_name));
+    }
+
+    unsigned char* mapped = nullptr;
+    if (!succeeded(output.upload_buffer->Map(0, nullptr, reinterpret_cast<void**>(&mapped)), "ID3D12Resource::Map world lightmap upload"))
+    {
+        return false;
+    }
+
+    const std::uint64_t source_row_bytes = static_cast<std::uint64_t>(width) * 4U * sizeof(float);
+    unsigned char* dst = mapped + layout.Offset;
+    const unsigned char* src = reinterpret_cast<const unsigned char*>(pixels);
+    for (std::uint32_t row = 0; row < height; ++row)
+    {
+        std::memcpy(dst + (static_cast<std::uint64_t>(row) * layout.Footprint.RowPitch),
+            src + (static_cast<std::uint64_t>(row) * source_row_bytes),
+            static_cast<std::size_t>(source_row_bytes));
+    }
+    output.upload_buffer->Unmap(0, nullptr);
+
+    D3D12_TEXTURE_COPY_LOCATION src_location{};
+    src_location.pResource = output.upload_buffer.Get();
+    src_location.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    src_location.PlacedFootprint = layout;
+
+    D3D12_TEXTURE_COPY_LOCATION dst_location{};
+    dst_location.pResource = output.resource.Get();
+    dst_location.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    dst_location.SubresourceIndex = 0;
+    command_list->CopyTextureRegion(&dst_location, 0, 0, 0, &src_location, nullptr);
+
+    D3D12_RESOURCE_BARRIER barrier{};
+    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    barrier.Transition.pResource = output.resource.Get();
+    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    command_list->ResourceBarrier(1, &barrier);
+
+    D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc{};
+    srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    srv_desc.Format = format;
+    srv_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    srv_desc.Texture2D.MostDetailedMip = 0;
+    srv_desc.Texture2D.MipLevels = 1;
     srv_desc.Texture2D.ResourceMinLODClamp = 0.0F;
     device->CreateShaderResourceView(output.resource.Get(), &srv_desc, cpu_handle);
     return true;
@@ -1270,9 +1385,11 @@ std::array<std::uint16_t, kSkyboxFaceCount * 6> build_skybox_indices()
     return indices;
 }
 
-bool gameplay_ui_visible(const RmlConsoleController* console, const MainMenuController* main_menu)
+bool gameplay_ui_visible(
+    const RmlConsoleController* console, const MainMenuController* main_menu, const RmlLoadingScreenController* loading_screen)
 {
-    return (console != nullptr && console->visible()) || (main_menu != nullptr && main_menu->visible());
+    return (console != nullptr && console->visible()) || (main_menu != nullptr && main_menu->visible()) ||
+           (loading_screen != nullptr && loading_screen->visible());
 }
 
 double elapsed_us(std::chrono::steady_clock::time_point begin, std::chrono::steady_clock::time_point end)
@@ -1300,6 +1417,7 @@ struct Dx12Renderer::WorldGpuResources
     D3D12_VERTEX_BUFFER_VIEW vertex_view{};
     D3D12_INDEX_BUFFER_VIEW index_view{};
     std::vector<TextureGpuResources> textures;
+    TextureGpuResources lightmap_texture;
     std::vector<MaterialGpuConstants> material_constants;
     std::vector<WorldDrawBatch> batches;
     std::array<ForwardPlusFrameGpuResources, kFrameCount> forward_plus_frames;
@@ -1428,11 +1546,17 @@ void Dx12Renderer::render(const FrameContext& context)
         rml_console_controller_->update();
     }
 
+    if (rml_loading_screen_controller_ != nullptr && engine_context_ != nullptr)
+    {
+        rml_loading_screen_controller_->update(engine_context_->loading_screen);
+    }
+
     sync_main_menu_visibility();
+    const bool loading_screen_visible = rml_loading_screen_controller_ != nullptr && rml_loading_screen_controller_->visible();
     if (rml_hud_controller_ != nullptr)
     {
         const bool main_menu_visible = main_menu_controller_ != nullptr && main_menu_controller_->visible();
-        rml_hud_controller_->update(main_menu_visible);
+        rml_hud_controller_->update(main_menu_visible || loading_screen_visible);
     }
 
     if (rml_context_ != nullptr)
@@ -2087,14 +2211,21 @@ bool Dx12Renderer::create_world_pipeline()
     texture_range.RegisterSpace = 0;
     texture_range.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
 
+    D3D12_DESCRIPTOR_RANGE lightmap_range{};
+    lightmap_range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    lightmap_range.NumDescriptors = kWorldLightmapDescriptorCount;
+    lightmap_range.BaseShaderRegister = 1;
+    lightmap_range.RegisterSpace = 0;
+    lightmap_range.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
     D3D12_DESCRIPTOR_RANGE forward_plus_range{};
     forward_plus_range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
     forward_plus_range.NumDescriptors = kForwardPlusDescriptorCount;
-    forward_plus_range.BaseShaderRegister = 1;
+    forward_plus_range.BaseShaderRegister = 2;
     forward_plus_range.RegisterSpace = 0;
     forward_plus_range.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
 
-    std::array<D3D12_ROOT_PARAMETER, 4> root_parameters{};
+    std::array<D3D12_ROOT_PARAMETER, 5> root_parameters{};
     root_parameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
     root_parameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
     root_parameters[0].Constants.ShaderRegister = 0;
@@ -2115,28 +2246,39 @@ bool Dx12Renderer::create_world_pipeline()
     root_parameters[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     root_parameters[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
     root_parameters[3].DescriptorTable.NumDescriptorRanges = 1;
-    root_parameters[3].DescriptorTable.pDescriptorRanges = &forward_plus_range;
+    root_parameters[3].DescriptorTable.pDescriptorRanges = &lightmap_range;
 
-    D3D12_STATIC_SAMPLER_DESC sampler{};
-    sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
-    sampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-    sampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-    sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-    sampler.MipLODBias = 0.0F;
-    sampler.MaxAnisotropy = 1;
-    sampler.ComparisonFunc = D3D12_COMPARISON_FUNC_ALWAYS;
-    sampler.BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE;
-    sampler.MinLOD = 0.0F;
-    sampler.MaxLOD = D3D12_FLOAT32_MAX;
-    sampler.ShaderRegister = 0;
-    sampler.RegisterSpace = 0;
-    sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    root_parameters[4].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    root_parameters[4].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    root_parameters[4].DescriptorTable.NumDescriptorRanges = 1;
+    root_parameters[4].DescriptorTable.pDescriptorRanges = &forward_plus_range;
+
+    std::array<D3D12_STATIC_SAMPLER_DESC, 2> samplers{};
+    samplers[0].Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+    samplers[0].AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    samplers[0].AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    samplers[0].AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    samplers[0].MipLODBias = 0.0F;
+    samplers[0].MaxAnisotropy = 1;
+    samplers[0].ComparisonFunc = D3D12_COMPARISON_FUNC_ALWAYS;
+    samplers[0].BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE;
+    samplers[0].MinLOD = 0.0F;
+    samplers[0].MaxLOD = D3D12_FLOAT32_MAX;
+    samplers[0].ShaderRegister = 0;
+    samplers[0].RegisterSpace = 0;
+    samplers[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    samplers[1] = samplers[0];
+    samplers[1].AddressU = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    samplers[1].AddressV = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    samplers[1].AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    samplers[1].ShaderRegister = 1;
 
     D3D12_ROOT_SIGNATURE_DESC root_desc{};
     root_desc.NumParameters = static_cast<UINT>(root_parameters.size());
     root_desc.pParameters = root_parameters.data();
-    root_desc.NumStaticSamplers = 1;
-    root_desc.pStaticSamplers = &sampler;
+    root_desc.NumStaticSamplers = static_cast<UINT>(samplers.size());
+    root_desc.pStaticSamplers = samplers.data();
     root_desc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
 
     ComPtr<ID3DBlob> signature_blob;
@@ -2169,10 +2311,12 @@ bool Dx12Renderer::create_world_pipeline()
         return false;
     }
 
-    std::array<D3D12_INPUT_ELEMENT_DESC, 3> input_layout{{
+    std::array<D3D12_INPUT_ELEMENT_DESC, 5> input_layout{{
         {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, offsetof(WorldDrawVertex, position), D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
         {"NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, offsetof(WorldDrawVertex, normal), D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
         {"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, offsetof(WorldDrawVertex, texcoord), D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+        {"TEXCOORD", 1, DXGI_FORMAT_R32G32_FLOAT, 0, offsetof(WorldDrawVertex, lightmap_texcoord), D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+        {"TEXCOORD", 2, DXGI_FORMAT_R32_FLOAT, 0, offsetof(WorldDrawVertex, lightmap_weight), D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
     }};
 
     D3D12_GRAPHICS_PIPELINE_STATE_DESC pso_desc{};
@@ -2395,9 +2539,11 @@ bool Dx12Renderer::initialize_rml(const RuntimeConfig& config)
             rml_console_controller_->show();
         }
     });
-    main_menu_controller_->set_launch_map_callback([this](std::string map_name) {
+    main_menu_controller_->set_launch_map_callback([this](std::string map_name, std::string game_mode) {
         if (engine_context_ != nullptr)
         {
+            engine_context_->loading_screen.open_for_map(map_name, game_mode, default_loading_description(), default_loading_tip());
+            engine_context_->loading_screen.set_progress(0.05F, "Retrieving game data...");
             engine_context_->command_buffer.add_text("map " + map_name);
         }
     });
@@ -2451,6 +2597,12 @@ bool Dx12Renderer::initialize_rml(const RuntimeConfig& config)
 
     if (engine_context_ != nullptr)
     {
+        rml_loading_screen_controller_ = std::make_unique<RmlLoadingScreenController>();
+        if (!rml_loading_screen_controller_->initialize(*rml_context_, config))
+        {
+            return false;
+        }
+
         rml_hud_controller_ = std::make_unique<RmlHudController>();
         if (!rml_hud_controller_->initialize(*rml_context_, *engine_context_, config))
         {
@@ -2475,13 +2627,23 @@ void Dx12Renderer::sync_main_menu_visibility()
     }
 
     const std::uint64_t world_generation = engine_context_->world.generation();
-    if (world_generation == main_menu_world_generation_)
+    const bool loading_screen_active = engine_context_->loading_screen.visible();
+    if (world_generation == main_menu_world_generation_ && loading_screen_active == main_menu_loading_active_)
     {
         return;
     }
 
     main_menu_world_generation_ = world_generation;
-    if (engine_context_->world.current_world() != nullptr)
+    main_menu_loading_active_ = loading_screen_active;
+    if (loading_screen_active)
+    {
+        if (main_menu_controller_->visible())
+        {
+            main_menu_controller_->set_visible(false);
+            log_info("hid RmlUi main menu for loading screen");
+        }
+    }
+    else if (engine_context_->world.current_world() != nullptr)
     {
         if (main_menu_controller_->visible())
         {
@@ -2704,6 +2866,8 @@ bool Dx12Renderer::ensure_world_gpu_resources()
                 {vertex.position.x, vertex.position.y, vertex.position.z},
                 {vertex.normal.x, vertex.normal.y, vertex.normal.z},
                 {vertex.texcoord.x, vertex.texcoord.y},
+                {vertex.lightmap_texcoord.x, vertex.lightmap_texcoord.y},
+                vertex.lightmap_weight,
             });
         }
 
@@ -2744,7 +2908,7 @@ bool Dx12Renderer::ensure_world_gpu_resources()
         gpu->index_count = static_cast<std::uint32_t>(world->mesh.indices.size());
 
         const std::uint32_t material_count = std::max<std::uint32_t>(static_cast<std::uint32_t>(world->mesh.materials.size()), 1U);
-        if (!allocate_shader_descriptors(material_count + (kFrameCount * kForwardPlusDescriptorCount), gpu->srv_range))
+        if (!allocate_shader_descriptors(material_count + kWorldLightmapDescriptorCount + (kFrameCount * kForwardPlusDescriptorCount), gpu->srv_range))
         {
             return false;
         }
@@ -2796,6 +2960,17 @@ bool Dx12Renderer::ensure_world_gpu_resources()
             gpu->textures.push_back(std::move(gpu_texture));
             cpu_handle.ptr += shader_descriptor_size_;
         }
+
+        if (!upload_world_lightmap_to_gpu(device_.Get(),
+                command_list_.Get(),
+                world->mesh.lightmap_atlas,
+                cpu_handle,
+                gpu->lightmap_texture,
+                std::format("OpenStrike World {} Lightmap Atlas", world->name)))
+        {
+            return false;
+        }
+        cpu_handle.ptr += shader_descriptor_size_;
 
         gpu->batches.reserve(world->mesh.batches.empty() ? 1 : world->mesh.batches.size());
         if (world->mesh.batches.empty())
@@ -2996,7 +3171,8 @@ bool Dx12Renderer::upload_forward_plus_resources(const LoadedWorld& world)
     if (descriptors_dirty)
     {
         D3D12_CPU_DESCRIPTOR_HANDLE cpu_handle = world_gpu_->srv_range.cpu_start;
-        cpu_handle.ptr += static_cast<UINT64>(world_gpu_->material_descriptor_count + (frame_index_ * kForwardPlusDescriptorCount)) *
+        cpu_handle.ptr += static_cast<UINT64>(
+                              world_gpu_->material_descriptor_count + kWorldLightmapDescriptorCount + (frame_index_ * kForwardPlusDescriptorCount)) *
                           shader_descriptor_size_;
         create_structured_buffer_srv(device_.Get(), frame.tile_buffer.Get(), frame.tile_capacity, sizeof(ForwardPlusTileGpu), cpu_handle);
         cpu_handle.ptr += shader_descriptor_size_;
@@ -3052,10 +3228,14 @@ bool Dx12Renderer::record_world(ID3D12GraphicsCommandList* command_list) const
     command_list->IASetVertexBuffers(0, 1, &world_gpu_->vertex_view);
     command_list->IASetIndexBuffer(&world_gpu_->index_view);
     const D3D12_GPU_DESCRIPTOR_HANDLE gpu_start = world_gpu_->srv_range.gpu_start;
+    D3D12_GPU_DESCRIPTOR_HANDLE lightmap_handle = gpu_start;
+    lightmap_handle.ptr += static_cast<UINT64>(world_gpu_->material_descriptor_count) * shader_descriptor_size_;
+    command_list->SetGraphicsRootDescriptorTable(3, lightmap_handle);
     D3D12_GPU_DESCRIPTOR_HANDLE forward_plus_handle = gpu_start;
-    forward_plus_handle.ptr += static_cast<UINT64>(world_gpu_->material_descriptor_count + (frame_index_ * kForwardPlusDescriptorCount)) *
+    forward_plus_handle.ptr += static_cast<UINT64>(
+                                   world_gpu_->material_descriptor_count + kWorldLightmapDescriptorCount + (frame_index_ * kForwardPlusDescriptorCount)) *
                                shader_descriptor_size_;
-    command_list->SetGraphicsRootDescriptorTable(3, forward_plus_handle);
+    command_list->SetGraphicsRootDescriptorTable(4, forward_plus_handle);
     std::uint32_t last_material_index = std::numeric_limits<std::uint32_t>::max();
     for (const WorldDrawBatch& batch : world_gpu_->batches)
     {
@@ -3084,6 +3264,7 @@ void Dx12Renderer::shutdown_rml()
 {
     rml_console_controller_.reset();
     rml_hud_controller_.reset();
+    rml_loading_screen_controller_.reset();
     main_menu_controller_.reset();
 
     if (rml_initialized_)
@@ -3152,7 +3333,8 @@ void Dx12Renderer::pump_messages()
             continue;
         }
 
-        const bool ui_visible = gameplay_ui_visible(rml_console_controller_.get(), main_menu_controller_.get());
+        const bool ui_visible = gameplay_ui_visible(
+            rml_console_controller_.get(), main_menu_controller_.get(), rml_loading_screen_controller_.get());
         if (engine_context_ != nullptr && !ui_visible)
         {
             if (handle_sdl_gameplay_input_event(engine_context_->input, event))
@@ -3169,7 +3351,9 @@ void Dx12Renderer::pump_messages()
 
     if (engine_context_ != nullptr)
     {
-        const bool should_capture = engine_context_->world.current_world() != nullptr && !gameplay_ui_visible(rml_console_controller_.get(), main_menu_controller_.get());
+        const bool should_capture = engine_context_->world.current_world() != nullptr &&
+                                    !gameplay_ui_visible(
+                                        rml_console_controller_.get(), main_menu_controller_.get(), rml_loading_screen_controller_.get());
         if (!should_capture)
         {
             engine_context_->input.clear_gameplay_buttons();

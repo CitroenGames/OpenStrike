@@ -171,6 +171,11 @@ std::optional<std::string> resolve_map_argument(const CommandInvocation& invocat
 
 void disconnect_host_session(ConsoleCommandContext& context)
 {
+    if (context.loading_screen != nullptr)
+    {
+        context.loading_screen->close();
+    }
+
     if (context.audio != nullptr)
     {
         context.audio->stop_all_sounds();
@@ -181,6 +186,10 @@ void disconnect_host_session(ConsoleCommandContext& context)
     if (context.world != nullptr)
     {
         context.world->unload();
+    }
+    if (context.navigation != nullptr)
+    {
+        context.navigation->clear();
     }
 
     clear_loaded_world_variables(context.variables);
@@ -214,23 +223,60 @@ void register_default_variables(ConsoleVariables& variables, const RuntimeConfig
     variables.register_variable("game_content_root", config.content_root.string(), "Root directory for mounted game content.");
     variables.register_variable("game_ui_document", config.rml_document.generic_string(), "Initial RmlUi document.");
     AudioSystem::register_variables(variables);
+    NavigationSystem::register_variables(variables);
 }
 
 bool load_host_map(const std::string& map_name, ConsoleCommandContext& context)
 {
+    if (context.loading_screen != nullptr && !context.loading_screen->visible())
+    {
+        context.loading_screen->open_for_map(map_name);
+    }
+
+    if (context.loading_screen != nullptr)
+    {
+        context.loading_screen->set_progress(0.14F, "Retrieving game data...");
+    }
+
     if (!context.world->load_map(map_name, *context.filesystem))
     {
+        if (context.loading_screen != nullptr)
+        {
+            context.loading_screen->complete("Map load failed.");
+        }
         return false;
+    }
+
+    if (context.loading_screen != nullptr)
+    {
+        context.loading_screen->set_progress(0.68F, "Building game world...");
     }
 
     if (const LoadedWorld* world = context.world->current_world())
     {
         update_loaded_world_variables(context.variables, *world);
+        if (context.navigation != nullptr && context.filesystem != nullptr)
+        {
+            if (context.loading_screen != nullptr)
+            {
+                context.loading_screen->set_progress(0.78F, "Loading navigation data...");
+            }
+            context.navigation->sync_world(world, *context.filesystem);
+        }
     }
 
     if (context.audio != nullptr)
     {
+        if (context.loading_screen != nullptr)
+        {
+            context.loading_screen->set_progress(0.88F, "Precaching client resources...");
+        }
         context.audio->stop_all_sounds();
+    }
+
+    if (context.loading_screen != nullptr)
+    {
+        context.loading_screen->complete("Sending client info...");
     }
 
     return true;
@@ -262,6 +308,11 @@ bool run_changelevel_command(const CommandInvocation& invocation, ConsoleCommand
         return false;
     }
 
+    if (context.loading_screen != nullptr)
+    {
+        context.loading_screen->open_for_map(*map_name, "Changing Level", default_loading_description(), default_loading_tip());
+    }
+
     return load_host_map(*map_name, context);
 }
 
@@ -288,6 +339,11 @@ bool run_map_command(const CommandInvocation& invocation, ConsoleCommandContext&
     if (!map_name)
     {
         return false;
+    }
+
+    if (context.loading_screen != nullptr)
+    {
+        context.loading_screen->open_for_map(*map_name);
     }
 
     if (!load_host_map(*map_name, context))
@@ -515,6 +571,7 @@ void register_default_commands(CommandRegistry& commands)
     commands.register_command("net_status", "Print client/server network state.", net_status_command);
     commands.register_command("net_say", "Send a text message through the active network session.", net_say_command);
     AudioSystem::register_commands(commands);
+    NavigationSystem::register_commands(commands);
 
     commands.register_command("clear", "Clears the console output.", [](const CommandInvocation&, ConsoleCommandContext&) {
         Logger::instance().clear_history();
@@ -617,6 +674,8 @@ ConsoleCommandContext EngineContext::console_context()
         .world = &world,
         .network = &network,
         .audio = &audio,
+        .navigation = &navigation,
+        .loading_screen = &loading_screen,
         .request_quit = [this] {
             request_quit();
         },

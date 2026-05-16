@@ -702,6 +702,11 @@ void ViewportPanel::HandleModelDrop(const char* modelPath)
     // Create prop_static entity
     int idx = m_doc->AddEntity("prop_static", srcPos);
     m_doc->ApplyFgdDefaults(idx, m_fgd);
+    if (idx >= 0 && idx < (int)m_doc->GetEntities().size() &&
+        m_doc->GetEntities()[idx].keyvalues.find("solid") == m_doc->GetEntities()[idx].keyvalues.end())
+    {
+        m_doc->SetEntityKeyValue(idx, "solid", "6");
+    }
 
     // Set the model path keyvalue
     m_doc->SetEntityKeyValue(idx, "model", modelPath);

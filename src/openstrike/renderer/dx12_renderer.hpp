@@ -39,6 +39,7 @@ class MainMenuController;
 class RmlConsoleController;
 class RmlDx12RenderInterface;
 class RmlHudController;
+class RmlLoadingScreenController;
 struct LoadedWorld;
 struct ShaderDescriptorRange;
 
@@ -129,9 +130,11 @@ private:
     std::uint64_t world_gpu_generation_ = 0;
     std::uint64_t skybox_gpu_generation_ = 0;
     std::uint64_t main_menu_world_generation_ = 0;
+    bool main_menu_loading_active_ = false;
     std::unique_ptr<SystemInterface_SDL> rml_system_interface_;
     std::unique_ptr<RmlDx12RenderInterface> rml_render_interface_;
     std::unique_ptr<MainMenuController> main_menu_controller_;
+    std::unique_ptr<RmlLoadingScreenController> rml_loading_screen_controller_;
     std::unique_ptr<RmlHudController> rml_hud_controller_;
     std::unique_ptr<RmlConsoleController> rml_console_controller_;
     EngineContext* engine_context_ = nullptr;
