@@ -1,4 +1,4 @@
-#include "openstrike/app/application.hpp"
+#include "openstrike/app/openstrike_application.hpp"
 #include "openstrike/core/command_line.hpp"
 #include "openstrike/core/log.hpp"
 #include "openstrike/engine/runtime_config.hpp"
@@ -11,7 +11,7 @@ int main(int argc, char** argv)
     {
         openstrike::CommandLine command_line(argc, argv);
         openstrike::RuntimeConfig config = openstrike::RuntimeConfig::from_command_line(command_line);
-        return openstrike::run_application(config);
+        return openstrike::run_openstrike_application(config);
     }
     catch (const std::exception& error)
     {
@@ -19,4 +19,3 @@ int main(int argc, char** argv)
         return 1;
     }
 }
-

@@ -24,34 +24,14 @@ constexpr float kWalkableNormalZ = 0.70F;
 constexpr std::uint32_t kUndefinedPlace = 0;
 constexpr std::uint8_t kCompletelyVisible = 0x02;
 
-float dot(Vec3 lhs, Vec3 rhs)
-{
-    return (lhs.x * rhs.x) + (lhs.y * rhs.y) + (lhs.z * rhs.z);
-}
-
 float length_squared(Vec3 value)
 {
-    return dot(value, value);
+    return openstrike::dot(value, value);
 }
 
 float length(Vec3 value)
 {
     return std::sqrt(length_squared(value));
-}
-
-Vec3 operator/(Vec3 value, float scalar)
-{
-    return {value.x / scalar, value.y / scalar, value.z / scalar};
-}
-
-Vec3 normalize(Vec3 value)
-{
-    const float len = length(value);
-    if (len <= kEpsilon)
-    {
-        return {};
-    }
-    return value / len;
 }
 
 float distance_2d_squared(Vec3 lhs, Vec3 rhs)

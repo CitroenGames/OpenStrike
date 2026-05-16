@@ -7,9 +7,12 @@
 #include <algorithm>
 #include <format>
 #include <fstream>
+#include <memory>
+#include <mutex>
 #include <sstream>
 #include <stdexcept>
 #include <system_error>
+#include <unordered_map>
 
 namespace openstrike
 {
@@ -110,7 +113,38 @@ std::string vpk_entry_path(std::string_view directory, std::string_view filename
     return source_lower_copy(result);
 }
 
+std::filesystem::path normalized_absolute_path(const std::filesystem::path& path)
+{
+    std::error_code error;
+    std::filesystem::path absolute = std::filesystem::weakly_canonical(path, error);
+    if (error)
+    {
+        absolute = std::filesystem::absolute(path, error);
+    }
+    if (error)
+    {
+        absolute = path;
+    }
+    return absolute.lexically_normal();
 }
+
+std::string cache_key_for_path(const std::filesystem::path& path)
+{
+    std::string key = normalized_absolute_path(path).string();
+    source_normalize_slashes(key);
+    return source_lower_copy(key);
+}
+
+}
+
+struct SourceAssetStore::VpkDirectoryMount
+{
+    std::filesystem::path dir_path;
+    std::filesystem::path cache_path;
+    std::uintmax_t file_size = 0;
+    std::filesystem::file_time_type last_write_time{};
+    std::unordered_map<std::string, VpkEntry> entries;
+};
 
 SourceAssetStore::SourceAssetStore(
     const ContentFileSystem& filesystem,
@@ -155,7 +189,7 @@ std::optional<std::vector<unsigned char>> SourceAssetStore::read_binary(const st
         return std::nullopt;
     }
 
-    return read_vpk_entry(it->second);
+    return read_vpk_entry(*it->second);
 }
 
 std::optional<std::string> SourceAssetStore::read_text(const std::filesystem::path& relative_path, std::string_view path_id) const
@@ -204,22 +238,78 @@ void SourceAssetStore::mount_vpks(const ContentFileSystem& filesystem)
 
 void SourceAssetStore::mount_vpk_directory(const std::filesystem::path& dir_path)
 {
+    const std::shared_ptr<const VpkDirectoryMount> mount = load_vpk_directory_mount(dir_path);
+    if (!mount || mount->entries.empty())
+    {
+        return;
+    }
+
+    bool inserted_any = false;
+    for (const auto& [path, entry] : mount->entries)
+    {
+        inserted_any |= vpk_entries_.try_emplace(path, &entry).second;
+    }
+    if (inserted_any)
+    {
+        vpk_mounts_.push_back(mount);
+    }
+}
+
+std::shared_ptr<const SourceAssetStore::VpkDirectoryMount> SourceAssetStore::load_vpk_directory_mount(
+    const std::filesystem::path& dir_path)
+{
+    const std::string cache_key = cache_key_for_path(dir_path);
+    const std::filesystem::path cache_path = normalized_absolute_path(dir_path);
+    std::error_code metadata_error;
+    const std::uintmax_t file_size = std::filesystem::file_size(cache_path, metadata_error);
+    if (metadata_error)
+    {
+        log_warning("failed to stat VPK directory '{}': {}", dir_path.string(), metadata_error.message());
+        return nullptr;
+    }
+
+    const std::filesystem::file_time_type last_write_time = std::filesystem::last_write_time(cache_path, metadata_error);
+    if (metadata_error)
+    {
+        log_warning("failed to stat VPK directory '{}': {}", dir_path.string(), metadata_error.message());
+        return nullptr;
+    }
+
+    static std::mutex cache_mutex;
+    static std::unordered_map<std::string, std::shared_ptr<const VpkDirectoryMount>> cache;
+    {
+        std::scoped_lock lock(cache_mutex);
+        const auto cached = cache.find(cache_key);
+        if (cached != cache.end() && cached->second->file_size == file_size && cached->second->last_write_time == last_write_time)
+        {
+            return cached->second;
+        }
+    }
+
+    std::shared_ptr<VpkDirectoryMount> mount = std::make_shared<VpkDirectoryMount>();
+    mount->dir_path = dir_path;
+    mount->cache_path = cache_path;
+    mount->file_size = file_size;
+    mount->last_write_time = last_write_time;
+
     std::vector<unsigned char> bytes;
     try
     {
-        bytes = read_binary_file(dir_path);
+        bytes = read_binary_file(cache_path);
     }
     catch (const std::exception& error)
     {
         log_warning("failed to read VPK directory '{}': {}", dir_path.string(), error.what());
-        return;
+        return nullptr;
     }
 
     try
     {
         if (bytes.size() < 12 || read_u32_le(bytes, 0) != kVpkSignature)
         {
-            return;
+            std::scoped_lock lock(cache_mutex);
+            cache[cache_key] = mount;
+            return mount;
         }
 
         const std::uint32_t version = read_u32_le(bytes, 4);
@@ -238,7 +328,9 @@ void SourceAssetStore::mount_vpk_directory(const std::filesystem::path& dir_path
         else
         {
             log_warning("unsupported VPK version {} in '{}'", version, dir_path.string());
-            return;
+            std::scoped_lock lock(cache_mutex);
+            cache[cache_key] = mount;
+            return mount;
         }
 
         const std::size_t tree_begin = header_size;
@@ -246,10 +338,12 @@ void SourceAssetStore::mount_vpk_directory(const std::filesystem::path& dir_path
         if (tree_end > bytes.size() || tree_end < tree_begin)
         {
             log_warning("VPK directory tree is invalid in '{}'", dir_path.string());
-            return;
+            std::scoped_lock lock(cache_mutex);
+            cache[cache_key] = mount;
+            return mount;
         }
 
-        std::filesystem::path archive_prefix = dir_path.parent_path() / dir_path.stem();
+        std::filesystem::path archive_prefix = cache_path.parent_path() / cache_path.stem();
         std::string prefix = archive_prefix.string();
         const std::string suffix = "_dir";
         if (prefix.size() >= suffix.size() && source_lower_copy(prefix.substr(prefix.size() - suffix.size())) == suffix)
@@ -310,7 +404,7 @@ void SourceAssetStore::mount_vpk_directory(const std::filesystem::path& dir_path
                     }
 
                     VpkEntry entry;
-                    entry.dir_path = dir_path;
+                    entry.dir_path = cache_path;
                     entry.archive_prefix = archive_prefix;
                     entry.dir_data_offset = tree_end;
                     entry.archive_index = archive_index;
@@ -319,17 +413,21 @@ void SourceAssetStore::mount_vpk_directory(const std::filesystem::path& dir_path
                     entry.preload.assign(bytes.begin() + cursor, bytes.begin() + cursor + preload_size);
                     cursor += preload_size;
 
-                    vpk_entries_.try_emplace(vpk_entry_path(directory, filename, extension), std::move(entry));
+                    mount->entries.try_emplace(vpk_entry_path(directory, filename, extension), std::move(entry));
                 }
             }
         }
 
-        log_info("mounted Source VPK '{}' entries={}", dir_path.string(), vpk_entries_.size());
+        log_info("mounted Source VPK '{}' entries={}", dir_path.string(), mount->entries.size());
     }
     catch (const std::exception& error)
     {
         log_warning("failed to parse VPK directory '{}': {}", dir_path.string(), error.what());
     }
+
+    std::scoped_lock lock(cache_mutex);
+    cache[cache_key] = mount;
+    return mount;
 }
 
 std::optional<std::vector<unsigned char>> SourceAssetStore::read_vpk_entry(const VpkEntry& entry) const

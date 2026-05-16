@@ -25,6 +25,10 @@ type = lib
 std = 20
 sources = {
     src/openstrike/app/application.cpp
+    src/openstrike/app/openstrike_application.cpp
+    src/openstrike/animation/animation_scene.cpp
+    src/openstrike/animation/csgo_player_anim_state.cpp
+    src/openstrike/animation/source_studio.cpp
     src/openstrike/audio/audio_module.cpp
     src/openstrike/audio/audio_system.cpp
     src/openstrike/audio/source_sound_library.cpp

@@ -12,6 +12,7 @@
 namespace openstrike
 {
 class ContentFileSystem;
+class AnimationScene;
 class NetworkSystem;
 class WorldManager;
 class AudioSystem;
@@ -70,6 +71,7 @@ struct ConsoleCommandContext
     CommandBuffer& command_buffer;
     const CommandRegistry* registry = nullptr;
     ContentFileSystem* filesystem = nullptr;
+    AnimationScene* animation = nullptr;
     WorldManager* world = nullptr;
     NetworkSystem* network = nullptr;
     TeamManager* teams = nullptr;

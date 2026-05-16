@@ -1,5 +1,6 @@
 #pragma once
 
+#include "openstrike/animation/animation_scene.hpp"
 #include "openstrike/audio/audio_system.hpp"
 #include "openstrike/core/console.hpp"
 #include "openstrike/core/content_filesystem.hpp"
@@ -21,6 +22,7 @@ public:
     CommandRegistry commands;
     CommandBuffer command_buffer;
     ContentFileSystem filesystem;
+    AnimationScene animation;
     WorldManager world;
     NetworkSystem network;
     TeamManager teams;

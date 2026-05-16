@@ -41,7 +41,7 @@ void Engine::add_module(std::unique_ptr<EngineModule> module)
 
 EngineStats Engine::run(const RuntimeConfig& config)
 {
-    log_info("starting OpenStrike mode={} tickrate={}", to_string(config.mode), config.tick_rate);
+    log_info("starting {} mode={} tickrate={}", config.application_name, to_string(config.mode), config.tick_rate);
     configure_engine_context(context_, config);
     renderer_->set_engine_context(&context_);
 
@@ -107,6 +107,7 @@ EngineStats Engine::run(const RuntimeConfig& config)
                     .world = context_.world.current_world(),
                     .world_generation = context_.world.generation(),
                     .filesystem = &context_.filesystem,
+                    .animation = &context_.animation,
                 },
             .camera = context_.camera,
         };

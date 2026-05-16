@@ -6,6 +6,10 @@
 
 OpenStrike is a small, buildable first-person shooter runtime focused on Counter-Strike style architecture, fixed tick simulation, a client/server split, editor tooling, and a content pipeline.
 
+<p align="center">
+  <img src="IMG/Currentstate.png" alt="OpenStrike current state" width="900">
+</p>
+
 This repository starts as a small, buildable spine:
 
 - `openstrike_core`: engine loop, runtime config, logging, fixed timestep, simulation, and app modules.

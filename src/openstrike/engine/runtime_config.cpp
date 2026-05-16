@@ -71,12 +71,17 @@ RendererBackend parse_renderer_backend(const std::string& value)
     throw std::invalid_argument("invalid renderer backend '" + value + "'");
 }
 
-std::optional<std::filesystem::path> environment_path(const char* name)
+std::optional<std::filesystem::path> environment_path(const std::string& name)
 {
+    if (name.empty())
+    {
+        return std::nullopt;
+    }
+
 #if defined(_WIN32)
     char* value = nullptr;
     std::size_t value_size = 0;
-    if (_dupenv_s(&value, &value_size, name) != 0 || value == nullptr)
+    if (_dupenv_s(&value, &value_size, name.c_str()) != 0 || value == nullptr)
     {
         return std::nullopt;
     }
@@ -90,7 +95,7 @@ std::optional<std::filesystem::path> environment_path(const char* name)
 
     return result;
 #else
-    if (const char* value = std::getenv(name))
+    if (const char* value = std::getenv(name.c_str()))
     {
         if (*value != '\0')
         {
@@ -102,11 +107,12 @@ std::optional<std::filesystem::path> environment_path(const char* name)
 #endif
 }
 
-bool has_content_marker(const std::filesystem::path& root)
+bool has_content_marker(const std::filesystem::path& root, const RuntimeDefaults& defaults)
 {
     std::error_code error;
-    return std::filesystem::is_regular_file(root / "assets/ui/mainmenu.rml", error) ||
-           std::filesystem::is_regular_file(root / "csgo/resource/ui/mainmenu.rml", error);
+    return std::any_of(defaults.content_markers.begin(), defaults.content_markers.end(), [&](const std::filesystem::path& marker) {
+        return std::filesystem::is_regular_file(root / marker, error);
+    });
 }
 
 std::optional<std::filesystem::path> executable_directory()
@@ -138,9 +144,9 @@ std::optional<std::filesystem::path> executable_directory()
 #endif
 }
 
-std::filesystem::path default_content_root()
+std::filesystem::path default_content_root(const RuntimeDefaults& defaults)
 {
-    if (const auto env_content_root = environment_path("OPENSTRIKE_CONTENT_ROOT"))
+    if (const auto env_content_root = environment_path(defaults.content_root_environment_variable))
     {
         return *env_content_root;
     }
@@ -149,31 +155,31 @@ std::filesystem::path default_content_root()
     const std::filesystem::path current = std::filesystem::current_path(error);
     if (!error)
     {
-        if (has_content_marker(current))
+        if (has_content_marker(current, defaults))
         {
             return current;
         }
 
-        if (has_content_marker(current / "content"))
+        if (has_content_marker(current / defaults.fallback_content_root, defaults))
         {
-            return current / "content";
+            return current / defaults.fallback_content_root;
         }
     }
 
     if (const auto executable_root = executable_directory())
     {
-        if (has_content_marker(*executable_root))
+        if (has_content_marker(*executable_root, defaults))
         {
             return *executable_root;
         }
 
-        if (has_content_marker(*executable_root / "content"))
+        if (has_content_marker(*executable_root / defaults.fallback_content_root, defaults))
         {
-            return *executable_root / "content";
+            return *executable_root / defaults.fallback_content_root;
         }
     }
 
-    return "content";
+    return defaults.fallback_content_root;
 }
 }
 
@@ -184,8 +190,15 @@ double RuntimeConfig::tick_interval_seconds() const
 
 RuntimeConfig RuntimeConfig::from_command_line(const CommandLine& command_line)
 {
+    return from_command_line(command_line, RuntimeDefaults{});
+}
+
+RuntimeConfig RuntimeConfig::from_command_line(const CommandLine& command_line, const RuntimeDefaults& defaults)
+{
     RuntimeConfig config;
-    config.content_root = default_content_root();
+    config.application_name = defaults.application_name;
+    config.content_root = default_content_root(defaults);
+    config.rml_document = defaults.default_rml_document;
 
     if (command_line.has_flag("dedicated"))
     {

@@ -901,26 +901,12 @@ std::vector<T> read_lump_array(const std::vector<unsigned char>& bytes, const Bs
     return values;
 }
 
-Vec3 cross(Vec3 lhs, Vec3 rhs)
-{
-    return Vec3{
-        (lhs.y * rhs.z) - (lhs.z * rhs.y),
-        (lhs.z * rhs.x) - (lhs.x * rhs.z),
-        (lhs.x * rhs.y) - (lhs.y * rhs.x),
-    };
-}
-
-float dot(Vec3 lhs, Vec3 rhs)
-{
-    return (lhs.x * rhs.x) + (lhs.y * rhs.y) + (lhs.z * rhs.z);
-}
-
 float length(Vec3 value)
 {
-    return std::sqrt(dot(value, value));
+    return value.length();
 }
 
-Vec3 normalize(Vec3 value)
+Vec3 world_normalize(Vec3 value)
 {
     const float value_length = length(value);
     if (value_length <= 0.00001F)
@@ -1740,15 +1726,15 @@ Vec3 polygon_normal(const std::vector<Vec3>& polygon)
         normal.z += (current.x - next.x) * (current.y + next.y);
     }
 
-    return normalize(normal);
+    return world_normalize(normal);
 }
 
 std::vector<Vec3> base_winding_for_plane(Vec3 normal, float dist)
 {
-    normal = normalize(normal);
+    normal = world_normalize(normal);
     const Vec3 origin = normal * dist;
     const Vec3 up = std::fabs(normal.z) < 0.999F ? Vec3{0.0F, 0.0F, 1.0F} : Vec3{0.0F, 1.0F, 0.0F};
-    const Vec3 tangent = normalize(cross(up, normal));
+    const Vec3 tangent = world_normalize(cross(up, normal));
     const Vec3 bitangent = cross(normal, tangent);
     constexpr float extent = 131072.0F;
 
@@ -2037,7 +2023,7 @@ void append_displacement_surface(
         {
             continue;
         }
-        append_collision_triangle(mesh, a, b, c, normalize(area), surface_flags, contents);
+        append_collision_triangle(mesh, a, b, c, world_normalize(area), surface_flags, contents);
     }
 }
 
@@ -2085,7 +2071,7 @@ std::size_t append_bsp_brush_collision(
                 continue;
             }
 
-            const Vec3 normal = normalize(plane.normal);
+            const Vec3 normal = world_normalize(plane.normal);
             const std::uint32_t surface_flags =
                 side.texinfo >= 0 && static_cast<std::size_t>(side.texinfo) < texinfo.size() ? texinfo[static_cast<std::size_t>(side.texinfo)].flags : 0;
             for (std::size_t vertex = 1; vertex + 1 < polygon->size(); ++vertex)
@@ -2211,7 +2197,7 @@ Vec3 rotate_prop_vector(const WorldProp& prop, Vec3 vector)
     const Vec3 forward{cp * cy, cp * sy, -sp};
     const Vec3 right{(-sr * sp * cy) + (cr * sy), (-sr * sp * sy) - (cr * cy), -sr * cp};
     const Vec3 up{(cr * sp * cy) + (sr * sy), (cr * sp * sy) - (sr * cy), cr * cp};
-    return normalize({
+    return world_normalize({
         (forward.x * vector.x) - (right.x * vector.y) + (up.x * vector.z),
         (forward.y * vector.x) - (right.y * vector.y) + (up.y * vector.z),
         (forward.z * vector.x) - (right.z * vector.y) + (up.z * vector.z),
@@ -2243,7 +2229,7 @@ std::uint32_t material_index_for_prop(
 
 void append_prop_triangle(RenderMeshChunk& chunk, Vec3 a, Vec3 b, Vec3 c)
 {
-    const Vec3 normal = normalize(cross(b - a, c - a));
+    const Vec3 normal = world_normalize(cross(b - a, c - a));
     const std::uint32_t first_index = static_cast<std::uint32_t>(chunk.vertices.size());
     chunk.vertices.push_back(WorldMeshVertex{a, normal, {0.0F, 0.0F}});
     chunk.vertices.push_back(WorldMeshVertex{b, normal, {1.0F, 0.0F}});
@@ -2302,7 +2288,7 @@ bool append_prop_collision_triangle(WorldMesh& mesh, Vec3 a, Vec3 b, Vec3 c)
     triangle.points[0] = a;
     triangle.points[1] = b;
     triangle.points[2] = c;
-    triangle.normal = normalize(area);
+    triangle.normal = world_normalize(area);
     triangle.contents = kContentsSolid;
     mesh.collision_triangles.push_back(triangle);
     return true;

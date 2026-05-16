@@ -189,6 +189,10 @@ void disconnect_host_session(ConsoleCommandContext& context)
     {
         context.world->unload();
     }
+    if (context.animation != nullptr)
+    {
+        context.animation->clear();
+    }
     if (context.navigation != nullptr)
     {
         context.navigation->clear();
@@ -691,6 +695,7 @@ ConsoleCommandContext EngineContext::console_context()
         .command_buffer = command_buffer,
         .registry = &commands,
         .filesystem = &filesystem,
+        .animation = &animation,
         .world = &world,
         .network = &network,
         .teams = &teams,

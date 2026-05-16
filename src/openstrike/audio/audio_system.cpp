@@ -68,33 +68,9 @@ float degrees_to_radians(float degrees)
     return degrees * (kPi / 180.0F);
 }
 
-float dot(Vec3 lhs, Vec3 rhs)
-{
-    return (lhs.x * rhs.x) + (lhs.y * rhs.y) + (lhs.z * rhs.z);
-}
-
-Vec3 cross(Vec3 lhs, Vec3 rhs)
-{
-    return {
-        (lhs.y * rhs.z) - (lhs.z * rhs.y),
-        (lhs.z * rhs.x) - (lhs.x * rhs.z),
-        (lhs.x * rhs.y) - (lhs.y * rhs.x),
-    };
-}
-
 float length(Vec3 value)
 {
-    return std::sqrt(dot(value, value));
-}
-
-Vec3 normalize(Vec3 value)
-{
-    const float value_length = length(value);
-    if (value_length <= 0.00001F)
-    {
-        return {};
-    }
-    return {value.x / value_length, value.y / value_length, value.z / value_length};
+    return value.length();
 }
 
 Vec3 camera_forward(const CameraState& camera)
@@ -102,13 +78,13 @@ Vec3 camera_forward(const CameraState& camera)
     const float yaw = degrees_to_radians(camera.yaw_degrees);
     const float pitch = degrees_to_radians(camera.pitch_degrees);
     const float cos_pitch = std::cos(pitch);
-    return normalize({std::cos(yaw) * cos_pitch, std::sin(yaw) * cos_pitch, -std::sin(pitch)});
+    return normalize(Vec3{std::cos(yaw) * cos_pitch, std::sin(yaw) * cos_pitch, -std::sin(pitch)});
 }
 
 Vec3 camera_right(const CameraState& camera)
 {
     const float yaw = degrees_to_radians(camera.yaw_degrees);
-    return normalize({std::sin(yaw), -std::cos(yaw), 0.0F});
+    return normalize(Vec3{std::sin(yaw), -std::cos(yaw), 0.0F});
 }
 
 std::string lower_copy(std::string_view text)

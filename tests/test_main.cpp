@@ -1,7 +1,12 @@
 #include "openstrike/core/command_line.hpp"
 #include "openstrike/core/console.hpp"
 #include "openstrike/core/content_filesystem.hpp"
+#include "openstrike/core/log.hpp"
+#include "openstrike/animation/animation_scene.hpp"
+#include "openstrike/animation/csgo_player_anim_state.hpp"
+#include "openstrike/animation/source_studio.hpp"
 #include "openstrike/app/application.hpp"
+#include "openstrike/app/openstrike_application.hpp"
 #include "openstrike/audio/audio_system.hpp"
 #include "openstrike/engine/engine.hpp"
 #include "openstrike/engine/engine_context.hpp"
@@ -47,7 +52,9 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <system_error>
 #include <thread>
+#include <tuple>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -186,6 +193,39 @@ std::vector<unsigned char> make_resource_vtf(std::uint16_t width, std::uint16_t 
     write_u32_le(bytes, 80, 0x30);
     write_u32_le(bytes, 84, static_cast<std::uint32_t>(header_size));
     bytes.insert(bytes.end(), image_bytes.begin(), image_bytes.end());
+    return bytes;
+}
+
+std::vector<unsigned char> make_minimal_vpk_dir(std::string_view directory,
+    std::string_view filename,
+    std::string_view extension,
+    std::string_view contents)
+{
+    std::vector<unsigned char> tree;
+    const auto append_zero_string = [&](std::string_view value) {
+        tree.insert(tree.end(), value.begin(), value.end());
+        tree.push_back(0);
+    };
+
+    append_zero_string(extension);
+    append_zero_string(directory);
+    append_zero_string(filename);
+    append_u32_le(tree, 0);
+    append_u16_le(tree, 0);
+    append_u16_le(tree, 0x7FFFU);
+    append_u32_le(tree, 0);
+    append_u32_le(tree, static_cast<std::uint32_t>(contents.size()));
+    append_u16_le(tree, 0xFFFFU);
+    append_zero_string({});
+    append_zero_string({});
+    append_zero_string({});
+
+    std::vector<unsigned char> bytes(12, 0);
+    write_u32_le(bytes, 0, 0x55AA1234U);
+    write_u32_le(bytes, 4, 1);
+    write_u32_le(bytes, 8, static_cast<std::uint32_t>(tree.size()));
+    bytes.insert(bytes.end(), tree.begin(), tree.end());
+    bytes.insert(bytes.end(), contents.begin(), contents.end());
     return bytes;
 }
 
@@ -381,6 +421,218 @@ void write_minimal_source_model(
     vtx[strip + 18] = 0x01;
     std::ofstream vtx_file(path.parent_path() / (path.stem().string() + ".dx90.vtx"), std::ios::binary);
     vtx_file.write(reinterpret_cast<const char*>(vtx.data()), static_cast<std::streamsize>(vtx.size()));
+}
+
+std::vector<unsigned char> make_minimal_animated_source_model()
+{
+    std::vector<unsigned char> bytes(8192, 0);
+    bytes[0] = 'I';
+    bytes[1] = 'D';
+    bytes[2] = 'S';
+    bytes[3] = 'T';
+    write_u32_le(bytes, 4, 49);
+    write_u32_le(bytes, 8, 0xA11CE001U);
+    write_zero_string(bytes, 12, "animated_test");
+    write_u32_le(bytes, 76, static_cast<std::uint32_t>(bytes.size()));
+    write_vec3_le(bytes, 80, {0.0F, 0.0F, 64.0F});
+    write_vec3_le(bytes, 104, {-16.0F, -16.0F, 0.0F});
+    write_vec3_le(bytes, 116, {16.0F, 16.0F, 72.0F});
+    write_vec3_le(bytes, 128, {-16.0F, -16.0F, 0.0F});
+    write_vec3_le(bytes, 140, {16.0F, 16.0F, 72.0F});
+
+    constexpr std::size_t bone_table = 512;
+    constexpr std::size_t bone_size = 216;
+    constexpr std::size_t bone_controller_table = 980;
+    constexpr std::size_t hitbox_set_table = 1040;
+    constexpr std::size_t anim_table = 1200;
+    constexpr std::size_t sequence_table = 1600;
+    constexpr std::size_t sequence_size = 216;
+    constexpr std::int32_t sequence_count = 9;
+    constexpr std::size_t event_table = sequence_table + (sequence_size * sequence_count);
+    constexpr std::size_t pose_parameter_table = 3700;
+    constexpr std::size_t attachment_table = 3900;
+    std::size_t string_cursor = 4300;
+
+    auto put_string = [&](std::string_view text) {
+        const std::size_t offset = string_cursor;
+        write_zero_string(bytes, offset, text);
+        string_cursor += text.size() + 1;
+        return offset;
+    };
+
+    auto write_identity = [&](std::size_t offset) {
+        write_f32_le(bytes, offset + 0, 1.0F);
+        write_f32_le(bytes, offset + 20, 1.0F);
+        write_f32_le(bytes, offset + 40, 1.0F);
+    };
+
+    auto write_bone = [&](std::size_t offset, std::string_view name, std::int32_t parent, openstrike::Vec3 position) {
+        const std::size_t name_offset = put_string(name);
+        write_s32_le(bytes, offset + 0, static_cast<std::int32_t>(name_offset - offset));
+        write_s32_le(bytes, offset + 4, parent);
+        for (std::size_t controller = 0; controller < 6; ++controller)
+        {
+            write_s32_le(bytes, offset + 8 + (controller * 4), -1);
+        }
+        write_vec3_le(bytes, offset + 32, position);
+        write_f32_le(bytes, offset + 56, 1.0F);
+        write_vec3_le(bytes, offset + 72, {1.0F, 1.0F, 1.0F});
+        write_vec3_le(bytes, offset + 84, {1.0F / 512.0F, 1.0F / 512.0F, 1.0F / 512.0F});
+        write_identity(offset + 96);
+        write_f32_le(bytes, offset + 156, 1.0F);
+        write_s32_le(bytes, offset + 172, -1);
+    };
+
+    write_u32_le(bytes, 156, 2);
+    write_u32_le(bytes, 160, static_cast<std::uint32_t>(bone_table));
+    write_bone(bone_table, "root", -1, {});
+    write_bone(bone_table + bone_size, "spine", 0, {0.0F, 0.0F, 10.0F});
+
+    write_u32_le(bytes, 164, 1);
+    write_u32_le(bytes, 168, static_cast<std::uint32_t>(bone_controller_table));
+    write_s32_le(bytes, bone_controller_table, 1);
+    write_s32_le(bytes, bone_controller_table + 4, 0);
+    write_f32_le(bytes, bone_controller_table + 8, -45.0F);
+    write_f32_le(bytes, bone_controller_table + 12, 45.0F);
+    write_s32_le(bytes, bone_controller_table + 16, 0);
+    write_s32_le(bytes, bone_controller_table + 20, 0);
+
+    write_u32_le(bytes, 172, 1);
+    write_u32_le(bytes, 176, static_cast<std::uint32_t>(hitbox_set_table));
+    const std::size_t hitbox_set_name = put_string("default");
+    write_s32_le(bytes, hitbox_set_table, static_cast<std::int32_t>(hitbox_set_name - hitbox_set_table));
+    write_s32_le(bytes, hitbox_set_table + 4, 1);
+    write_s32_le(bytes, hitbox_set_table + 8, 12);
+    const std::size_t hitbox = hitbox_set_table + 12;
+    write_s32_le(bytes, hitbox, 1);
+    write_s32_le(bytes, hitbox + 4, 2);
+    write_vec3_le(bytes, hitbox + 8, {-4.0F, -4.0F, -4.0F});
+    write_vec3_le(bytes, hitbox + 20, {4.0F, 4.0F, 4.0F});
+    const std::size_t hitbox_name = put_string("spine_hitbox");
+    write_s32_le(bytes, hitbox + 32, static_cast<std::int32_t>(hitbox_name - hitbox));
+
+    write_u32_le(bytes, 180, 1);
+    write_u32_le(bytes, 184, static_cast<std::uint32_t>(anim_table));
+    const std::size_t anim_name = put_string("spine_move");
+    write_s32_le(bytes, anim_table + 4, static_cast<std::int32_t>(anim_name - anim_table));
+    write_f32_le(bytes, anim_table + 8, 4.0F);
+    write_s32_le(bytes, anim_table + 12, 1);
+    write_s32_le(bytes, anim_table + 16, 4);
+    write_s32_le(bytes, anim_table + 56, 100);
+
+    const std::size_t anim_data = anim_table + 100;
+    bytes[anim_data] = 1;
+    bytes[anim_data + 1] = 0x0CU;
+    write_s16_le(bytes, anim_data + 2, 0);
+    const std::size_t rotation_values = anim_data + 4;
+    const std::size_t position_values = rotation_values + 6;
+    std::size_t channel_cursor = position_values + 6;
+    auto write_channel = [&](std::size_t value_pointer, std::size_t axis, std::initializer_list<std::int16_t> samples) {
+        const std::size_t channel_offset = channel_cursor;
+        write_s16_le(bytes, value_pointer + (axis * 2), static_cast<std::int16_t>(channel_offset - value_pointer));
+        bytes[channel_offset] = static_cast<unsigned char>(samples.size());
+        bytes[channel_offset + 1] = static_cast<unsigned char>(samples.size());
+        std::size_t sample_offset = channel_offset + 2;
+        for (const std::int16_t sample : samples)
+        {
+            write_s16_le(bytes, sample_offset, sample);
+            sample_offset += 2;
+        }
+        channel_cursor = sample_offset;
+    };
+    write_channel(rotation_values, 0, {0, 256, 512, 768});
+    write_channel(position_values, 0, {0, 10, 20, 30});
+
+    write_u32_le(bytes, 188, sequence_count);
+    write_u32_le(bytes, 192, static_cast<std::uint32_t>(sequence_table));
+    const std::array<std::pair<std::string_view, std::string_view>, sequence_count> sequences{{
+        {"idle", "ACT_CSGO_IDLE"},
+        {"run", "ACT_CSGO_RUN"},
+        {"walk", "ACT_CSGO_WALK"},
+        {"jump", "ACT_CSGO_JUMP"},
+        {"fall", "ACT_CSGO_FALL"},
+        {"land_light", "ACT_CSGO_LAND_LIGHT"},
+        {"fire", "ACT_CSGO_FIRE_PRIMARY"},
+        {"alive_loop", "ACT_CSGO_ALIVE_LOOP"},
+        {"flinch", "ACT_CSGO_FLINCH"},
+    }};
+    for (std::size_t index = 0; index < sequences.size(); ++index)
+    {
+        const std::size_t sequence = sequence_table + (index * sequence_size);
+        const std::size_t label = put_string(sequences[index].first);
+        const std::size_t activity = put_string(sequences[index].second);
+        write_s32_le(bytes, sequence + 4, static_cast<std::int32_t>(label - sequence));
+        write_s32_le(bytes, sequence + 8, static_cast<std::int32_t>(activity - sequence));
+        write_s32_le(bytes, sequence + 12, index == 6 ? 0 : 1);
+        write_s32_le(bytes, sequence + 16, static_cast<std::int32_t>(index));
+        write_s32_le(bytes, sequence + 20, 1);
+        write_vec3_le(bytes, sequence + 32, {-16.0F, -16.0F, 0.0F});
+        write_vec3_le(bytes, sequence + 44, {16.0F, 16.0F, 72.0F});
+        write_s32_le(bytes, sequence + 56, 1);
+        write_s32_le(bytes, sequence + 60, 204);
+        write_s32_le(bytes, sequence + 68, 1);
+        write_s32_le(bytes, sequence + 72, 1);
+        write_s32_le(bytes, sequence + 76, -1);
+        write_s32_le(bytes, sequence + 80, -1);
+        write_f32_le(bytes, sequence + 104, 0.2F);
+        write_f32_le(bytes, sequence + 108, 0.2F);
+        write_f32_le(bytes, sequence + 132, 3.0F);
+        write_s16_le(bytes, sequence + 204, 0);
+    }
+    write_s32_le(bytes, sequence_table + 24, 1);
+    write_s32_le(bytes, sequence_table + 28, static_cast<std::int32_t>(event_table - sequence_table));
+    write_f32_le(bytes, event_table, 0.25F);
+    write_s32_le(bytes, event_table + 4, 5004);
+    write_zero_string(bytes, event_table + 12, "footstep");
+    const std::size_t event_name = put_string("AE_CL_PLAYSOUND");
+    write_s32_le(bytes, event_table + 76, static_cast<std::int32_t>(event_name - event_table));
+
+    write_u32_le(bytes, 240, 1);
+    write_u32_le(bytes, 244, static_cast<std::uint32_t>(attachment_table));
+    const std::size_t attachment_name = put_string("eyes");
+    write_s32_le(bytes, attachment_table, static_cast<std::int32_t>(attachment_name - attachment_table));
+    write_s32_le(bytes, attachment_table + 8, 1);
+    write_identity(attachment_table + 12);
+    write_f32_le(bytes, attachment_table + 12 + 44, 64.0F);
+
+    write_u32_le(bytes, 300, 6);
+    write_u32_le(bytes, 304, static_cast<std::uint32_t>(pose_parameter_table));
+    const std::array<std::tuple<std::string_view, float, float, float>, 6> pose_parameters{{
+        {"move_yaw", -180.0F, 180.0F, 360.0F},
+        {"body_yaw", -58.0F, 58.0F, 0.0F},
+        {"body_pitch", -90.0F, 90.0F, 0.0F},
+        {"aim_pitch", -90.0F, 90.0F, 0.0F},
+        {"aim_yaw", -58.0F, 58.0F, 0.0F},
+        {"lean_yaw", -180.0F, 180.0F, 360.0F},
+    }};
+    for (std::size_t index = 0; index < pose_parameters.size(); ++index)
+    {
+        const std::size_t pose = pose_parameter_table + (index * 20);
+        const std::size_t name = put_string(std::get<0>(pose_parameters[index]));
+        write_s32_le(bytes, pose, static_cast<std::int32_t>(name - pose));
+        write_f32_le(bytes, pose + 8, std::get<1>(pose_parameters[index]));
+        write_f32_le(bytes, pose + 12, std::get<2>(pose_parameters[index]));
+        write_f32_le(bytes, pose + 16, std::get<3>(pose_parameters[index]));
+    }
+
+    const std::size_t surface_prop = put_string("flesh");
+    write_u32_le(bytes, 308, static_cast<std::uint32_t>(surface_prop));
+    const std::string key_values = "animated 1";
+    const std::size_t key_value_offset = put_string(key_values);
+    write_u32_le(bytes, 312, static_cast<std::uint32_t>(key_value_offset));
+    write_u32_le(bytes, 316, static_cast<std::uint32_t>(key_values.size()));
+    write_f32_le(bytes, 328, 80.0F);
+    write_s32_le(bytes, 332, 0x2000000);
+
+    return bytes;
+}
+
+void write_minimal_animated_source_model(const std::filesystem::path& path)
+{
+    std::filesystem::create_directories(path.parent_path());
+    const std::vector<unsigned char> bytes = make_minimal_animated_source_model();
+    std::ofstream file(path, std::ios::binary);
+    file.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
 }
 
 void write_static_prop_bsp(const std::filesystem::path& path, const std::string& entities, std::uint8_t solid = 6)
@@ -968,6 +1220,41 @@ void test_command_line_config()
     REQUIRE(config.startup_commands[3] == "sv_cheats 1");
 }
 
+void test_runtime_defaults_support_other_games()
+{
+    const std::filesystem::path original_path = std::filesystem::current_path();
+    struct CurrentPathGuard
+    {
+        std::filesystem::path path;
+        ~CurrentPathGuard()
+        {
+            std::error_code error;
+            std::filesystem::current_path(path, error);
+        }
+    } guard{original_path};
+
+    const std::filesystem::path root = original_path / "build/test_runtime_defaults_content";
+    std::filesystem::remove_all(root);
+    std::filesystem::create_directories(root / "data");
+    std::ofstream(root / "data/game.marker").put('\n');
+    std::filesystem::current_path(root);
+
+    openstrike::RuntimeDefaults defaults;
+    defaults.application_name = "ExampleGame";
+    defaults.content_root_environment_variable.clear();
+    defaults.fallback_content_root = "data";
+    defaults.default_rml_document = "ui/example.rml";
+    defaults.content_markers = {"game.marker"};
+
+    const openstrike::RuntimeConfig config = openstrike::RuntimeConfig::from_command_line(openstrike::CommandLine({}), defaults);
+    REQUIRE(config.application_name == "ExampleGame");
+    REQUIRE(config.content_root == root / "data");
+    REQUIRE(config.rml_document == std::filesystem::path("ui/example.rml"));
+
+    std::filesystem::current_path(original_path);
+    std::filesystem::remove_all(root);
+}
+
 void test_renderer_aliases()
 {
     {
@@ -1030,6 +1317,42 @@ void test_content_filesystem_path_ids()
     REQUIRE(resolved->parent_path().parent_path().filename() == "mod");
     REQUIRE(filesystem.read_text("cfg/game.cfg", "GAME") == "echo mod");
     REQUIRE(filesystem.search_paths("GAME").size() == 2);
+
+    std::filesystem::remove_all(root);
+}
+
+void test_source_asset_store_reuses_vpk_directory_mounts()
+{
+    const std::filesystem::path root = std::filesystem::current_path() / "build/test_vpk_mount_cache";
+    std::filesystem::remove_all(root);
+    std::filesystem::create_directories(root / "game");
+
+    const std::vector<unsigned char> vpk = make_minimal_vpk_dir("scripts", "sample", "txt", "cached vpk text");
+    std::ofstream vpk_file(root / "game/pak01_dir.vpk", std::ios::binary);
+    vpk_file.write(reinterpret_cast<const char*>(vpk.data()), static_cast<std::streamsize>(vpk.size()));
+    vpk_file.close();
+
+    openstrike::ContentFileSystem filesystem;
+    filesystem.add_search_path(root / "game", "GAME");
+
+    openstrike::Logger::instance().clear_history();
+    {
+        openstrike::SourceAssetStore first(filesystem);
+        REQUIRE(first.read_text("scripts/sample.txt") == "cached vpk text");
+
+        openstrike::SourceAssetStore second(filesystem);
+        REQUIRE(second.read_text("scripts/sample.txt") == "cached vpk text");
+    }
+
+    int mount_logs = 0;
+    for (const openstrike::LogEntry& entry : openstrike::Logger::instance().recent_entries())
+    {
+        if (entry.message.find("mounted Source VPK") != std::string::npos)
+        {
+            ++mount_logs;
+        }
+    }
+    REQUIRE(mount_logs == 1);
 
     std::filesystem::remove_all(root);
 }
@@ -3079,6 +3402,170 @@ void test_world_manager_loads_bbox_static_prop_collision()
     std::filesystem::remove_all(root);
 }
 
+void test_source_studio_parses_animation_metadata()
+{
+    const std::vector<unsigned char> bytes = make_minimal_animated_source_model();
+    const std::optional<openstrike::StudioModel> model = openstrike::parse_source_studio_model(bytes, "models/test/player.mdl");
+    REQUIRE(model.has_value());
+    REQUIRE(model->name == "animated_test");
+    REQUIRE(model->bones.size() == 2);
+    REQUIRE(model->bones[0].name == "root");
+    REQUIRE(model->bones[1].parent == 0);
+    REQUIRE(model->bone_controllers.size() == 1);
+    REQUIRE(model->hitbox_sets.size() == 1);
+    REQUIRE(model->hitbox_sets[0].hitboxes.size() == 1);
+    REQUIRE(model->animations.size() == 1);
+    REQUIRE(model->animations[0].clip.tracks.size() == 1);
+    REQUIRE(model->animations[0].clip.tracks[0].bone == 1);
+    REQUIRE(model->animations[0].clip.tracks[0].position_values[0].size() == 4);
+    REQUIRE(std::abs(model->animations[0].clip.tracks[0].position_values[0][2] - 20.0F) < 0.001F);
+    REQUIRE(model->sequences.size() == 9);
+    REQUIRE(openstrike::lookup_sequence(*model, "run") == 1);
+    REQUIRE(openstrike::lookup_sequence(*model, "ACT_CSGO_FIRE_PRIMARY") == 6);
+    REQUIRE(model->sequences[0].events.size() == 1);
+    REQUIRE(model->sequences[0].events[0].event == 5004);
+    REQUIRE(model->sequences[0].events[0].options == "footstep");
+    REQUIRE(model->sequences[0].events[0].name == "AE_CL_PLAYSOUND");
+    REQUIRE(openstrike::lookup_pose_parameter(*model, "move_yaw") == 0);
+    REQUIRE(model->attachments.size() == 1);
+    REQUIRE(model->attachments[0].name == "eyes");
+    REQUIRE(model->surface_prop == "flesh");
+    REQUIRE(model->key_values == "animated 1");
+}
+
+void test_source_animation_state_advances_cycles_events_and_pose()
+{
+    const std::vector<unsigned char> bytes = make_minimal_animated_source_model();
+    const std::optional<openstrike::StudioModel> model = openstrike::parse_source_studio_model(bytes);
+    REQUIRE(model.has_value());
+
+    openstrike::AnimationPlaybackState playback;
+    openstrike::reset_animation_state(playback, *model, 0);
+    REQUIRE(playback.sequence == 0);
+    REQUIRE(playback.sequence_loops);
+    REQUIRE(std::abs(openstrike::sequence_duration(*model, 0) - 0.75F) < 0.001F);
+    openstrike::advance_animation_state(playback, *model, 0.2F);
+    REQUIRE(playback.cycle > 0.25F);
+    REQUIRE(!playback.fired_events.empty());
+    REQUIRE(playback.fired_events[0].event == 5004);
+
+    playback.cycle = 0.5F;
+    const openstrike::StudioPose pose = openstrike::evaluate_studio_pose(*model, playback);
+    REQUIRE(pose.positions.size() == 2);
+    REQUIRE(std::abs(pose.positions[1].x - 15.0F) < 0.001F);
+    REQUIRE(std::abs(pose.positions[1].z - 10.0F) < 0.001F);
+    REQUIRE(std::abs(pose.bone_to_model[1].origin.x - 15.0F) < 0.001F);
+
+    openstrike::set_sequence(playback, *model, 6);
+    REQUIRE(!playback.sequence_loops);
+    openstrike::advance_animation_state(playback, *model, 2.0F);
+    REQUIRE(playback.sequence_finished);
+    REQUIRE(std::abs(playback.cycle - 1.0F) < 0.001F);
+}
+
+void test_csgo_player_anim_state_sets_layers_and_pose_parameters()
+{
+    const std::vector<unsigned char> bytes = make_minimal_animated_source_model();
+    const std::optional<openstrike::StudioModel> model = openstrike::parse_source_studio_model(bytes);
+    REQUIRE(model.has_value());
+
+    openstrike::AnimationPlaybackState playback;
+    openstrike::reset_animation_state(playback, *model, 0);
+    openstrike::CsgoPlayerAnimState anim_state;
+    openstrike::reset_csgo_player_anim_state(anim_state);
+
+    openstrike::CsgoAnimInput input;
+    input.delta_seconds = 1.0F / 64.0F;
+    input.frame_index = 1;
+    input.velocity = {240.0F, 40.0F, 0.0F};
+    input.eye_yaw = 90.0F;
+    input.eye_pitch = -12.0F;
+    input.lower_body_yaw_target = 85.0F;
+    input.duck_amount = 0.5F;
+    input.firing = true;
+
+    openstrike::update_csgo_player_anim_state(anim_state, playback, *model, input);
+    REQUIRE(playback.sequence == 0);
+    REQUIRE(playback.playback_rate == 0.0F);
+    REQUIRE(playback.overlays.size() >= static_cast<std::size_t>(openstrike::CsgoAnimLayer::Count));
+    REQUIRE(playback.overlays[static_cast<std::size_t>(openstrike::CsgoAnimLayer::MovementMove)].active);
+    REQUIRE(playback.overlays[static_cast<std::size_t>(openstrike::CsgoAnimLayer::WeaponAction)].active);
+    REQUIRE(playback.overlays[static_cast<std::size_t>(openstrike::CsgoAnimLayer::AliveLoop)].active);
+    REQUIRE(playback.pose_parameters.size() == model->pose_parameters.size());
+    REQUIRE(playback.pose_parameters[static_cast<std::size_t>(openstrike::lookup_pose_parameter(*model, "move_yaw"))] >= 0.0F);
+    REQUIRE(playback.pose_parameters[static_cast<std::size_t>(openstrike::lookup_pose_parameter(*model, "move_yaw"))] <= 1.0F);
+    REQUIRE(anim_state.velocity_length_xy > 200.0F);
+    REQUIRE(anim_state.anim_duck_amount > 0.0F);
+    REQUIRE(std::isfinite(anim_state.foot_yaw));
+}
+
+void test_animation_scene_loads_and_advances_source_model()
+{
+    const std::filesystem::path root = std::filesystem::current_path() / "build/test_animation_scene_content";
+    std::filesystem::remove_all(root);
+    write_minimal_animated_source_model(root / "game/models/test/player.mdl");
+
+    openstrike::ContentFileSystem filesystem;
+    filesystem.add_search_path(root / "game", "GAME");
+    openstrike::SourceAssetStore assets(filesystem);
+
+    openstrike::AnimationScene scene;
+    openstrike::AnimationEntity& entity = scene.upsert_entity(17, "models/test/player", assets);
+    REQUIRE(entity.entity_id == 17);
+    REQUIRE(entity.model_loaded);
+    REQUIRE(scene.find_model("models/test/player.mdl") != nullptr);
+    scene.advance(assets, 0.2F);
+    const openstrike::AnimationEntity* advanced = scene.find_entity(17);
+    REQUIRE(advanced != nullptr);
+    REQUIRE(!advanced->playback.fired_events.empty());
+    REQUIRE(advanced->pose.positions.size() == 2);
+    REQUIRE(advanced->pose.positions[1].x > 0.0F);
+
+    std::filesystem::remove_all(root);
+}
+
+void test_game_simulation_builds_animation_scene_for_dynamic_props()
+{
+    const std::filesystem::path root = std::filesystem::current_path() / "build/test_dynamic_prop_animation_scene";
+    std::filesystem::remove_all(root);
+    std::filesystem::create_directories(root / "game/maps");
+
+    const std::string entities =
+        "{\n"
+        "\"classname\" \"worldspawn\"\n"
+        "}\n"
+        "{\n"
+        "\"classname\" \"prop_dynamic\"\n"
+        "\"model\" \"models/test/player.mdl\"\n"
+        "\"origin\" \"32 64 16\"\n"
+        "\"angles\" \"0 90 0\"\n"
+        "\"skin\" \"2\"\n"
+        "}\n";
+    write_square_bsp(root / "game/maps/anim_props.bsp", entities);
+    write_minimal_animated_source_model(root / "game/models/test/player.mdl");
+
+    openstrike::RuntimeConfig config;
+    config.content_root = root / "game";
+    openstrike::EngineContext context;
+    openstrike::configure_engine_context(context, config);
+    REQUIRE(context.world.load_map("anim_props", context.filesystem));
+
+    openstrike::GameSimulation simulation;
+    simulation.on_start(config, context);
+    simulation.on_fixed_update({.tick_index = 0, .delta_seconds = config.tick_interval_seconds()}, context);
+
+    const openstrike::AnimationEntity* entity = context.animation.find_entity(1);
+    REQUIRE(entity != nullptr);
+    REQUIRE(entity->model_loaded);
+    REQUIRE(entity->origin.x == 32.0F);
+    REQUIRE(entity->angles.y == 90.0F);
+    REQUIRE(entity->skin == 2);
+    REQUIRE(entity->pose.positions.size() == 2);
+    REQUIRE(entity->playback.cycle > 0.0F);
+
+    std::filesystem::remove_all(root);
+}
+
 void test_source_fgd_loads_classes_and_metadata()
 {
     const std::filesystem::path root = std::filesystem::current_path() / "build/test_fgd_content";
@@ -3604,6 +4091,114 @@ void test_application_runs_null_renderer_smoke()
 
     openstrike::Application application(std::move(config));
     REQUIRE(application.run() == 0);
+}
+
+void test_openstrike_application_definition_filters_default_modules()
+{
+    const openstrike::ApplicationDefinition definition = openstrike::make_openstrike_application_definition();
+    REQUIRE(definition.name == "OpenStrike");
+
+    const auto module_names_for_mode = [&](openstrike::AppMode mode) {
+        std::vector<std::string> names;
+        for (const openstrike::ApplicationModuleRegistration& registration : definition.modules)
+        {
+            if (!openstrike::application_module_runs_in_mode(registration.modes, mode))
+            {
+                continue;
+            }
+
+            std::unique_ptr<openstrike::EngineModule> module = registration.create();
+            REQUIRE(module != nullptr);
+            names.emplace_back(module->name());
+        }
+        return names;
+    };
+
+    const std::vector<std::string> client_modules{"game", "audio", "client"};
+    const std::vector<std::string> server_modules{"game", "server"};
+    const std::vector<std::string> editor_modules{"game", "audio", "client", "editor"};
+    REQUIRE(module_names_for_mode(openstrike::AppMode::Client) == client_modules);
+    REQUIRE(module_names_for_mode(openstrike::AppMode::DedicatedServer) == server_modules);
+    REQUIRE(module_names_for_mode(openstrike::AppMode::Editor) == editor_modules);
+}
+
+void test_application_accepts_custom_game_module_stack()
+{
+    struct ModuleCounts
+    {
+        int starts = 0;
+        int frames = 0;
+        int stops = 0;
+        std::string application_name;
+    };
+
+    class CountingModule final : public openstrike::EngineModule
+    {
+    public:
+        explicit CountingModule(std::shared_ptr<ModuleCounts> counts)
+            : counts_(std::move(counts))
+        {
+        }
+
+        const char* name() const override
+        {
+            return "counting";
+        }
+
+        void on_start(const openstrike::RuntimeConfig& config, openstrike::EngineContext&) override
+        {
+            ++counts_->starts;
+            counts_->application_name = config.application_name;
+        }
+
+        void on_frame(const openstrike::FrameContext&, openstrike::EngineContext&) override
+        {
+            ++counts_->frames;
+        }
+
+        void on_stop(openstrike::EngineContext&) override
+        {
+            ++counts_->stops;
+        }
+
+    private:
+        std::shared_ptr<ModuleCounts> counts_;
+    };
+
+    auto counts = std::make_shared<ModuleCounts>();
+    openstrike::ApplicationDefinition definition;
+    definition.name = "ExampleGame";
+    definition.modules.push_back(openstrike::ApplicationModuleRegistration{
+        .modes = openstrike::ApplicationModuleMode::Client,
+        .create = [counts]() -> std::unique_ptr<openstrike::EngineModule> { return std::make_unique<CountingModule>(counts); },
+    });
+
+    openstrike::RuntimeConfig config;
+    config.mode = openstrike::AppMode::Client;
+    config.renderer_backend = openstrike::RendererBackend::Null;
+    config.content_root = std::filesystem::current_path();
+    config.max_frames = 1;
+    config.deterministic_frames = true;
+
+    openstrike::Application application(config, definition);
+    REQUIRE(application.config().application_name == "ExampleGame");
+    REQUIRE(application.run() == 0);
+    REQUIRE(counts->starts == 1);
+    REQUIRE(counts->frames == 1);
+    REQUIRE(counts->stops == 1);
+    REQUIRE(counts->application_name == "ExampleGame");
+
+    counts->starts = 0;
+    counts->frames = 0;
+    counts->stops = 0;
+    counts->application_name.clear();
+    config.mode = openstrike::AppMode::DedicatedServer;
+
+    openstrike::Application dedicated_application(config, std::move(definition));
+    REQUIRE(dedicated_application.run() == 0);
+    REQUIRE(counts->starts == 0);
+    REQUIRE(counts->frames == 0);
+    REQUIRE(counts->stops == 0);
 }
 
 void test_ground_movement_accelerates_and_friction_slows()
@@ -4326,10 +4921,12 @@ int main()
     try
     {
         test_command_line_config();
+        test_runtime_defaults_support_other_games();
         test_renderer_aliases();
         test_fixed_step_accumulates_ticks();
         test_fixed_step_clamps_runaway_frames();
         test_content_filesystem_path_ids();
+        test_source_asset_store_reuses_vpk_directory_mounts();
         test_editor_displacement_uvs_stay_parent_quad_anchored();
         test_editor_displacement_position_edits_round_trip_source_field_vectors();
         test_source_keyvalues_parser_handles_source_roots_and_vectors();
@@ -4378,6 +4975,11 @@ int main()
         test_world_manager_loads_static_props_and_renders_bounds();
         test_world_manager_loads_large_static_prop_studio_mesh();
         test_world_manager_loads_bbox_static_prop_collision();
+        test_source_studio_parses_animation_metadata();
+        test_source_animation_state_advances_cycles_events_and_pose();
+        test_csgo_player_anim_state_sets_layers_and_pose_parameters();
+        test_animation_scene_loads_and_advances_source_model();
+        test_game_simulation_builds_animation_scene_for_dynamic_props();
         test_source_fgd_loads_classes_and_metadata();
         test_source_fgd_accepts_concatenated_source_strings();
         test_map_command_loads_current_world();
@@ -4389,6 +4991,8 @@ int main()
         test_game_simulation_updates_hud_for_loaded_world();
         test_engine_startup_quit_command();
         test_application_runs_null_renderer_smoke();
+        test_openstrike_application_definition_filters_default_modules();
+        test_application_accepts_custom_game_module_stack();
         test_ground_movement_accelerates_and_friction_slows();
         test_walk_and_duck_limit_movement_speed();
         test_air_movement_uses_source_air_speed_cap();

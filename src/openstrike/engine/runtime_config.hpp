@@ -4,8 +4,8 @@
 
 #include <cstdint>
 #include <filesystem>
-#include <string_view>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace openstrike
@@ -25,8 +25,21 @@ enum class RendererBackend
     Metal
 };
 
+struct RuntimeDefaults
+{
+    std::string application_name = "OpenStrike";
+    std::string content_root_environment_variable = "OPENSTRIKE_CONTENT_ROOT";
+    std::filesystem::path fallback_content_root = "content";
+    std::filesystem::path default_rml_document = "csgo/resource/ui/mainmenu.rml";
+    std::vector<std::filesystem::path> content_markers = {
+        "assets/ui/mainmenu.rml",
+        "csgo/resource/ui/mainmenu.rml",
+    };
+};
+
 struct RuntimeConfig
 {
+    std::string application_name = "OpenStrike";
     AppMode mode = AppMode::Client;
     RendererBackend renderer_backend = RendererBackend::Auto;
     std::filesystem::path content_root;
@@ -48,6 +61,7 @@ struct RuntimeConfig
     [[nodiscard]] double tick_interval_seconds() const;
 
     static RuntimeConfig from_command_line(const CommandLine& command_line);
+    static RuntimeConfig from_command_line(const CommandLine& command_line, const RuntimeDefaults& defaults);
 };
 
 [[nodiscard]] std::string_view to_string(AppMode mode);

@@ -4,9 +4,9 @@
 
 namespace openstrike
 {
-bool NullRenderer::initialize(const RuntimeConfig&)
+bool NullRenderer::initialize(const RuntimeConfig& config)
 {
-    log_info("null renderer initialized");
+    log_info("{} null renderer initialized", config.application_name);
     return true;
 }
 

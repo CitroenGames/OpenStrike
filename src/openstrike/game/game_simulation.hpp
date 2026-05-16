@@ -6,12 +6,18 @@
 #include "openstrike/physics/physics_world.hpp"
 
 #include <cstdint>
+#include <memory>
 
 namespace openstrike
 {
+class SourceAssetStore;
+
 class GameSimulation final : public EngineModule
 {
 public:
+    GameSimulation();
+    ~GameSimulation() override;
+
     const char* name() const override;
     void on_start(const RuntimeConfig& config, EngineContext& engine) override;
     void on_fixed_update(const SimulationStep& step, EngineContext& engine) override;
@@ -22,6 +28,7 @@ public:
 private:
     void sync_world(EngineContext& engine);
     void sync_team_state(EngineContext& engine);
+    [[nodiscard]] SourceAssetStore& animation_asset_store(EngineContext& engine);
     void update_camera(EngineContext& engine) const;
     void update_hud(EngineContext& engine) const;
     [[nodiscard]] bool local_player_active(EngineContext& engine) const;
@@ -34,5 +41,7 @@ private:
     InputCommand input_;
     std::uint64_t observed_world_generation_ = 0;
     std::uint64_t observed_team_revision_ = 0;
+    std::unique_ptr<SourceAssetStore> animation_assets_;
+    std::uint64_t animation_assets_world_generation_ = 0;
 };
 }

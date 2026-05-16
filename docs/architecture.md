@@ -6,6 +6,8 @@ OpenStrike is organized around explicit ownership boundaries instead of Source-e
 
 `openstrike::Engine` owns the host frame loop. It configures engine services, executes queued console commands, advances deterministic fixed simulation ticks through `FixedStepAccumulator`, then renders once through an `IRenderer`.
 
+`openstrike::Application` is the reusable runtime host. It accepts an `ApplicationDefinition` and does not own the default OpenStrike game stack directly. `app/openstrike_application.*` composes the built-in game, audio, client, server, and editor modules for the shipped executable.
+
 Modules plug into lifecycle points and receive `EngineContext` so they can use shared engine services without globals:
 
 - `on_start(RuntimeConfig&, EngineContext&)`

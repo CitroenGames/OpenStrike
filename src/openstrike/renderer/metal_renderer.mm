@@ -40,7 +40,6 @@ namespace openstrike
 {
 namespace
 {
-constexpr const char* kWindowTitle = "OpenStrike - Metal";
 constexpr MTLPixelFormat kRenderTargetFormat = MTLPixelFormatBGRA8Unorm;
 constexpr MTLPixelFormat kDepthFormat = MTLPixelFormatDepth32Float;
 constexpr float kPi = 3.14159265358979323846F;
@@ -117,31 +116,6 @@ float degrees_to_radians(float degrees)
     return degrees * (kPi / 180.0F);
 }
 
-float dot(Vec3 lhs, Vec3 rhs)
-{
-    return (lhs.x * rhs.x) + (lhs.y * rhs.y) + (lhs.z * rhs.z);
-}
-
-Vec3 cross(Vec3 lhs, Vec3 rhs)
-{
-    return {
-        (lhs.y * rhs.z) - (lhs.z * rhs.y),
-        (lhs.z * rhs.x) - (lhs.x * rhs.z),
-        (lhs.x * rhs.y) - (lhs.y * rhs.x),
-    };
-}
-
-Vec3 normalize(Vec3 value)
-{
-    const float length = std::sqrt(dot(value, value));
-    if (length <= 0.00001F)
-    {
-        return {};
-    }
-
-    return {value.x / length, value.y / length, value.z / length};
-}
-
 std::array<float, 16> multiply_matrix(std::array<float, 16> lhs, std::array<float, 16> rhs)
 {
     std::array<float, 16> result{};
@@ -161,13 +135,13 @@ std::array<float, 16> multiply_matrix(std::array<float, 16> lhs, std::array<floa
 Vec3 camera_forward_2d(float yaw_degrees)
 {
     const float yaw_radians = degrees_to_radians(yaw_degrees);
-    return normalize({std::cos(yaw_radians), std::sin(yaw_radians), 0.0F});
+    return normalize(Vec3{std::cos(yaw_radians), std::sin(yaw_radians), 0.0F});
 }
 
 Vec3 camera_right_2d(float yaw_degrees)
 {
     const float yaw_radians = degrees_to_radians(yaw_degrees);
-    return normalize({std::sin(yaw_radians), -std::cos(yaw_radians), 0.0F});
+    return normalize(Vec3{std::sin(yaw_radians), -std::cos(yaw_radians), 0.0F});
 }
 
 std::array<float, 16> camera_world_to_clip_matrix(const CameraState& camera, std::uint32_t width, std::uint32_t height)
@@ -176,7 +150,7 @@ std::array<float, 16> camera_world_to_clip_matrix(const CameraState& camera, std
     const float pitch_radians = degrees_to_radians(camera.pitch_degrees);
     const float cos_pitch = std::cos(pitch_radians);
     const float sin_pitch = std::sin(pitch_radians);
-    const Vec3 forward = normalize({horizontal_forward.x * cos_pitch, horizontal_forward.y * cos_pitch, -sin_pitch});
+    const Vec3 forward = normalize(Vec3{horizontal_forward.x * cos_pitch, horizontal_forward.y * cos_pitch, -sin_pitch});
     const Vec3 right = camera_right_2d(camera.yaw_degrees);
     const Vec3 up = normalize(cross(right, forward));
     const Vec3 eye = camera.origin;
@@ -238,7 +212,7 @@ std::array<float, 16> skybox_to_clip_matrix(const CameraState* camera, std::uint
     const float pitch_radians = degrees_to_radians(pitch_degrees);
     const float cos_pitch = std::cos(pitch_radians);
     const float sin_pitch = std::sin(pitch_radians);
-    const Vec3 forward = normalize({horizontal_forward.x * cos_pitch, horizontal_forward.y * cos_pitch, -sin_pitch});
+    const Vec3 forward = normalize(Vec3{horizontal_forward.x * cos_pitch, horizontal_forward.y * cos_pitch, -sin_pitch});
     const Vec3 right = camera_right_2d(yaw_degrees);
     const Vec3 up = normalize(cross(right, forward));
 
@@ -354,7 +328,7 @@ std::array<float, kWorldShaderFloatCount> world_shader_constants(
     const std::array<float, 16> transform = world_to_clip_matrix(mesh, camera, width, height);
     std::copy(transform.begin(), transform.end(), constants.begin());
 
-    const Vec3 light_direction = normalize({-0.35F, -0.45F, 0.82F});
+    const Vec3 light_direction = normalize(Vec3{-0.35F, -0.45F, 0.82F});
     constants[kWorldTransformFloatCount + 0] = light_direction.x;
     constants[kWorldTransformFloatCount + 1] = light_direction.y;
     constants[kWorldTransformFloatCount + 2] = light_direction.z;
@@ -1379,7 +1353,8 @@ struct MetalRenderer::Impl
         sdl_initialized = true;
 
         const SDL_WindowFlags flags = SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY | SDL_WINDOW_METAL;
-        window = SDL_CreateWindow(kWindowTitle, static_cast<int>(width), static_cast<int>(height), flags);
+        const std::string window_title = std::format("{} - Metal", config.application_name);
+        window = SDL_CreateWindow(window_title.c_str(), static_cast<int>(width), static_cast<int>(height), flags);
         if (window == nullptr)
         {
             log_error("SDL_CreateWindow failed: {}", SDL_GetError());

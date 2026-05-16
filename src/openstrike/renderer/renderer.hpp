@@ -9,6 +9,7 @@
 namespace openstrike
 {
 class ContentFileSystem;
+class AnimationScene;
 class EngineContext;
 struct LoadedWorld;
 
@@ -17,6 +18,7 @@ struct RenderScene
     const LoadedWorld* world = nullptr;
     std::uint64_t world_generation = 0;
     const ContentFileSystem* filesystem = nullptr;
+    const AnimationScene* animation = nullptr;
 };
 
 struct RenderFrame

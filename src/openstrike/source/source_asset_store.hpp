@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -35,12 +36,17 @@ private:
         std::vector<unsigned char> preload;
     };
 
+    struct VpkDirectoryMount;
+
     void mount_vpks(const ContentFileSystem& filesystem);
     void mount_vpk_directory(const std::filesystem::path& dir_path);
+    [[nodiscard]] static std::shared_ptr<const VpkDirectoryMount> load_vpk_directory_mount(
+        const std::filesystem::path& dir_path);
     [[nodiscard]] std::optional<std::vector<unsigned char>> read_vpk_entry(const VpkEntry& entry) const;
 
     const ContentFileSystem& filesystem_;
     const std::unordered_map<std::string, std::vector<unsigned char>>* embedded_assets_ = nullptr;
-    std::unordered_map<std::string, VpkEntry> vpk_entries_;
+    std::vector<std::shared_ptr<const VpkDirectoryMount>> vpk_mounts_;
+    std::unordered_map<std::string, const VpkEntry*> vpk_entries_;
 };
 }

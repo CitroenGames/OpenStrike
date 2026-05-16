@@ -3,6 +3,7 @@
 #include "openstrike/core/log.hpp"
 #include "openstrike/engine/engine_context.hpp"
 #include "openstrike/game/team_system.hpp"
+#include "openstrike/source/source_asset_store.hpp"
 #include "openstrike/world/world.hpp"
 
 #include <algorithm>
@@ -11,6 +12,10 @@
 
 namespace openstrike
 {
+GameSimulation::GameSimulation() = default;
+
+GameSimulation::~GameSimulation() = default;
+
 const char* GameSimulation::name() const
 {
     return "game";
@@ -24,10 +29,15 @@ void GameSimulation::on_start(const RuntimeConfig& config, EngineContext& engine
     log_info("game simulation started");
 }
 
-void GameSimulation::on_fixed_update(const SimulationStep&, EngineContext& engine)
+void GameSimulation::on_fixed_update(const SimulationStep& step, EngineContext& engine)
 {
     sync_world(engine);
     sync_team_state(engine);
+    if (!engine.animation.entities().empty())
+    {
+        SourceAssetStore& assets = animation_asset_store(engine);
+        engine.animation.advance(assets, static_cast<float>(step.delta_seconds));
+    }
     if (!local_player_active(engine))
     {
         engine.input.clear_gameplay_buttons();
@@ -106,6 +116,9 @@ void GameSimulation::sync_world(EngineContext& engine)
     {
         physics_.clear_character();
         physics_.clear_static_world();
+        engine.animation.clear();
+        animation_assets_.reset();
+        animation_assets_world_generation_ = 0;
         engine.teams.reset_for_new_world();
         engine.camera.active = false;
         return;
@@ -115,8 +128,26 @@ void GameSimulation::sync_world(EngineContext& engine)
     physics_.clear_static_world();
     local_player_ = {};
     local_player_.on_ground = false;
+    engine.animation.clear();
+    animation_assets_.reset();
+    animation_assets_world_generation_ = 0;
     engine.teams.reset_for_new_world();
     engine.teams.request_team_menu(local_team_connection_id(engine.network));
+
+    SourceAssetStore& assets = animation_asset_store(engine);
+    for (std::size_t index = 0; index < world->props.size(); ++index)
+    {
+        const WorldProp& prop = world->props[index];
+        if (prop.kind != WorldPropKind::EntityProp || prop.model_path.empty())
+        {
+            continue;
+        }
+
+        AnimationEntity& entity = engine.animation.upsert_entity(static_cast<std::uint32_t>(index + 1U), prop.model_path, assets);
+        entity.origin = prop.origin;
+        entity.angles = prop.angles;
+        entity.skin = prop.skin;
+    }
 
     if (physics_.load_static_world(*world))
     {
@@ -128,6 +159,18 @@ void GameSimulation::sync_world(EngineContext& engine)
 
     log_info("game simulation entered world '{}'", world->name);
     update_camera(engine);
+}
+
+SourceAssetStore& GameSimulation::animation_asset_store(EngineContext& engine)
+{
+    const std::uint64_t world_generation = engine.world.generation();
+    if (!animation_assets_ || animation_assets_world_generation_ != world_generation)
+    {
+        const LoadedWorld* world = engine.world.current_world();
+        animation_assets_ = std::make_unique<SourceAssetStore>(engine.filesystem, world != nullptr ? &world->embedded_assets : nullptr);
+        animation_assets_world_generation_ = world_generation;
+    }
+    return *animation_assets_;
 }
 
 void GameSimulation::sync_team_state(EngineContext& engine)
