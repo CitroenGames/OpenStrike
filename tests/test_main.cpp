@@ -1,6 +1,7 @@
 #include "openstrike/core/command_line.hpp"
 #include "openstrike/core/console.hpp"
 #include "openstrike/core/content_filesystem.hpp"
+#include "openstrike/app/application.hpp"
 #include "openstrike/audio/audio_system.hpp"
 #include "openstrike/engine/engine.hpp"
 #include "openstrike/engine/engine_context.hpp"
@@ -47,6 +48,7 @@
 #include <optional>
 #include <string>
 #include <thread>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -3591,6 +3593,19 @@ void test_engine_startup_quit_command()
     REQUIRE(stats.tick_count == 0);
 }
 
+void test_application_runs_null_renderer_smoke()
+{
+    openstrike::RuntimeConfig config;
+    config.mode = openstrike::AppMode::DedicatedServer;
+    config.renderer_backend = openstrike::RendererBackend::Null;
+    config.content_root = std::filesystem::current_path();
+    config.network_port = 0;
+    config.startup_commands.push_back("quit");
+
+    openstrike::Application application(std::move(config));
+    REQUIRE(application.run() == 0);
+}
+
 void test_ground_movement_accelerates_and_friction_slows()
 {
     openstrike::PlayerState player;
@@ -4127,6 +4142,101 @@ void test_physics_world_uses_source_player_solid_mask()
     REQUIRE(state.on_ground);
     REQUIRE(state.origin.x > 96.0F);
 }
+
+void test_physics_layers_match_vphysics_jolt_stack()
+{
+    using Layer = openstrike::PhysicsObjectLayer;
+
+    REQUIRE(!openstrike::physics_layers_should_collide(Layer::NoCollide, Layer::Moving));
+    REQUIRE(!openstrike::physics_layers_should_collide(Layer::Moving, Layer::NoCollide));
+    REQUIRE(!openstrike::physics_layers_should_collide(Layer::NonMovingWorld, Layer::NonMovingWorld));
+    REQUIRE(!openstrike::physics_layers_should_collide(Layer::NonMovingObject, Layer::NonMovingObject));
+    REQUIRE(openstrike::physics_layers_should_collide(Layer::NonMovingWorld, Layer::Moving));
+    REQUIRE(openstrike::physics_layers_should_collide(Layer::NonMovingObject, Layer::Moving));
+    REQUIRE(openstrike::physics_layers_should_collide(Layer::Moving, Layer::Moving));
+    REQUIRE(openstrike::physics_layers_should_collide(Layer::Debris, Layer::NonMovingWorld));
+    REQUIRE(openstrike::physics_layers_should_collide(Layer::NonMovingObject, Layer::Debris));
+    REQUIRE(!openstrike::physics_layers_should_collide(Layer::Debris, Layer::Moving));
+}
+
+void test_physics_world_steps_dynamic_body_on_static_world()
+{
+    openstrike::LoadedWorld world;
+    world.name = "physics_dynamic_body";
+    add_collision_triangle(world, {-128.0F, -128.0F, 0.0F}, {128.0F, -128.0F, 0.0F}, {128.0F, 128.0F, 0.0F}, {0.0F, 0.0F, 1.0F});
+    add_collision_triangle(world, {-128.0F, -128.0F, 0.0F}, {128.0F, 128.0F, 0.0F}, {-128.0F, 128.0F, 0.0F}, {0.0F, 0.0F, 1.0F});
+
+    openstrike::PhysicsWorld physics;
+    REQUIRE(physics.load_static_world(world));
+
+    openstrike::PhysicsBodyDesc desc;
+    desc.shape = openstrike::PhysicsBodyShape::Box;
+    desc.origin = {0.0F, 0.0F, 96.0F};
+    desc.half_extents = {8.0F, 8.0F, 8.0F};
+    desc.mass = 25.0F;
+
+    const openstrike::PhysicsBodyHandle body = physics.create_body(desc);
+    REQUIRE(body.valid());
+
+    for (int step = 0; step < 180; ++step)
+    {
+        physics.step_simulation(1.0F / 120.0F);
+    }
+
+    const openstrike::PhysicsBodyState state = physics.body_state(body);
+    REQUIRE(state.layer == openstrike::PhysicsObjectLayer::Moving);
+    REQUIRE(state.contents == openstrike::PhysicsContents::Solid);
+    REQUIRE(state.origin.z < 32.0F);
+    REQUIRE(state.origin.z > 6.0F);
+}
+
+void test_physics_world_traces_filter_contents_and_layers()
+{
+    openstrike::PhysicsWorld physics;
+
+    openstrike::PhysicsBodyDesc monster_clip;
+    monster_clip.dynamic = false;
+    monster_clip.layer = openstrike::PhysicsObjectLayer::NonMovingObject;
+    monster_clip.origin = {64.0F, 0.0F, 16.0F};
+    monster_clip.half_extents = {8.0F, 32.0F, 32.0F};
+    monster_clip.contents = openstrike::PhysicsContents::MonsterClip;
+    REQUIRE(physics.create_body(monster_clip).valid());
+
+    const openstrike::PhysicsTraceResult player_mask_trace =
+        physics.trace_ray({0.0F, 0.0F, 16.0F}, {128.0F, 0.0F, 16.0F}, openstrike::PhysicsContents::MaskPlayerSolid);
+    REQUIRE(!player_mask_trace.hit);
+
+    openstrike::PhysicsTraceDesc world_mask_sweep;
+    world_mask_sweep.start = {0.0F, 0.0F, 16.0F};
+    world_mask_sweep.end = {128.0F, 0.0F, 16.0F};
+    world_mask_sweep.mins = {-4.0F, -4.0F, -4.0F};
+    world_mask_sweep.maxs = {4.0F, 4.0F, 4.0F};
+    world_mask_sweep.contents_mask = openstrike::PhysicsContents::MaskWorldStatic;
+    const openstrike::PhysicsTraceResult world_mask_trace = physics.trace_box(world_mask_sweep);
+    REQUIRE(world_mask_trace.hit);
+    REQUIRE(world_mask_trace.layer == openstrike::PhysicsObjectLayer::NonMovingObject);
+    REQUIRE(world_mask_trace.contents == openstrike::PhysicsContents::MonsterClip);
+    REQUIRE(world_mask_trace.fraction > 0.0F);
+    REQUIRE(world_mask_trace.fraction < 1.0F);
+
+    openstrike::PhysicsBodyDesc moving_body;
+    moving_body.origin = {64.0F, 80.0F, 16.0F};
+    moving_body.half_extents = {8.0F, 32.0F, 32.0F};
+    moving_body.contents = openstrike::PhysicsContents::Solid;
+    REQUIRE(physics.create_body(moving_body).valid());
+
+    const openstrike::PhysicsTraceResult moving_trace =
+        physics.trace_ray({0.0F, 80.0F, 16.0F}, {128.0F, 80.0F, 16.0F}, openstrike::PhysicsContents::MaskSolid);
+    REQUIRE(moving_trace.hit);
+    REQUIRE(moving_trace.layer == openstrike::PhysicsObjectLayer::Moving);
+
+    openstrike::PhysicsTraceDesc debris_trace_desc;
+    debris_trace_desc.start = {0.0F, 80.0F, 16.0F};
+    debris_trace_desc.end = {128.0F, 80.0F, 16.0F};
+    debris_trace_desc.query_layer = openstrike::PhysicsObjectLayer::Debris;
+    debris_trace_desc.contents_mask = openstrike::PhysicsContents::MaskSolid;
+    REQUIRE(!physics.trace_box(debris_trace_desc).hit);
+}
 }
 
 int main()
@@ -4196,6 +4306,7 @@ int main()
         test_quit_and_exit_commands_disconnect_before_shutdown();
         test_game_simulation_updates_hud_for_loaded_world();
         test_engine_startup_quit_command();
+        test_application_runs_null_renderer_smoke();
         test_ground_movement_accelerates_and_friction_slows();
         test_walk_and_duck_limit_movement_speed();
         test_air_movement_uses_source_air_speed_cap();
@@ -4213,6 +4324,9 @@ int main()
         test_navigation_commands_sync_with_loaded_world();
         test_physics_world_blocks_character_against_static_mesh();
         test_physics_world_uses_source_player_solid_mask();
+        test_physics_layers_match_vphysics_jolt_stack();
+        test_physics_world_steps_dynamic_body_on_static_world();
+        test_physics_world_traces_filter_contents_and_layers();
     }
     catch (const std::exception& error)
     {
