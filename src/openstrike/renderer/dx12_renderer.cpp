@@ -1492,13 +1492,15 @@ bool Dx12Renderer::initialize(const RuntimeConfig& config)
     return true;
 }
 
-void Dx12Renderer::render(const FrameContext& context)
+void Dx12Renderer::render(const RenderFrame& render_frame)
 {
     if (!initialized_ || window_closed_)
     {
         return;
     }
 
+    const FrameContext& context = render_frame.timing;
+    const CameraState camera = render_frame.camera;
     const auto total_start = std::chrono::steady_clock::now();
     double pump_us = 0.0;
     double ui_us = 0.0;
@@ -1566,22 +1568,12 @@ void Dx12Renderer::render(const FrameContext& context)
     setup_us = elapsed_us(phase_start, std::chrono::steady_clock::now());
 
     phase_start = std::chrono::steady_clock::now();
-    const LoadedWorld* active_world = engine_context_ != nullptr ? engine_context_->world.current_world() : nullptr;
-    bool skybox_ready = false;
-    if (active_world != nullptr)
-    {
-        skybox_ready = ensure_skybox_gpu_resources(*active_world);
-    }
-    else
-    {
-        skybox_gpu_.reset();
-        skybox_gpu_generation_ = engine_context_ != nullptr ? engine_context_->world.generation() : 0;
-    }
-
-    bool world_ready = ensure_world_gpu_resources();
+    const LoadedWorld* active_world = render_frame.scene.world;
+    const bool skybox_ready = ensure_skybox_gpu_resources(render_frame.scene);
+    bool world_ready = ensure_world_gpu_resources(render_frame.scene);
     if (world_ready && active_world != nullptr)
     {
-        world_ready = upload_forward_plus_resources(*active_world);
+        world_ready = upload_forward_plus_resources(*active_world, camera);
     }
 
     if (!succeeded_with_device(device_.Get(), command_list_->Close(), "ID3D12GraphicsCommandList::Close setup"))
@@ -1624,13 +1616,13 @@ void Dx12Renderer::render(const FrameContext& context)
     const bool used_async_recording = skybox_ready && world_ready && async_scene_recording_;
     if (used_async_recording)
     {
-        std::future<bool> skybox_recording = std::async(std::launch::async, [this, active_world, close_scene_list] {
+        std::future<bool> skybox_recording = std::async(std::launch::async, [this, active_world, camera, close_scene_list] {
             ID3D12GraphicsCommandList* list = scene_command_lists_[kSkyboxCommandListIndex].Get();
-            return record_skybox(list, *active_world) && close_scene_list(list, "ID3D12GraphicsCommandList::Close skybox scene");
+            return record_skybox(list, *active_world, camera) && close_scene_list(list, "ID3D12GraphicsCommandList::Close skybox scene");
         });
 
         ID3D12GraphicsCommandList* world_list = scene_command_lists_[kWorldCommandListIndex].Get();
-        scene_recording_ok = record_world(world_list) && close_scene_list(world_list, "ID3D12GraphicsCommandList::Close world scene");
+        scene_recording_ok = record_world(world_list, *active_world, camera) && close_scene_list(world_list, "ID3D12GraphicsCommandList::Close world scene");
         scene_recording_ok = skybox_recording.get() && scene_recording_ok;
     }
     else if (skybox_ready && world_ready)
@@ -1638,18 +1630,18 @@ void Dx12Renderer::render(const FrameContext& context)
         ID3D12GraphicsCommandList* skybox_list = scene_command_lists_[kSkyboxCommandListIndex].Get();
         ID3D12GraphicsCommandList* world_list = scene_command_lists_[kWorldCommandListIndex].Get();
         scene_recording_ok =
-            record_skybox(skybox_list, *active_world) && close_scene_list(skybox_list, "ID3D12GraphicsCommandList::Close skybox scene") &&
-            record_world(world_list) && close_scene_list(world_list, "ID3D12GraphicsCommandList::Close world scene");
+            record_skybox(skybox_list, *active_world, camera) && close_scene_list(skybox_list, "ID3D12GraphicsCommandList::Close skybox scene") &&
+            record_world(world_list, *active_world, camera) && close_scene_list(world_list, "ID3D12GraphicsCommandList::Close world scene");
     }
     else if (skybox_ready)
     {
         ID3D12GraphicsCommandList* list = scene_command_lists_[kSkyboxCommandListIndex].Get();
-        scene_recording_ok = record_skybox(list, *active_world) && close_scene_list(list, "ID3D12GraphicsCommandList::Close skybox scene");
+        scene_recording_ok = record_skybox(list, *active_world, camera) && close_scene_list(list, "ID3D12GraphicsCommandList::Close skybox scene");
     }
     else if (world_ready)
     {
         ID3D12GraphicsCommandList* list = scene_command_lists_[kWorldCommandListIndex].Get();
-        scene_recording_ok = record_world(list) && close_scene_list(list, "ID3D12GraphicsCommandList::Close world scene");
+        scene_recording_ok = record_world(list, *active_world, camera) && close_scene_list(list, "ID3D12GraphicsCommandList::Close world scene");
     }
 
     if (!scene_recording_ok)
@@ -2482,15 +2474,16 @@ bool Dx12Renderer::initialize_rml(const RuntimeConfig& config)
     return rml_ui_layer_->initialize(*window_, *rml_render_interface_, engine_context_, config, width_, height_);
 }
 
-bool Dx12Renderer::ensure_skybox_gpu_resources(const LoadedWorld& world)
+bool Dx12Renderer::ensure_skybox_gpu_resources(const RenderScene& scene)
 {
-    if (engine_context_ == nullptr || skybox_pipeline_state_ == nullptr || skybox_root_signature_ == nullptr || command_list_ == nullptr)
+    if (skybox_pipeline_state_ == nullptr || skybox_root_signature_ == nullptr || command_list_ == nullptr || scene.filesystem == nullptr)
     {
         return false;
     }
 
-    const std::uint64_t generation = engine_context_->world.generation();
-    if (world.kind != WorldAssetKind::SourceBsp || !world.mesh.has_sky_surfaces)
+    const LoadedWorld* world = scene.world;
+    const std::uint64_t generation = scene.world_generation;
+    if (world == nullptr || world->kind != WorldAssetKind::SourceBsp || !world->mesh.has_sky_surfaces)
     {
         if (skybox_gpu_generation_ != generation)
         {
@@ -2500,7 +2493,7 @@ bool Dx12Renderer::ensure_skybox_gpu_resources(const LoadedWorld& world)
         return false;
     }
 
-    const std::optional<std::string> requested_sky_name = skybox_name_from_world(world);
+    const std::optional<std::string> requested_sky_name = skybox_name_from_world(*world);
     if (!requested_sky_name || requested_sky_name->empty())
     {
         if (skybox_gpu_generation_ != generation)
@@ -2517,7 +2510,7 @@ bool Dx12Renderer::ensure_skybox_gpu_resources(const LoadedWorld& world)
         skybox_gpu_generation_ = generation;
 
         static constexpr std::array<std::string_view, kSkyboxFaceCount> kSkyboxSuffixByDrawAxis{"rt", "lf", "bk", "ft", "up", "dn"};
-        SourceAssetStore source_assets(engine_context_->filesystem, &world.embedded_assets);
+        SourceAssetStore source_assets(*scene.filesystem, &world->embedded_assets);
         MaterialSystem material_system(source_assets);
 
         auto load_skybox_textures = [&](std::string_view sky_name) -> std::optional<std::array<SourceTexture, kSkyboxFaceCount>> {
@@ -2617,9 +2610,9 @@ bool Dx12Renderer::ensure_skybox_gpu_resources(const LoadedWorld& world)
     return true;
 }
 
-bool Dx12Renderer::record_skybox(ID3D12GraphicsCommandList* command_list, const LoadedWorld&) const
+bool Dx12Renderer::record_skybox(ID3D12GraphicsCommandList* command_list, const LoadedWorld&, const CameraState& camera) const
 {
-    if (command_list == nullptr || engine_context_ == nullptr || skybox_gpu_ == nullptr || skybox_pipeline_state_ == nullptr || skybox_root_signature_ == nullptr)
+    if (command_list == nullptr || skybox_gpu_ == nullptr || skybox_pipeline_state_ == nullptr || skybox_root_signature_ == nullptr)
     {
         return false;
     }
@@ -2638,7 +2631,7 @@ bool Dx12Renderer::record_skybox(ID3D12GraphicsCommandList* command_list, const 
     scissor.right = static_cast<LONG>(width_);
     scissor.bottom = static_cast<LONG>(height_);
 
-    const std::array<float, 16> constants = skybox_to_clip_matrix(&engine_context_->camera, width_, height_);
+    const std::array<float, 16> constants = skybox_to_clip_matrix(&camera, width_, height_);
     D3D12_CPU_DESCRIPTOR_HANDLE rtv_handle = offset_descriptor(rtv_heap_->GetCPUDescriptorHandleForHeapStart(), frame_index_, rtv_descriptor_size_);
     D3D12_CPU_DESCRIPTOR_HANDLE dsv_handle = dsv_heap_->GetCPUDescriptorHandleForHeapStart();
     ID3D12DescriptorHeap* descriptor_heaps[] = {shader_descriptor_heap_.Get()};
@@ -2664,15 +2657,15 @@ bool Dx12Renderer::record_skybox(ID3D12GraphicsCommandList* command_list, const 
     return true;
 }
 
-bool Dx12Renderer::ensure_world_gpu_resources()
+bool Dx12Renderer::ensure_world_gpu_resources(const RenderScene& scene)
 {
-    if (engine_context_ == nullptr || world_pipeline_state_ == nullptr || world_root_signature_ == nullptr || command_list_ == nullptr)
+    if (world_pipeline_state_ == nullptr || world_root_signature_ == nullptr || command_list_ == nullptr || scene.filesystem == nullptr)
     {
         return false;
     }
 
-    const LoadedWorld* world = engine_context_->world.current_world();
-    const std::uint64_t generation = engine_context_->world.generation();
+    const LoadedWorld* world = scene.world;
+    const std::uint64_t generation = scene.world_generation;
     if (world == nullptr || world->mesh.vertices.empty() || world->mesh.indices.empty())
     {
         world_gpu_.reset();
@@ -2740,7 +2733,7 @@ bool Dx12Renderer::ensure_world_gpu_resources()
         gpu->textures.reserve(material_count);
         gpu->material_constants.reserve(material_count);
 
-        SourceAssetStore source_assets(engine_context_->filesystem, &world->embedded_assets);
+        SourceAssetStore source_assets(*scene.filesystem, &world->embedded_assets);
         MaterialSystem material_system(source_assets);
         D3D12_CPU_DESCRIPTOR_HANDLE cpu_handle = gpu->srv_range.cpu_start;
         for (std::uint32_t material_index = 0; material_index < material_count; ++material_index)
@@ -2828,7 +2821,7 @@ bool Dx12Renderer::ensure_world_gpu_resources()
     return world_gpu_ != nullptr;
 }
 
-bool Dx12Renderer::upload_forward_plus_resources(const LoadedWorld& world)
+bool Dx12Renderer::upload_forward_plus_resources(const LoadedWorld& world, const CameraState& camera)
 {
     if (device_ == nullptr || world_gpu_ == nullptr)
     {
@@ -2868,9 +2861,8 @@ bool Dx12Renderer::upload_forward_plus_resources(const LoadedWorld& world)
 
     if (real_light_count > 0)
     {
-        const CameraState* camera = engine_context_ != nullptr ? &engine_context_->camera : nullptr;
-        const std::array<float, 16> matrix = world_to_clip_matrix(world.mesh, camera, width_, height_);
-        const bool perspective_camera = camera != nullptr && camera->active;
+        const std::array<float, 16> matrix = world_to_clip_matrix(world.mesh, &camera, width_, height_);
+        const bool perspective_camera = camera.active;
         for (std::uint32_t light_index = 0; light_index < real_light_count; ++light_index)
         {
             const std::optional<ForwardPlusTileBounds> bounds =
@@ -3009,15 +3001,14 @@ bool Dx12Renderer::upload_forward_plus_resources(const LoadedWorld& world)
     return true;
 }
 
-bool Dx12Renderer::record_world(ID3D12GraphicsCommandList* command_list) const
+bool Dx12Renderer::record_world(ID3D12GraphicsCommandList* command_list, const LoadedWorld& world, const CameraState& camera) const
 {
-    if (command_list == nullptr || engine_context_ == nullptr || world_gpu_ == nullptr || world_pipeline_state_ == nullptr || world_root_signature_ == nullptr)
+    if (command_list == nullptr || world_gpu_ == nullptr || world_pipeline_state_ == nullptr || world_root_signature_ == nullptr)
     {
         return false;
     }
 
-    const LoadedWorld* world = engine_context_->world.current_world();
-    if (world == nullptr || world->mesh.vertices.empty() || world->mesh.indices.empty())
+    if (world.mesh.vertices.empty() || world.mesh.indices.empty())
     {
         return false;
     }
@@ -3036,7 +3027,7 @@ bool Dx12Renderer::record_world(ID3D12GraphicsCommandList* command_list) const
     scissor.right = static_cast<LONG>(width_);
     scissor.bottom = static_cast<LONG>(height_);
 
-    std::array<float, kWorldShaderFloatCount> constants = world_shader_constants(world->mesh, &engine_context_->camera, width_, height_);
+    std::array<float, kWorldShaderFloatCount> constants = world_shader_constants(world.mesh, &camera, width_, height_);
     constants[kWorldTransformFloatCount + 11] = static_cast<float>(world_gpu_->forward_plus_light_count);
     D3D12_CPU_DESCRIPTOR_HANDLE rtv_handle = offset_descriptor(rtv_heap_->GetCPUDescriptorHandleForHeapStart(), frame_index_, rtv_descriptor_size_);
     D3D12_CPU_DESCRIPTOR_HANDLE dsv_handle = dsv_heap_->GetCPUDescriptorHandleForHeapStart();

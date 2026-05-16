@@ -1575,7 +1575,7 @@ struct MetalRenderer::Impl
         rml_render_interface.reset();
     }
 
-    void render(const FrameContext& context)
+    void render(const RenderFrame& render_frame)
     {
         if (!initialized || window_closed)
         {
@@ -1602,9 +1602,11 @@ struct MetalRenderer::Impl
             rml_ui_layer->update(width, height);
         }
 
-        const LoadedWorld* active_world = engine_context != nullptr ? engine_context->world.current_world() : nullptr;
-        const bool skybox_ready = active_world != nullptr && ensure_skybox_gpu_resources(*active_world);
-        const bool world_ready = ensure_world_gpu_resources();
+        const FrameContext& context = render_frame.timing;
+        const CameraState camera = render_frame.camera;
+        const LoadedWorld* active_world = render_frame.scene.world;
+        const bool skybox_ready = ensure_skybox_gpu_resources(render_frame.scene);
+        const bool world_ready = ensure_world_gpu_resources(render_frame.scene);
         update_light_buffer(active_world);
 
         @autoreleasepool
@@ -1633,11 +1635,11 @@ struct MetalRenderer::Impl
 
             if (skybox_ready)
             {
-                record_skybox(encoder);
+                record_skybox(encoder, camera);
             }
             if (world_ready)
             {
-                record_world(encoder);
+                record_world(encoder, *active_world, camera);
             }
             if (rml_ui_layer != nullptr && rml_render_interface != nullptr)
             {
@@ -1653,15 +1655,15 @@ struct MetalRenderer::Impl
         }
     }
 
-    bool ensure_world_gpu_resources()
+    bool ensure_world_gpu_resources(const RenderScene& scene)
     {
-        if (engine_context == nullptr || device == nil || world_pipeline == nil)
+        if (device == nil || world_pipeline == nil || scene.filesystem == nullptr)
         {
             return false;
         }
 
-        const LoadedWorld* world = engine_context->world.current_world();
-        const std::uint64_t generation = engine_context->world.generation();
+        const LoadedWorld* world = scene.world;
+        const std::uint64_t generation = scene.world_generation;
         if (world == nullptr || world->mesh.vertices.empty() || world->mesh.indices.empty())
         {
             world_gpu.reset();
@@ -1702,7 +1704,7 @@ struct MetalRenderer::Impl
         }
         gpu->index_count = static_cast<std::uint32_t>(world->mesh.indices.size());
 
-        SourceAssetStore source_assets(engine_context->filesystem, &world->embedded_assets);
+        SourceAssetStore source_assets(*scene.filesystem, &world->embedded_assets);
         MaterialSystem material_system(source_assets);
         const std::uint32_t material_count = std::max<std::uint32_t>(static_cast<std::uint32_t>(world->mesh.materials.size()), 1U);
         gpu->textures.reserve(material_count);
@@ -1782,21 +1784,22 @@ struct MetalRenderer::Impl
         return true;
     }
 
-    bool ensure_skybox_gpu_resources(const LoadedWorld& world)
+    bool ensure_skybox_gpu_resources(const RenderScene& scene)
     {
-        if (engine_context == nullptr || device == nil || skybox_pipeline == nil)
+        if (device == nil || skybox_pipeline == nil || scene.filesystem == nullptr)
         {
             return false;
         }
 
-        const std::uint64_t generation = engine_context->world.generation();
-        if (world.kind != WorldAssetKind::SourceBsp || !world.mesh.has_sky_surfaces)
+        const LoadedWorld* world = scene.world;
+        const std::uint64_t generation = scene.world_generation;
+        if (world == nullptr || world->kind != WorldAssetKind::SourceBsp || !world->mesh.has_sky_surfaces)
         {
             skybox_gpu.reset();
             return false;
         }
 
-        const std::optional<std::string> requested_sky_name = skybox_name_from_world(world);
+        const std::optional<std::string> requested_sky_name = skybox_name_from_world(*world);
         if (!requested_sky_name || requested_sky_name->empty())
         {
             skybox_gpu.reset();
@@ -1809,7 +1812,7 @@ struct MetalRenderer::Impl
         }
 
         static constexpr std::array<std::string_view, kSkyboxFaceCount> kSkyboxSuffixByDrawAxis{"rt", "lf", "bk", "ft", "up", "dn"};
-        SourceAssetStore source_assets(engine_context->filesystem, &world.embedded_assets);
+        SourceAssetStore source_assets(*scene.filesystem, &world->embedded_assets);
         MaterialSystem material_system(source_assets);
 
         auto load_skybox_textures = [&](std::string_view sky_name) -> std::optional<std::array<SourceTexture, kSkyboxFaceCount>> {
@@ -1890,15 +1893,14 @@ struct MetalRenderer::Impl
         frame_lights.light_count = count;
     }
 
-    void record_skybox(id<MTLRenderCommandEncoder> encoder)
+    void record_skybox(id<MTLRenderCommandEncoder> encoder, const CameraState& camera)
     {
         if (encoder == nil || skybox_gpu == nullptr)
         {
             return;
         }
 
-        const std::array<float, 16> constants =
-            skybox_to_clip_matrix(engine_context != nullptr ? &engine_context->camera : nullptr, width, height);
+        const std::array<float, 16> constants = skybox_to_clip_matrix(&camera, width, height);
         [encoder setRenderPipelineState:skybox_pipeline];
         [encoder setDepthStencilState:skybox_depth_state];
         [encoder setCullMode:MTLCullModeNone];
@@ -1916,21 +1918,20 @@ struct MetalRenderer::Impl
         }
     }
 
-    void record_world(id<MTLRenderCommandEncoder> encoder)
+    void record_world(id<MTLRenderCommandEncoder> encoder, const LoadedWorld& world, const CameraState& camera)
     {
-        if (encoder == nil || world_gpu == nullptr || engine_context == nullptr || frame_lights.buffer == nil)
+        if (encoder == nil || world_gpu == nullptr || frame_lights.buffer == nil)
         {
             return;
         }
 
-        const LoadedWorld* world = engine_context->world.current_world();
-        if (world == nullptr)
+        if (world.mesh.vertices.empty() || world.mesh.indices.empty())
         {
             return;
         }
 
         const std::array<float, kWorldShaderFloatCount> constants =
-            world_shader_constants(world->mesh, &engine_context->camera, width, height, frame_lights.light_count);
+            world_shader_constants(world.mesh, &camera, width, height, frame_lights.light_count);
         [encoder setRenderPipelineState:world_pipeline];
         [encoder setDepthStencilState:world_depth_state];
         [encoder setCullMode:MTLCullModeNone];
@@ -2115,9 +2116,9 @@ bool MetalRenderer::initialize(const RuntimeConfig& config)
     return true;
 }
 
-void MetalRenderer::render(const FrameContext& context)
+void MetalRenderer::render(const RenderFrame& frame)
 {
-    impl_->render(context);
+    impl_->render(frame);
 }
 
 bool MetalRenderer::should_close() const

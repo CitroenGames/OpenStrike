@@ -16,7 +16,7 @@ public:
 
     void set_engine_context(EngineContext* context) override;
     bool initialize(const RuntimeConfig& config) override;
-    void render(const FrameContext& context) override;
+    void render(const RenderFrame& frame) override;
     bool should_close() const override;
     void shutdown() override;
 

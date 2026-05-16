@@ -42,7 +42,7 @@ public:
 
     void set_engine_context(EngineContext* context) override;
     bool initialize(const RuntimeConfig& config) override;
-    void render(const FrameContext& context) override;
+    void render(const RenderFrame& frame) override;
     bool should_close() const override;
     void shutdown() override;
 
@@ -60,11 +60,11 @@ private:
     bool create_multicore_command_objects();
     bool resize_swap_chain(std::uint32_t width, std::uint32_t height);
     bool initialize_rml(const RuntimeConfig& config);
-    bool ensure_skybox_gpu_resources(const LoadedWorld& world);
-    bool ensure_world_gpu_resources();
-    bool upload_forward_plus_resources(const LoadedWorld& world);
-    bool record_skybox(ID3D12GraphicsCommandList* command_list, const LoadedWorld& world) const;
-    bool record_world(ID3D12GraphicsCommandList* command_list) const;
+    bool ensure_skybox_gpu_resources(const RenderScene& scene);
+    bool ensure_world_gpu_resources(const RenderScene& scene);
+    bool upload_forward_plus_resources(const LoadedWorld& world, const CameraState& camera);
+    bool record_skybox(ID3D12GraphicsCommandList* command_list, const LoadedWorld& world, const CameraState& camera) const;
+    bool record_world(ID3D12GraphicsCommandList* command_list, const LoadedWorld& world, const CameraState& camera) const;
     void shutdown_rml();
     void pump_messages();
     bool wait_for_gpu();

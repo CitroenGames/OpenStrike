@@ -8,8 +8,7 @@ class NullRenderer final : public IRenderer
 {
 public:
     bool initialize(const RuntimeConfig& config) override;
-    void render(const FrameContext& context) override;
+    void render(const RenderFrame& frame) override;
     void shutdown() override;
 };
 }
-

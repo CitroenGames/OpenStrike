@@ -115,6 +115,46 @@ PhysicsObjectLayer from_jolt_layer(JPH::ObjectLayer layer)
     }
 }
 
+JPH::EMotionType to_jolt_motion_type(PhysicsBodyMotionType motion_type)
+{
+    switch (motion_type)
+    {
+    case PhysicsBodyMotionType::Static:
+        return JPH::EMotionType::Static;
+    case PhysicsBodyMotionType::Kinematic:
+        return JPH::EMotionType::Kinematic;
+    case PhysicsBodyMotionType::Dynamic:
+        return JPH::EMotionType::Dynamic;
+    }
+
+    return JPH::EMotionType::Static;
+}
+
+PhysicsBodyMotionType from_jolt_motion_type(JPH::EMotionType motion_type)
+{
+    switch (motion_type)
+    {
+    case JPH::EMotionType::Static:
+        return PhysicsBodyMotionType::Static;
+    case JPH::EMotionType::Kinematic:
+        return PhysicsBodyMotionType::Kinematic;
+    case JPH::EMotionType::Dynamic:
+        return PhysicsBodyMotionType::Dynamic;
+    }
+
+    return PhysicsBodyMotionType::Static;
+}
+
+PhysicsBodyMotionType resolve_motion_type(const PhysicsBodyDesc& desc)
+{
+    if (!desc.dynamic || desc.layer == PhysicsObjectLayer::NonMovingWorld || desc.layer == PhysicsObjectLayer::NonMovingObject)
+    {
+        return PhysicsBodyMotionType::Static;
+    }
+
+    return desc.motion_type;
+}
+
 bool layers_should_collide(JPH::ObjectLayer first, JPH::ObjectLayer second)
 {
     switch (first)
@@ -290,6 +330,7 @@ struct PhysicsBodyMetadata
 {
     std::uint32_t contents = PhysicsContents::Solid;
     std::uint32_t surface_flags = 0;
+    PhysicsBodyMotionType motion_type = PhysicsBodyMotionType::Static;
     PhysicsMaterial material;
 };
 
@@ -409,6 +450,16 @@ bool has_box_extents(Vec3 mins, Vec3 maxs)
     const Vec3 extents = maxs - mins;
     return std::fabs(extents.x) > 0.001F || std::fabs(extents.y) > 0.001F || std::fabs(extents.z) > 0.001F;
 }
+
+PhysicsWorldSettings sanitize_settings(PhysicsWorldSettings settings)
+{
+    settings.max_bodies = std::max<std::uint32_t>(settings.max_bodies, 1);
+    settings.max_body_pairs = std::max<std::uint32_t>(settings.max_body_pairs, 1);
+    settings.max_contact_constraints = std::max<std::uint32_t>(settings.max_contact_constraints, 1);
+    settings.temp_allocator_size_bytes = std::max<std::size_t>(settings.temp_allocator_size_bytes, 1024 * 1024);
+    settings.default_collision_sub_steps = std::clamp(settings.default_collision_sub_steps, 1, 8);
+    return settings;
+}
 }
 
 bool physics_layers_should_collide(PhysicsObjectLayer first, PhysicsObjectLayer second)
@@ -419,11 +470,20 @@ bool physics_layers_should_collide(PhysicsObjectLayer first, PhysicsObjectLayer 
 class PhysicsWorld::Impl
 {
 public:
-    Impl()
-        : job_system_(JPH::cMaxPhysicsJobs, JPH::cMaxPhysicsBarriers, 0)
+    explicit Impl(PhysicsWorldSettings settings)
+        : settings_(sanitize_settings(settings))
+        , temp_allocator_(static_cast<int>(settings_.temp_allocator_size_bytes))
+        , job_system_(JPH::cMaxPhysicsJobs, JPH::cMaxPhysicsBarriers, static_cast<int>(settings_.worker_threads))
     {
-        system_.Init(16384, 0, 16384, 16384, broad_phase_layers_, object_vs_broad_phase_filter_, object_layer_pair_filter_);
-        system_.SetGravity(to_jolt_distance(Vec3{0.0F, 0.0F, -800.0F}));
+        system_.Init(settings_.max_bodies,
+            settings_.max_body_mutexes,
+            settings_.max_body_pairs,
+            settings_.max_contact_constraints,
+            broad_phase_layers_,
+            object_vs_broad_phase_filter_,
+            object_layer_pair_filter_);
+        system_.SetGravity(to_jolt_distance(settings_.gravity));
+        character_config_ = settings_.default_character;
         system_.SetCombineFriction([](const JPH::Body& first, const JPH::SubShapeID&, const JPH::Body& second, const JPH::SubShapeID&) {
             return std::sqrt(std::max(first.GetFriction(), 0.0F) * std::max(second.GetFriction(), 0.0F));
         });
@@ -444,6 +504,22 @@ public:
             }
         }
         body_metadata_.clear();
+    }
+
+    const PhysicsWorldSettings& settings() const
+    {
+        return settings_;
+    }
+
+    void set_gravity(Vec3 gravity)
+    {
+        settings_.gravity = gravity;
+        system_.SetGravity(to_jolt_distance(settings_.gravity));
+    }
+
+    Vec3 gravity() const
+    {
+        return settings_.gravity;
     }
 
     bool load_static_world(const LoadedWorld& world)
@@ -509,8 +585,8 @@ public:
             JPH::EMotionType::Static,
             PhysicsLayers::NonMovingWorld);
         body_settings.mEnhancedInternalEdgeRemoval = true;
-        body_settings.mFriction = 0.8F;
-        body_settings.mRestitution = 0.25F;
+        body_settings.mFriction = std::max(settings_.static_world_material.friction, 0.0F);
+        body_settings.mRestitution = std::max(settings_.static_world_material.elasticity, 0.0F);
 
         JPH::BodyInterface& bodies = system_.GetBodyInterface();
         JPH::Body* static_body = bodies.CreateBody(body_settings);
@@ -537,7 +613,8 @@ public:
         body_metadata_[static_body_id_.GetIndexAndSequenceNumber()] = PhysicsBodyMetadata{
             .contents = PhysicsContents::Solid,
             .surface_flags = 0,
-            .material = PhysicsMaterial{},
+            .motion_type = PhysicsBodyMotionType::Static,
+            .material = settings_.static_world_material,
         };
         broad_phase_optimized_ = false;
         return true;
@@ -573,15 +650,14 @@ public:
             return {};
         }
 
-        const bool dynamic_body = desc.dynamic && desc.layer != PhysicsObjectLayer::NonMovingWorld &&
-                                  desc.layer != PhysicsObjectLayer::NonMovingObject;
+        const PhysicsBodyMotionType motion_type = resolve_motion_type(desc);
         JPH::BodyCreationSettings body_settings(shape,
             to_jolt_position(desc.origin),
             JPH::Quat::sIdentity(),
-            dynamic_body ? JPH::EMotionType::Dynamic : JPH::EMotionType::Static,
+            to_jolt_motion_type(motion_type),
             to_jolt_layer(desc.layer));
         body_settings.mLinearVelocity = to_jolt_distance(desc.velocity);
-        body_settings.mMotionQuality = dynamic_body ? JPH::EMotionQuality::LinearCast : JPH::EMotionQuality::Discrete;
+        body_settings.mMotionQuality = motion_type == PhysicsBodyMotionType::Dynamic ? JPH::EMotionQuality::LinearCast : JPH::EMotionQuality::Discrete;
         body_settings.mEnhancedInternalEdgeRemoval = desc.enhanced_internal_edge_removal;
         body_settings.mFriction = std::max(desc.material.friction, 0.0F);
         body_settings.mRestitution = std::max(desc.material.elasticity, 0.0F);
@@ -602,9 +678,10 @@ public:
         body_metadata_[handle.value] = PhysicsBodyMetadata{
             .contents = desc.contents != 0 ? desc.contents : PhysicsContents::Solid,
             .surface_flags = 0,
+            .motion_type = motion_type,
             .material = desc.material,
         };
-        bodies.AddBody(body_id, dynamic_body ? JPH::EActivation::Activate : JPH::EActivation::DontActivate);
+        bodies.AddBody(body_id, motion_type == PhysicsBodyMotionType::Static ? JPH::EActivation::DontActivate : JPH::EActivation::Activate);
         broad_phase_optimized_ = false;
         return handle;
     }
@@ -657,6 +734,20 @@ public:
         return true;
     }
 
+    bool set_body_origin(PhysicsBodyHandle handle, Vec3 origin, bool activate)
+    {
+        if (!handle.valid() || body_metadata_.find(handle.value) == body_metadata_.end())
+        {
+            return false;
+        }
+
+        const JPH::BodyID body_id(handle.value);
+        JPH::BodyInterface& bodies = system_.GetBodyInterface();
+        bodies.SetPosition(body_id, to_jolt_position(origin), activate ? JPH::EActivation::Activate : JPH::EActivation::DontActivate);
+        broad_phase_optimized_ = false;
+        return true;
+    }
+
     bool set_body_velocity(PhysicsBodyHandle handle, Vec3 velocity)
     {
         if (!handle.valid() || body_metadata_.find(handle.value) == body_metadata_.end())
@@ -676,6 +767,48 @@ public:
         JPH::BodyInterface& bodies = system_.GetBodyInterface();
         bodies.SetLinearVelocity(body_id, to_jolt_distance(velocity));
         bodies.ActivateBody(body_id);
+        return true;
+    }
+
+    bool move_kinematic_body(PhysicsBodyHandle handle, Vec3 target_origin, float delta_seconds)
+    {
+        if (!handle.valid() || body_metadata_.find(handle.value) == body_metadata_.end())
+        {
+            return false;
+        }
+
+        const JPH::BodyID body_id(handle.value);
+        {
+            JPH::BodyLockRead lock(system_.GetBodyLockInterface(), body_id);
+            if (!lock.Succeeded() || lock.GetBody().GetMotionType() != JPH::EMotionType::Kinematic)
+            {
+                return false;
+            }
+        }
+
+        JPH::BodyInterface& bodies = system_.GetBodyInterface();
+        bodies.MoveKinematic(body_id, to_jolt_position(target_origin), JPH::Quat::sIdentity(), std::max(delta_seconds, 0.0001F));
+        return true;
+    }
+
+    bool apply_body_impulse(PhysicsBodyHandle handle, Vec3 impulse)
+    {
+        if (!handle.valid() || body_metadata_.find(handle.value) == body_metadata_.end())
+        {
+            return false;
+        }
+
+        const JPH::BodyID body_id(handle.value);
+        {
+            JPH::BodyLockRead lock(system_.GetBodyLockInterface(), body_id);
+            if (!lock.Succeeded() || lock.GetBody().GetMotionType() != JPH::EMotionType::Dynamic)
+            {
+                return false;
+            }
+        }
+
+        JPH::BodyInterface& bodies = system_.GetBodyInterface();
+        bodies.AddImpulse(body_id, to_jolt_distance(impulse));
         return true;
     }
 
@@ -699,6 +832,7 @@ public:
         state.origin = from_jolt_position(body.GetPosition());
         state.velocity = from_jolt_distance(body.GetLinearVelocity());
         state.layer = from_jolt_layer(body.GetObjectLayer());
+        state.motion_type = from_jolt_motion_type(body.GetMotionType());
         state.contents = metadata->second.contents;
         state.active = body.IsActive();
         return state;
@@ -717,7 +851,8 @@ public:
             broad_phase_optimized_ = true;
         }
 
-        system_.Update(delta_seconds, std::clamp(collision_sub_steps, 1, 8), &temp_allocator_, &job_system_);
+        const int sub_steps = collision_sub_steps > 0 ? collision_sub_steps : settings_.default_collision_sub_steps;
+        system_.Update(delta_seconds, std::clamp(sub_steps, 1, 8), &temp_allocator_, &job_system_);
     }
 
     PhysicsTraceResult trace_ray(Vec3 start, Vec3 end, std::uint32_t contents_mask) const
@@ -974,6 +1109,24 @@ private:
         {
             shape = new JPH::SphereShape(to_jolt_distance(std::max(desc.radius, 0.125F)));
         }
+        else if (desc.shape == PhysicsBodyShape::Capsule)
+        {
+            const float radius = std::max(desc.radius, 0.125F);
+            const float height = std::max(desc.height, (radius * 2.0F) + 0.125F);
+            const float half_cylinder_height = std::max((height - (radius * 2.0F)) * 0.5F, 0.125F);
+            JPH::Ref<JPH::Shape> capsule = new JPH::CapsuleShape(to_jolt_distance(half_cylinder_height), to_jolt_distance(radius));
+            JPH::ShapeSettings::ShapeResult shape_result =
+                JPH::RotatedTranslatedShapeSettings(JPH::Vec3::sZero(),
+                    JPH::Quat::sRotation(JPH::Vec3::sAxisX(), JPH::DegreesToRadians(90.0F)),
+                    capsule)
+                    .Create();
+            if (shape_result.HasError())
+            {
+                log_error("failed to create capsule physics shape: {}", shape_result.GetError().c_str());
+                return nullptr;
+            }
+            shape = shape_result.Get();
+        }
         else
         {
             const Vec3 half_extents{
@@ -1100,7 +1253,8 @@ private:
             temp_allocator_);
     }
 
-    JPH::TempAllocatorImpl temp_allocator_{32 * 1024 * 1024};
+    PhysicsWorldSettings settings_;
+    JPH::TempAllocatorImpl temp_allocator_;
     JPH::JobSystemThreadPool job_system_;
     BroadPhaseLayerInterface broad_phase_layers_;
     ObjectVsBroadPhaseLayerFilter object_vs_broad_phase_filter_;
@@ -1118,14 +1272,34 @@ private:
 };
 
 PhysicsWorld::PhysicsWorld()
+    : PhysicsWorld(PhysicsWorldSettings{})
+{
+}
+
+PhysicsWorld::PhysicsWorld(const PhysicsWorldSettings& settings)
 {
     initialize_jolt();
-    impl_ = std::make_unique<Impl>();
+    impl_ = std::make_unique<Impl>(settings);
 }
 
 PhysicsWorld::~PhysicsWorld() = default;
 PhysicsWorld::PhysicsWorld(PhysicsWorld&&) noexcept = default;
 PhysicsWorld& PhysicsWorld::operator=(PhysicsWorld&&) noexcept = default;
+
+const PhysicsWorldSettings& PhysicsWorld::settings() const
+{
+    return impl_->settings();
+}
+
+void PhysicsWorld::set_gravity(Vec3 gravity)
+{
+    impl_->set_gravity(gravity);
+}
+
+Vec3 PhysicsWorld::gravity() const
+{
+    return impl_->gravity();
+}
 
 bool PhysicsWorld::load_static_world(const LoadedWorld& world)
 {
@@ -1157,9 +1331,24 @@ bool PhysicsWorld::set_body_layer(PhysicsBodyHandle handle, PhysicsObjectLayer l
     return impl_->set_body_layer(handle, layer);
 }
 
+bool PhysicsWorld::set_body_origin(PhysicsBodyHandle handle, Vec3 origin, bool activate)
+{
+    return impl_->set_body_origin(handle, origin, activate);
+}
+
 bool PhysicsWorld::set_body_velocity(PhysicsBodyHandle handle, Vec3 velocity)
 {
     return impl_->set_body_velocity(handle, velocity);
+}
+
+bool PhysicsWorld::move_kinematic_body(PhysicsBodyHandle handle, Vec3 target_origin, float delta_seconds)
+{
+    return impl_->move_kinematic_body(handle, target_origin, delta_seconds);
+}
+
+bool PhysicsWorld::apply_body_impulse(PhysicsBodyHandle handle, Vec3 impulse)
+{
+    return impl_->apply_body_impulse(handle, impulse);
 }
 
 PhysicsBodyState PhysicsWorld::body_state(PhysicsBodyHandle handle) const
@@ -1180,6 +1369,11 @@ PhysicsTraceResult PhysicsWorld::trace_ray(Vec3 start, Vec3 end, std::uint32_t c
 PhysicsTraceResult PhysicsWorld::trace_box(const PhysicsTraceDesc& desc) const
 {
     return impl_->trace_box(desc);
+}
+
+void PhysicsWorld::reset_character(Vec3 origin, Vec3 velocity)
+{
+    impl_->reset_character(origin, velocity, impl_->settings().default_character);
 }
 
 void PhysicsWorld::reset_character(Vec3 origin, Vec3 velocity, const PhysicsCharacterConfig& config)

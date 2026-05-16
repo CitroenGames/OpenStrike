@@ -100,7 +100,17 @@ EngineStats Engine::run(const RuntimeConfig& config)
             module->on_frame(context, context_);
         }
 
-        renderer_->render(context);
+        RenderFrame render_frame{
+            .timing = context,
+            .scene =
+                {
+                    .world = context_.world.current_world(),
+                    .world_generation = context_.world.generation(),
+                    .filesystem = &context_.filesystem,
+                },
+            .camera = context_.camera,
+        };
+        renderer_->render(render_frame);
         ++stats.frame_count;
 
         if (!config.deterministic_frames)

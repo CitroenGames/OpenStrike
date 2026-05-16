@@ -2,6 +2,7 @@
 
 #include "openstrike/core/math.hpp"
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 
@@ -49,7 +50,15 @@ struct PhysicsMaterial
 enum class PhysicsBodyShape
 {
     Box,
-    Sphere
+    Sphere,
+    Capsule
+};
+
+enum class PhysicsBodyMotionType : std::uint8_t
+{
+    Static,
+    Kinematic,
+    Dynamic
 };
 
 struct PhysicsBodyHandle
@@ -65,14 +74,17 @@ struct PhysicsBodyHandle
 struct PhysicsBodyDesc
 {
     PhysicsBodyShape shape = PhysicsBodyShape::Box;
+    PhysicsBodyMotionType motion_type = PhysicsBodyMotionType::Dynamic;
     PhysicsObjectLayer layer = PhysicsObjectLayer::Moving;
     Vec3 origin;
     Vec3 velocity;
     Vec3 half_extents{16.0F, 16.0F, 16.0F};
     float radius = 16.0F;
+    float height = 72.0F;
     float mass = 10.0F;
     std::uint32_t contents = PhysicsContents::Solid;
     PhysicsMaterial material;
+    // Compatibility shortcut for older call sites. Prefer motion_type for new engine-facing code.
     bool dynamic = true;
     bool sensor = false;
     bool enhanced_internal_edge_removal = true;
@@ -83,6 +95,7 @@ struct PhysicsBodyState
     Vec3 origin;
     Vec3 velocity;
     PhysicsObjectLayer layer = PhysicsObjectLayer::NoCollide;
+    PhysicsBodyMotionType motion_type = PhysicsBodyMotionType::Static;
     std::uint32_t contents = PhysicsContents::Empty;
     bool active = false;
 };
@@ -133,16 +146,35 @@ struct PhysicsCharacterState
     bool on_ground = false;
 };
 
+struct PhysicsWorldSettings
+{
+    Vec3 gravity{0.0F, 0.0F, -800.0F};
+    std::uint32_t max_bodies = 16384;
+    std::uint32_t max_body_mutexes = 0;
+    std::uint32_t max_body_pairs = 16384;
+    std::uint32_t max_contact_constraints = 16384;
+    std::size_t temp_allocator_size_bytes = 32 * 1024 * 1024;
+    std::uint32_t worker_threads = 0;
+    int default_collision_sub_steps = 1;
+    PhysicsMaterial static_world_material;
+    PhysicsCharacterConfig default_character;
+};
+
 class PhysicsWorld
 {
 public:
     PhysicsWorld();
+    explicit PhysicsWorld(const PhysicsWorldSettings& settings);
     ~PhysicsWorld();
 
     PhysicsWorld(const PhysicsWorld&) = delete;
     PhysicsWorld& operator=(const PhysicsWorld&) = delete;
     PhysicsWorld(PhysicsWorld&&) noexcept;
     PhysicsWorld& operator=(PhysicsWorld&&) noexcept;
+
+    [[nodiscard]] const PhysicsWorldSettings& settings() const;
+    void set_gravity(Vec3 gravity);
+    [[nodiscard]] Vec3 gravity() const;
 
     [[nodiscard]] bool load_static_world(const LoadedWorld& world);
     void clear_static_world();
@@ -151,14 +183,18 @@ public:
     [[nodiscard]] PhysicsBodyHandle create_body(const PhysicsBodyDesc& desc);
     void destroy_body(PhysicsBodyHandle handle);
     [[nodiscard]] bool set_body_layer(PhysicsBodyHandle handle, PhysicsObjectLayer layer);
+    [[nodiscard]] bool set_body_origin(PhysicsBodyHandle handle, Vec3 origin, bool activate = true);
     [[nodiscard]] bool set_body_velocity(PhysicsBodyHandle handle, Vec3 velocity);
+    [[nodiscard]] bool move_kinematic_body(PhysicsBodyHandle handle, Vec3 target_origin, float delta_seconds);
+    [[nodiscard]] bool apply_body_impulse(PhysicsBodyHandle handle, Vec3 impulse);
     [[nodiscard]] PhysicsBodyState body_state(PhysicsBodyHandle handle) const;
-    void step_simulation(float delta_seconds, int collision_sub_steps = 1);
+    void step_simulation(float delta_seconds, int collision_sub_steps = 0);
 
     [[nodiscard]] PhysicsTraceResult trace_ray(Vec3 start, Vec3 end, std::uint32_t contents_mask = PhysicsContents::MaskPlayerSolid) const;
     [[nodiscard]] PhysicsTraceResult trace_box(const PhysicsTraceDesc& desc) const;
 
-    void reset_character(Vec3 origin, Vec3 velocity = {}, const PhysicsCharacterConfig& config = {});
+    void reset_character(Vec3 origin, Vec3 velocity = {});
+    void reset_character(Vec3 origin, Vec3 velocity, const PhysicsCharacterConfig& config);
     void clear_character();
     [[nodiscard]] bool has_character() const;
     [[nodiscard]] PhysicsCharacterState character_state() const;

@@ -4190,6 +4190,88 @@ void test_physics_world_steps_dynamic_body_on_static_world()
     REQUIRE(state.origin.z > 6.0F);
 }
 
+void test_physics_world_uses_engine_settings()
+{
+    openstrike::PhysicsWorldSettings settings;
+    settings.gravity = {0.0F, 0.0F, 0.0F};
+    settings.max_bodies = 64;
+    settings.default_collision_sub_steps = 4;
+
+    openstrike::PhysicsWorld physics(settings);
+    REQUIRE(physics.settings().max_bodies == 64);
+    REQUIRE(physics.settings().default_collision_sub_steps == 4);
+    REQUIRE(std::abs(physics.gravity().z) < 0.001F);
+
+    openstrike::PhysicsBodyDesc desc;
+    desc.origin = {0.0F, 0.0F, 96.0F};
+    desc.half_extents = {8.0F, 8.0F, 8.0F};
+
+    const openstrike::PhysicsBodyHandle body = physics.create_body(desc);
+    REQUIRE(body.valid());
+
+    for (int step = 0; step < 60; ++step)
+    {
+        physics.step_simulation(1.0F / 60.0F);
+    }
+
+    openstrike::PhysicsBodyState state = physics.body_state(body);
+    REQUIRE(state.motion_type == openstrike::PhysicsBodyMotionType::Dynamic);
+    REQUIRE(std::abs(state.origin.z - 96.0F) < 0.01F);
+
+    physics.set_gravity({0.0F, 0.0F, -400.0F});
+    REQUIRE(std::abs(physics.gravity().z + 400.0F) < 0.001F);
+    REQUIRE(physics.set_body_velocity(body, {}));
+    for (int step = 0; step < 60; ++step)
+    {
+        physics.step_simulation(1.0F / 60.0F);
+    }
+
+    state = physics.body_state(body);
+    REQUIRE(state.origin.z < 80.0F);
+}
+
+void test_physics_world_exposes_engine_body_controls()
+{
+    openstrike::PhysicsWorldSettings settings;
+    settings.gravity = {0.0F, 0.0F, 0.0F};
+    openstrike::PhysicsWorld physics(settings);
+
+    openstrike::PhysicsBodyDesc kinematic;
+    kinematic.motion_type = openstrike::PhysicsBodyMotionType::Kinematic;
+    kinematic.origin = {0.0F, 0.0F, 16.0F};
+    kinematic.half_extents = {8.0F, 8.0F, 8.0F};
+    const openstrike::PhysicsBodyHandle kinematic_body = physics.create_body(kinematic);
+    REQUIRE(kinematic_body.valid());
+    REQUIRE(physics.body_state(kinematic_body).motion_type == openstrike::PhysicsBodyMotionType::Kinematic);
+
+    REQUIRE(physics.set_body_origin(kinematic_body, {32.0F, 0.0F, 16.0F}));
+    REQUIRE(std::abs(physics.body_state(kinematic_body).origin.x - 32.0F) < 0.01F);
+    REQUIRE(physics.move_kinematic_body(kinematic_body, {64.0F, 0.0F, 16.0F}, 1.0F / 60.0F));
+    physics.step_simulation(1.0F / 60.0F);
+    REQUIRE(physics.body_state(kinematic_body).origin.x > 48.0F);
+
+    openstrike::PhysicsBodyDesc capsule;
+    capsule.shape = openstrike::PhysicsBodyShape::Capsule;
+    capsule.motion_type = openstrike::PhysicsBodyMotionType::Static;
+    capsule.origin = {0.0F, 64.0F, 32.0F};
+    capsule.radius = 8.0F;
+    capsule.height = 48.0F;
+    const openstrike::PhysicsBodyHandle capsule_body = physics.create_body(capsule);
+    REQUIRE(capsule_body.valid());
+    REQUIRE(physics.body_state(capsule_body).motion_type == openstrike::PhysicsBodyMotionType::Static);
+    REQUIRE(!physics.apply_body_impulse(capsule_body, {0.0F, 0.0F, 100.0F}));
+
+    openstrike::PhysicsBodyDesc dynamic;
+    dynamic.origin = {0.0F, 128.0F, 16.0F};
+    dynamic.half_extents = {8.0F, 8.0F, 8.0F};
+    const openstrike::PhysicsBodyHandle dynamic_body = physics.create_body(dynamic);
+    REQUIRE(dynamic_body.valid());
+    REQUIRE(!physics.move_kinematic_body(dynamic_body, {64.0F, 128.0F, 16.0F}, 1.0F / 60.0F));
+    REQUIRE(physics.apply_body_impulse(dynamic_body, {0.0F, 0.0F, 1000.0F}));
+    physics.step_simulation(1.0F / 60.0F);
+    REQUIRE(physics.body_state(dynamic_body).velocity.z > 0.0F);
+}
+
 void test_physics_world_traces_filter_contents_and_layers()
 {
     openstrike::PhysicsWorld physics;
@@ -4326,6 +4408,8 @@ int main()
         test_physics_world_uses_source_player_solid_mask();
         test_physics_layers_match_vphysics_jolt_stack();
         test_physics_world_steps_dynamic_body_on_static_world();
+        test_physics_world_uses_engine_settings();
+        test_physics_world_exposes_engine_body_controls();
         test_physics_world_traces_filter_contents_and_layers();
     }
     catch (const std::exception& error)
