@@ -534,15 +534,15 @@ struct WorldDrawVertex
 {
     packed_float3 position;
     packed_float3 normal;
-    float2 texcoord;
-    float2 lightmap_texcoord;
+    packed_float2 texcoord;
+    packed_float2 lightmap_texcoord;
     float lightmap_weight;
 };
 
 struct SkyboxDrawVertex
 {
     packed_float3 position;
-    float2 texcoord;
+    packed_float2 texcoord;
 };
 
 struct WorldConstants
